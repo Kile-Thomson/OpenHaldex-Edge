@@ -481,7 +481,6 @@ extern const uint8_t ID_SEQ_0A7[16];
 extern const uint8_t ID_SEQ_08A[16];
 extern const uint8_t ID_SEQ_086[16];
 extern const uint8_t ID_SEQ_121[16];
-extern const uint8_t ID_SEQ_110[16];
 extern const uint8_t ID_SEQ_106[16];
 extern const uint8_t ID_SEQ_104[16];
 extern const uint8_t ID_SEQ_116[16];
