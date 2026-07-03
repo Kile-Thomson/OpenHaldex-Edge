@@ -81,6 +81,7 @@ async function initStoredSettings() {
   // initialise stored settings and parse them
   try {
     const data = await fetchJson("/api/settings");
+    if (!data) { initApp(); return; } // device unreachable - draw the UI with HTML defaults
     // values
     document.getElementById("haldexGeneration").value =
       data.haldexGeneration || 1;
@@ -534,7 +535,7 @@ async function saveSetting(key, value) {
       body: JSON.stringify(settings),
     });
 
-    if (!response.ok) {
+    if (!response || !response.ok) {
       showNotification("Failed to save setting", "error");
     }
   } catch (error) {
