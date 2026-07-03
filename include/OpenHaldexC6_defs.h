@@ -84,6 +84,12 @@
 #define CAN1_RX 20 // can_1 tx
 #define CAN1_TX 21 // can_1 rx
 
+// CAN bus-health alert masks: the full set enabled on both v2 buses, and the
+// subset that counts as a genuine failure (everything except RX_DATA, which is
+// just a frame-received notification, and BUS_RECOVERED, which signals recovery)
+#define CAN_ALERTS_ENABLE (TWAI_ALERT_RX_DATA | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_ERROR | TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_BUS_OFF | TWAI_ALERT_TX_FAILED | TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_RX_FIFO_OVERRUN | TWAI_ALERT_BUS_RECOVERED)
+#define CAN_ALERTS_FAILURE_MASK (TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_ERROR | TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_BUS_OFF | TWAI_ALERT_TX_FAILED | TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_RX_FIFO_OVERRUN)
+
 #define gpio_led 8       // gpio for led
 #define gpio_mode 19     // gpio mode button internal
 #define gpio_mode_ext 18 // gpio mode button external

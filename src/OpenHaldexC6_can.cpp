@@ -136,15 +136,25 @@ void setupCAN()
   ESP_ERROR_CHECK(twai_start_v2(twai_bus_1));
   DEBUG("CAN - Driver 1 Started");
 
-  // Reconfigure alerts to detect frame receive, Bus-Off error and RX queue full states
-  uint32_t alerts_to_enable = TWAI_ALERT_RX_DATA | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_ERROR | TWAI_ALERT_RX_QUEUE_FULL;
-  if (twai_reconfigure_alerts(alerts_to_enable, NULL) == ESP_OK)
+  // Enable bus-health alerts on BOTH v2 buses. The driver is installed
+  // via the v2 dual-bus API, so the legacy single-bus twai_reconfigure_alerts
+  // would target the wrong handle; reconfigure each bus explicitly.
+  if (twai_reconfigure_alerts_v2(twai_bus_0, CAN_ALERTS_ENABLE, NULL) == ESP_OK)
   {
-    DEBUG("Reconfiguration of CAN alerts");
+    DEBUG("Reconfiguration of CAN alerts (bus 0)");
   }
   else
   {
-    DEBUG("Failed to reconfigure CAN alerts!");
+    DEBUG("Failed to reconfigure CAN alerts (bus 0)!");
+    return;
+  }
+  if (twai_reconfigure_alerts_v2(twai_bus_1, CAN_ALERTS_ENABLE, NULL) == ESP_OK)
+  {
+    DEBUG("Reconfiguration of CAN alerts (bus 1)");
+  }
+  else
+  {
+    DEBUG("Failed to reconfigure CAN alerts (bus 1)!");
     return;
   }
 }

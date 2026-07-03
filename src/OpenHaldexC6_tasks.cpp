@@ -183,54 +183,45 @@ void showHaldexState(void *arg)
       Serial.println(buffer2);
     }
 
+    // Bus-health detection on BOTH buses. This used to live inside
+    // if(detailedDebugCAN) (off by default) with the legacy single-bus alert read,
+    // so it was effectively dead. A failure latches per bus; IO.cpp keeps issuing
+    // twai_initiate_recovery_v2 while isBusFailure is set. When BUS_RECOVERED
+    // fires the bus is restarted with twai_start_v2 and its latch clears - but
+    // only if the same read shows no fresh failure bit, so a new fault is never
+    // masked by a stale recovery event.
+    uint32_t alerts_bus0 = 0;
+    uint32_t alerts_bus1 = 0;
+    twai_read_alerts_v2(twai_bus_0, &alerts_bus0, pdMS_TO_TICKS(0));
+    twai_read_alerts_v2(twai_bus_1, &alerts_bus1, pdMS_TO_TICKS(0));
+    bool failure0 = (alerts_bus0 & CAN_ALERTS_FAILURE_MASK) != 0;
+    bool failure1 = (alerts_bus1 & CAN_ALERTS_FAILURE_MASK) != 0;
+    static bool busFailure0 = false; // per-bus latches: a bus stays failed until it recovers,
+    static bool busFailure1 = false; // so one bus recovering can't clear the other's failure
+    if (failure0) { busFailure0 = true; }
+    if (failure1) { busFailure1 = true; }
+    if (busFailure0 || busFailure1)
+    {
+      isBusFailure = true;
+    }
+
+    bool recovered0 = (alerts_bus0 & TWAI_ALERT_BUS_RECOVERED) != 0;
+    bool recovered1 = (alerts_bus1 & TWAI_ALERT_BUS_RECOVERED) != 0;
+    bool restarted0 = recovered0 && !failure0 && (twai_start_v2(twai_bus_0) == ESP_OK);
+    bool restarted1 = recovered1 && !failure1 && (twai_start_v2(twai_bus_1) == ESP_OK);
+    if (restarted0) { busFailure0 = false; }
+    if (restarted1) { busFailure1 = false; }
+    isBusFailure = busFailure0 || busFailure1;
+
     if (detailedDebugCAN)
     {
-      uint32_t alerts_triggered;
-      twai_read_alerts(&alerts_triggered, pdMS_TO_TICKS(0));
       twai_status_info_t twaistatus;
-      twai_get_status_info(&twaistatus);
-      DEBUG("");                 // this is the lock %
-      DEBUG("CAN-BUS Details:"); // this is the lock %
+      twai_get_status_info_v2(twai_bus_0, &twaistatus);
+      DEBUG("");
+      DEBUG("CAN-BUS Details:");
       DEBUG("    RX buffered: %lu\t", twaistatus.msgs_to_rx);
       DEBUG("    RX missed: %lu\t", twaistatus.rx_missed_count);
       DEBUG("    RX overrun %lu\n", twaistatus.rx_overrun_count);
-
-      if (alerts_triggered & TWAI_ALERT_ERR_ACTIVE)
-      {
-        isBusFailure = true;
-      }
-      if (alerts_triggered & TWAI_ALERT_RECOVERY_IN_PROGRESS)
-      {
-        isBusFailure = true;
-      }
-      if (alerts_triggered & TWAI_ALERT_ABOVE_ERR_WARN)
-      {
-        isBusFailure = true;
-      }
-      if (alerts_triggered & TWAI_ALERT_BUS_ERROR)
-      {
-        isBusFailure = true;
-      }
-      if (alerts_triggered & TWAI_ALERT_TX_FAILED)
-      {
-        isBusFailure = true;
-      }
-      if (alerts_triggered & TWAI_ALERT_RX_QUEUE_FULL)
-      {
-        isBusFailure = true;
-      }
-      if (alerts_triggered & TWAI_ALERT_ERR_PASS)
-      {
-        isBusFailure = true;
-      }
-      if (alerts_triggered & TWAI_ALERT_BUS_OFF)
-      {
-        isBusFailure = true;
-      }
-      if (alerts_triggered & TWAI_ALERT_RX_FIFO_OVERRUN)
-      {
-        isBusFailure = true;
-      }
     }
 
     vTaskDelay(serialMonitorRefresh / portTICK_PERIOD_MS);
