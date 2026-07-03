@@ -134,6 +134,33 @@ async function initStoredSettings() {
       if (lockEngageRange) lockEngageRange.disabled = !en;
     }
 
+    // Steering gain taper
+    const steerGainSliders = [
+      { range: "steeringGainStartRange", value: "steeringGainStartValue", key: "steeringGainStartDeg" },
+      { range: "steeringGainFullRange",  value: "steeringGainFullValue",  key: "steeringGainFullDeg" },
+      { range: "steeringGainFloorRange", value: "steeringGainFloorValue", key: "steeringGainFloor" },
+    ];
+    steerGainSliders.forEach(({ range, value, key }) => {
+      const rangeElem = document.getElementById(range);
+      const valueElem = document.getElementById(value);
+      if (rangeElem && data[key] !== undefined) {
+        rangeElem.value = data[key];
+        if (valueElem) valueElem.textContent = data[key];
+      }
+    });
+
+    const steerGainEnabledElem = document.getElementById("steeringGainEnabled");
+    if (steerGainEnabledElem) {
+      steerGainEnabledElem.checked = data.steeringGainEnabled || false;
+      const en = steerGainEnabledElem.checked;
+      steerGainSliders.forEach(({ range }) => {
+        const rangeElem = document.getElementById(range);
+        if (rangeElem) rangeElem.disabled = !en;
+        const container = document.getElementById(range.replace("Range", "Container"));
+        if (container) container.style.opacity = en ? "" : "0.4";
+      });
+    }
+
     if (data.forceModesPriority !== undefined) {
       document.getElementById("forceModesPriority").value = data.forceModesPriority;
     }
@@ -266,6 +293,8 @@ async function refreshStatus() {
     );
     document.getElementById("rpm").textContent = displayValue(data.rpm);
     document.getElementById("boost").textContent = displayValue(data.boost);
+    document.getElementById("steeringAngle").textContent = displayValue(data.steeringAngle);
+    document.getElementById("steeringGainNow").textContent = displayValue(data.steeringGainNow);
 
     document.getElementById("lockTarget").textContent = displayValue(
       data.lockTarget,
@@ -578,6 +607,21 @@ function initNavigation() {
       if (lockEngageVal) lockEngageVal.textContent = lockEngageRange.value;
     });
   }
+
+  // Steering gain sliders (display update only — save handled in initSettings)
+  [
+    ["steeringGainStartRange", "steeringGainStartValue"],
+    ["steeringGainFullRange",  "steeringGainFullValue"],
+    ["steeringGainFloorRange", "steeringGainFloorValue"],
+  ].forEach(([rangeId, valueId]) => {
+    const rangeElem = document.getElementById(rangeId);
+    const valueElem = document.getElementById(valueId);
+    if (rangeElem) {
+      rangeElem.addEventListener("input", () => {
+        if (valueElem) valueElem.textContent = rangeElem.value;
+      });
+    }
+  });
 }
 
 // initialise dashboard:
@@ -653,6 +697,9 @@ function initSettings() {
     { element: "disableThrottleRange",     key: "disableThrottle",     parse: parseInt },
     { element: "lockReleaseRateRange",     key: "lockReleaseRatePerSec", parse: parseFloat },
     { element: "lockEngageRateRange",      key: "lockEngageRatePerSec",  parse: parseFloat },
+    { element: "steeringGainStartRange",   key: "steeringGainStartDeg",  parse: parseInt },
+    { element: "steeringGainFullRange",    key: "steeringGainFullDeg",   parse: parseInt },
+    { element: "steeringGainFloorRange",   key: "steeringGainFloor",     parse: parseInt },
   ];
   rangeSliders.forEach(({ element, key, parse }) => {
     const elem = document.getElementById(element);
@@ -696,6 +743,7 @@ function initSettings() {
     "canSleepAggressive",
     "udsMQBEnabled",
     "lockReleaseEnabled",
+    "steeringGainEnabled",
   ];
   checkboxIds.forEach((id) => {
     const elem = document.getElementById(id);
@@ -733,6 +781,20 @@ function initSettings() {
       if (lockReleaseContainer) lockReleaseContainer.style.opacity = en ? "" : "0.4";
       if (lockEngageRateElem) lockEngageRateElem.disabled = !en;
       if (lockEngageContainer) lockEngageContainer.style.opacity = en ? "" : "0.4";
+    });
+  }
+
+  // Steering gain: toggle slider enabled state and opacity when checkbox changes.
+  const steerGainEnabledElem = document.getElementById("steeringGainEnabled");
+  if (steerGainEnabledElem) {
+    steerGainEnabledElem.addEventListener("change", () => {
+      const en = steerGainEnabledElem.checked;
+      ["steeringGainStart", "steeringGainFull", "steeringGainFloor"].forEach((base) => {
+        const rangeElem = document.getElementById(base + "Range");
+        const container = document.getElementById(base + "Container");
+        if (rangeElem) rangeElem.disabled = !en;
+        if (container) container.style.opacity = en ? "" : "0.4";
+      });
     });
   }
 

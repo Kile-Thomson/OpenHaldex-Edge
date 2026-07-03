@@ -262,6 +262,40 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert)
   return (invert ? 0xFE : 0x00); // if lock not enabled, return 0 (or inverted)
 }
 
+// Steering-gain taper: percentage (floor..100) to scale the lock target by for
+// a given steering angle. 100% at or below start_deg, linear ramp down to
+// floor_percent at full_deg. Angles are compared in 0.1-degree units so the
+// LWI_01 wire value is used directly.
+uint8_t steering_gain_percent(uint16_t angle_tenths, uint16_t start_deg, uint16_t full_deg, uint8_t floor_percent)
+{
+  if (floor_percent > 100)
+  {
+    floor_percent = 100;
+  }
+
+  const uint32_t start_tenths = (uint32_t)start_deg * 10;
+  const uint32_t full_tenths = (uint32_t)full_deg * 10;
+
+  if (angle_tenths <= start_tenths)
+  {
+    return 100;
+  }
+
+  // Degenerate window (full <= start): step straight to the floor instead of
+  // dividing by zero.
+  if (full_tenths <= start_tenths || angle_tenths >= full_tenths)
+  {
+    return floor_percent;
+  }
+
+  // Linear ramp between the breakpoints, rounded to nearest percent. Products
+  // stay far below 2^32: span and offset are <= 7200 (720 deg), (100-floor) <= 100.
+  const uint32_t span = full_tenths - start_tenths;
+  const uint32_t into = (uint32_t)angle_tenths - start_tenths;
+  const uint32_t reduction = ((uint32_t)(100 - floor_percent) * into + span / 2) / span;
+  return (uint8_t)(100 - reduction);
+}
+
 // Slew one step of the lock-target rate limiter. Rising transitions are capped
 // at engage_rate_per_sec %/s (0 = instantaneous, the historical behaviour);
 // falling transitions at release_rate_per_sec %/s.
@@ -324,7 +358,20 @@ void getLockData(twai_message_t &rx_message_chs)
   // inside, so the hold is bounded; nothing called from here takes the mutex again
   xSemaphoreTake(stateMutex, portMAX_DELAY);
 
-  const float raw_target = get_lock_target_adjustment(); // calculate raw lock target based on mode, overrides, and learn table
+  float raw_target = get_lock_target_adjustment(); // calculate raw lock target based on mode, overrides, and learn table
+
+  // Steering-gain taper: reduce lock as steering angle grows so the rear axle
+  // is not fighting the front through tight corners (driveline windup). A stale
+  // or QBit-degraded angle leaves the gain at 100% (stock behaviour) instead of
+  // latching the last reduction. Settings are read under the mutex held above.
+  if (steeringGainEnabled && raw_target > 0)
+  {
+    if (steeringAngleValid && ((millis() - lastSteeringResponse) < steeringTimeout))
+    {
+      const uint8_t gain = steering_gain_percent(steeringAngleTenths, steeringGainStartDeg, steeringGainFullDeg, steeringGainFloor);
+      raw_target = (float)(((int)raw_target * gain + 50) / 100); // keep whole-number percentages
+    }
+  }
 
   if (!lockReleaseEnabled)
   {

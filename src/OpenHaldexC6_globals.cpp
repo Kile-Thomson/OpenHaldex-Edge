@@ -204,6 +204,22 @@ float lockEngageRatePerSec = 0.0f; // max %/s the lock target may rise; 0 = inst
 bool lockReleaseEnabled = true;  // when false, lock target changes are instantaneous
 uint8_t forceModesPriority = 0; // 0=Haz>TC>Ext, 1=TC>Haz>Ext, 2=Haz>Ext>TC, 3=TC>Ext>Haz, 4=Ext>TC>Haz, 5=Ext>Haz>TC
 
+// Steering angle decoded from MQB LWI_01 (0x086). Written only by parseCAN_chs;
+// getLockData reads it on the same task.
+uint16_t steeringAngleTenths = 0;   // |angle| in 0.1 deg units
+bool steeringAngleNegative = false; // sign (direction) - display only
+bool steeringAngleValid = false;    // false while the LWI QBit flags the signal degraded
+uint32_t lastSteeringResponse = 0;  // millis() of the last decoded LWI_01
+uint32_t steeringTimeout = 1000;    // staleness window in ms; stale angle -> gain 100%
+
+// Steering-gain taper settings (written by the API under stateMutex, read
+// inside getLockData which already holds it). Disabled by default so behaviour
+// is unchanged until explicitly enabled.
+bool steeringGainEnabled = false;   // master toggle for the taper
+uint16_t steeringGainStartDeg = 45; // gain stays 100% at or below this angle
+uint16_t steeringGainFullDeg = 180; // gain reaches the floor at or above this angle
+uint8_t steeringGainFloor = 50;     // minimum gain percent (never taper to fully open)
+
 // setup - main inputs
 bool isMPH = false; // 0 = kph, 1 = mph
 

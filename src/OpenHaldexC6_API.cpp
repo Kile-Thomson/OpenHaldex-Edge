@@ -133,6 +133,10 @@ static void statusOutgoing(AsyncWebServerRequest *request)
     xSemaphoreTake(stateMutex, portMAX_DELAY);
     const openhaldex_mode_t modeSnapshot = state.mode;
     const float lockTargetSnapshot = lock_target;
+    const bool steerGainEnSnapshot = steeringGainEnabled;
+    const uint16_t steerGainStartSnapshot = steeringGainStartDeg;
+    const uint16_t steerGainFullSnapshot = steeringGainFullDeg;
+    const uint8_t steerGainFloorSnapshot = steeringGainFloor;
     xSemaphoreGive(stateMutex);
 
     data["mode"] = modeSnapshot;
@@ -159,6 +163,24 @@ static void statusOutgoing(AsyncWebServerRequest *request)
         data["hazardActive"] = nullptr;
         data["rpm"] = nullptr;
         data["boost"] = nullptr;
+    }
+
+    // Live steering angle plus the gain the taper is currently applying. Null
+    // when the LWI_01 signal is stale or QBit-degraded - exactly the condition
+    // under which getLockData leaves the gain at 100%.
+    const bool steeringFresh = steeringAngleValid && ((millis() - lastSteeringResponse) < steeringTimeout);
+    if (chassisOk && steeringFresh)
+    {
+        const float angleDeg = steeringAngleTenths / 10.0f;
+        data["steeringAngle"] = steeringAngleNegative ? -angleDeg : angleDeg;
+        data["steeringGainNow"] = steerGainEnSnapshot
+                                      ? steering_gain_percent(steeringAngleTenths, steerGainStartSnapshot, steerGainFullSnapshot, steerGainFloorSnapshot)
+                                      : 100;
+    }
+    else
+    {
+        data["steeringAngle"] = nullptr;
+        data["steeringGainNow"] = nullptr;
     }
 
     data["brakeIn"] = brakeSignalActive;
@@ -286,10 +308,14 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["mode"] = lastMode;
     data["lockReleaseRatePerSec"] = lockReleaseRatePerSec;
     data["lockEngageRatePerSec"] = lockEngageRatePerSec;
+    data["steeringGainStartDeg"] = steeringGainStartDeg;
+    data["steeringGainFullDeg"] = steeringGainFullDeg;
+    data["steeringGainFloor"] = steeringGainFloor;
     data["FW_VERSION"] = FW_VERSION;
 
     // bools
     data["lockReleaseEnabled"] = lockReleaseEnabled;
+    data["steeringGainEnabled"] = steeringGainEnabled;
     data["disableController"] = disableController;
     data["isStandalone"] = isStandalone;
     data["useCANifAvailable"] = useCANifAvailable;
@@ -437,6 +463,40 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
     if (data["lockReleaseEnabled"].is<bool>())
     {
         lockReleaseEnabled = data["lockReleaseEnabled"];
+    }
+
+    // Steering-gain taper. Start/full are accepted independently (the UI saves
+    // one key at a time); if a client leaves full <= start the taper degrades
+    // to a hard step at the start angle (see steering_gain_percent), never a
+    // divide-by-zero. Read on the hot path inside getLockData's critical
+    // section, so write under the same lock.
+    if (data["steeringGainStartDeg"].is<uint16_t>())
+    {
+        uint16_t value = data["steeringGainStartDeg"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        steeringGainStartDeg = constrain(value, 0, 720);
+        xSemaphoreGive(stateMutex);
+    }
+
+    if (data["steeringGainFullDeg"].is<uint16_t>())
+    {
+        uint16_t value = data["steeringGainFullDeg"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        steeringGainFullDeg = constrain(value, 0, 720);
+        xSemaphoreGive(stateMutex);
+    }
+
+    if (data["steeringGainFloor"].is<uint8_t>())
+    {
+        uint8_t value = data["steeringGainFloor"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        steeringGainFloor = constrain(value, 0, 100);
+        xSemaphoreGive(stateMutex);
+    }
+
+    if (data["steeringGainEnabled"].is<bool>())
+    {
+        steeringGainEnabled = data["steeringGainEnabled"];
     }
 
     if (data["disableController"].is<bool>())

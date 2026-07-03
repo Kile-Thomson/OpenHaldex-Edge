@@ -356,6 +356,23 @@ void parseCAN_chs(void *arg)
           break;
         }
 
+        case LWI_01:
+        {
+          // MQB LWI_01 (0x086) - steering-angle sensor broadcast.
+          // vw_mqb.dbc:
+          //   SG_ LWI_QBit_Lenkradwinkel : 15|1@1+           -> byte 1 bit 7, 1 = signal degraded
+          //   SG_ LWI_Lenkradwinkel      : 16|13@1+ (0.1,0)  -> byte 2 + byte 3 low 5 bits, 0.1 deg/bit
+          //   SG_ LWI_VZ_Lenkradwinkel   : 29|1@1+           -> byte 3 bit 5, sign/direction
+          // Used to drive the steering-gain lock taper when enabled.
+          const bool qbitDegraded = bitRead(rx_message_chs.data[1], 7);
+          const uint16_t raw_tenths = (uint16_t)rx_message_chs.data[2] | ((uint16_t)(rx_message_chs.data[3] & 0x1F) << 8);
+          steeringAngleTenths = raw_tenths > 7200 ? 7200 : raw_tenths; // clamp to 720 deg; lock-to-lock is ~540
+          steeringAngleNegative = bitRead(rx_message_chs.data[3], 5);
+          steeringAngleValid = !qbitDegraded;
+          lastSteeringResponse = millis();
+          break;
+        }
+
         case BRAKES1_ID:
         {
           // PQ Bremse_1 (0x1A0) - ABS/ESP main broadcast (Bremse = brake).

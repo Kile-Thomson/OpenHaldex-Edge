@@ -414,6 +414,22 @@ extern uint32_t lastABSResponse;
 extern bool isABSValid;
 extern uint32_t absTimeout;
 
+// Steering angle decoded from MQB LWI_01 (0x086). Absolute magnitude in
+// 0.1-degree units; written only by parseCAN_chs, read by getLockData on the
+// same task.
+extern uint16_t steeringAngleTenths;  // |angle| in 0.1 deg units
+extern bool steeringAngleNegative;    // sign (direction) - display only
+extern bool steeringAngleValid;       // false while the LWI QBit flags the signal degraded
+extern uint32_t lastSteeringResponse; // millis() of the last decoded LWI_01
+extern uint32_t steeringTimeout;      // staleness window in ms; stale angle -> gain 100%
+
+// Steering-gain taper: reduce lock as steering angle grows so the rear axle is
+// not fighting the front through tight corners. Disabled by default.
+extern bool steeringGainEnabled;      // master toggle for the taper
+extern uint16_t steeringGainStartDeg; // gain stays 100% at or below this angle
+extern uint16_t steeringGainFullDeg;  // gain reaches the floor at or above this angle
+extern uint8_t steeringGainFloor;     // minimum gain percent (never taper to fully open)
+
 // Expert mode tables
 #define speedArrayCount 7    // 0, 30, 60, 90, 120, 160, 180
 #define throttleArrayCount 7 // 0, 15, 30, 45, 60, 75, 90

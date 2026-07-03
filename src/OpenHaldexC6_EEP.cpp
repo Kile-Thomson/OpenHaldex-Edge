@@ -58,6 +58,10 @@ static void loadSettingsFrom(Preferences &src)
   lockReleaseRatePerSec = src.getFloat("lockReleaseRate", 120.0f);  // load lock release rate (%/s)
   lockEngageRatePerSec = src.getFloat("lockEngageRate", 0.0f);      // load lock engage rate (%/s, 0 = instant)
   lockReleaseEnabled = src.getBool("lockReleaseEn", true);          // load lock release enable
+  steeringGainEnabled = src.getBool("steerGainEn", false);          // load steering-gain toggle
+  steeringGainStartDeg = src.getUShort("steerGainStart", 45);       // load steering-gain start angle
+  steeringGainFullDeg = src.getUShort("steerGainFull", 180);        // load steering-gain full angle
+  steeringGainFloor = src.getUChar("steerGainFloor", 50);           // load steering-gain floor percent
 }
 
 // Persist every runtime-global setting into the canonical 'openhaldex' handle
@@ -110,6 +114,10 @@ static void persistSettingsToPref()
   pref.putFloat("lockReleaseRate", lockReleaseRatePerSec); // save lock release rate (%/s)
   pref.putFloat("lockEngageRate", lockEngageRatePerSec);   // save lock engage rate (%/s)
   pref.putBool("lockReleaseEn", lockReleaseEnabled);       // save lock release enable
+  pref.putBool("steerGainEn", steeringGainEnabled);        // save steering-gain toggle
+  pref.putUShort("steerGainStart", steeringGainStartDeg);  // save steering-gain start angle
+  pref.putUShort("steerGainFull", steeringGainFullDeg);    // save steering-gain full angle
+  pref.putUChar("steerGainFloor", steeringGainFloor);      // save steering-gain floor percent
 }
 
 void readEEP() // function to read stored preferences into runtime variables
@@ -302,6 +310,10 @@ void writeEEP(void *arg) // task function to periodically write preferences
     pref.putFloat("lockReleaseRate", lockReleaseRatePerSec);  // write lock release rate (%/s)
     pref.putFloat("lockEngageRate", lockEngageRatePerSec);    // write lock engage rate (%/s)
     pref.putBool("lockReleaseEn", lockReleaseEnabled);        // write lock release enable
+    pref.putBool("steerGainEn", steeringGainEnabled);         // write steering-gain toggle
+    pref.putUShort("steerGainStart", steeringGainStartDeg);   // write steering-gain start angle
+    pref.putUShort("steerGainFull", steeringGainFullDeg);     // write steering-gain full angle
+    pref.putUChar("steerGainFloor", steeringGainFloor);       // write steering-gain floor percent
 
 #if detailedDebugEEP
     DEBUG("Written EEPROM with data:");                                                            // debug: print written prefs

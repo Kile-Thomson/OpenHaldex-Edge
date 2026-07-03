@@ -85,6 +85,16 @@
                         <div class="gauge-value" id="boost">--</div>
                         <div class="gauge-unit">mbar</div>
                     </div>
+                    <div class="gauge">
+                        <div class="gauge-label">Steering</div>
+                        <div class="gauge-value" id="steeringAngle">--</div>
+                        <div class="gauge-unit">deg</div>
+                    </div>
+                    <div class="gauge">
+                        <div class="gauge-label">Steer Gain</div>
+                        <div class="gauge-value" id="steeringGainNow">--</div>
+                        <div class="gauge-unit">%</div>
+                    </div>
                 </div>
             </section>
 
@@ -502,6 +512,34 @@
                 <div class="slider-container" id="lockReleaseRateContainer">
                     <input type="range" id="lockReleaseRateRange" min="5" max="500" step="5" value="120" class="slider">
                     <div class="slider-value"><span id="lockReleaseRateValue">120</span> %/s</div>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Steering Gain Taper</h2>
+                <p class="hint">Reduces lock as steering angle grows so the rear axle is not fighting the front through tight corners (driveline windup). Gain stays 100% below the start angle and ramps down to the minimum at the full angle. Needs MQB steering-angle data; a stale or degraded signal leaves the gain at 100%.</p>
+
+                <div class="toggle-group">
+                    <label class="toggle">
+                        <input type="checkbox" id="steeringGainEnabled">
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">Enable Steering Gain</span>
+                    </label>
+                </div>
+                <p class="hint">Start angle</p>
+                <div class="slider-container" id="steeringGainStartContainer">
+                    <input type="range" id="steeringGainStartRange" min="0" max="360" step="5" value="45" class="slider">
+                    <div class="slider-value"><span id="steeringGainStartValue">45</span> deg</div>
+                </div>
+                <p class="hint">Full angle</p>
+                <div class="slider-container" id="steeringGainFullContainer">
+                    <input type="range" id="steeringGainFullRange" min="10" max="540" step="5" value="180" class="slider">
+                    <div class="slider-value"><span id="steeringGainFullValue">180</span> deg</div>
+                </div>
+                <p class="hint">Minimum gain</p>
+                <div class="slider-container" id="steeringGainFloorContainer">
+                    <input type="range" id="steeringGainFloorRange" min="0" max="100" step="5" value="50" class="slider">
+                    <div class="slider-value"><span id="steeringGainFloorValue">50</span> %</div>
                 </div>
             </section>
         </div>
