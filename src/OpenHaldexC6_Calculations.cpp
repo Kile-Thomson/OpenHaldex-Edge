@@ -264,16 +264,23 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert)
 
 void startHaldexLearn()
 {
+  // Guard + wipe + flag reset in one critical section, so the hot path can
+  // never see haldexLearnTableValid still set over a half-wiped table and two
+  // concurrent callers can never both pass the already-running check
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
   if (haldexLearnActive)
   {
+    xSemaphoreGive(stateMutex);
     return; // already running
   }
 
   memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
+  haldexLearnTableValid = false; // wiped table is no longer valid until the task republishes
   haldexLearnCancel = false;
   haldexLearnStep = 0;
   haldexLearnCF = 0;
   haldexLearnActive = true;
+  xSemaphoreGive(stateMutex);
 
   xTaskCreate(haldexLearnTask, "haldexLearn", 4096, nullptr, 1, nullptr);
 }
@@ -287,6 +294,11 @@ void getLockData(twai_message_t &rx_message_chs)
   // releases gradually rather than snapping open.
   static float smoothed_lock_target = 0.0f;
   static uint32_t last_lock_ms = 0;
+
+  // Hold stateMutex across the whole read+compute+frame-edit so the Haldex never
+  // sees a half-rewritten expert table, learn table or mode. No blocking calls
+  // inside, so the hold is bounded; nothing called from here takes the mutex again
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
 
   const float raw_target = get_lock_target_adjustment(); // calculate raw lock target based on mode, overrides, and learn table
 
@@ -1261,4 +1273,6 @@ void getLockData(twai_message_t &rx_message_chs)
       */
     }
   }
+
+  xSemaphoreGive(stateMutex);
 }

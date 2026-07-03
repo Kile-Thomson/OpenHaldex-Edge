@@ -234,6 +234,29 @@ void writeEEP(void *arg) // task function to periodically write preferences
     DEBUG("Writing EEPROM..."); // debug: writing prefs
 #endif
 
+    // Snapshot the multi-field shared structures under a short hold, then run
+    // the slow NVS writes from the copies - so a persisted config is never an
+    // expert/learn table caught mid-update. Single-word settings are written
+    // directly below.
+    static uint8_t snapSpeed[sizeof(speedArray)];
+    static uint8_t snapThrottle[sizeof(throttleArray)];
+    static uint8_t snapLock[sizeof(lockArray)];
+    static uint8_t snapLearn[sizeof(haldexLearnTable)];
+    bool snapLearnValid;
+    uint8_t snapDisableThrottle;
+    uint16_t snapDisengageUnder;
+    uint16_t snapDisengageAbove;
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    memcpy(snapSpeed, speedArray, sizeof(speedArray));
+    memcpy(snapThrottle, throttleArray, sizeof(throttleArray));
+    memcpy(snapLock, lockArray, sizeof(lockArray));
+    memcpy(snapLearn, haldexLearnTable, sizeof(haldexLearnTable));
+    snapLearnValid = haldexLearnTableValid;
+    snapDisableThrottle = disableThrottle;
+    snapDisengageUnder = disengageUnderSpeed;
+    snapDisengageAbove = disengageAboveSpeed;
+    xSemaphoreGive(stateMutex);
+
     // update EEP only if changes have been made
     pref.putBool("broadcastOpen", broadcastOpenHaldexOverCAN); // write broadcast setting
     pref.putBool("isStandalone", isStandalone);                // write standalone setting
@@ -259,16 +282,16 @@ void writeEEP(void *arg) // task function to periodically write preferences
     pref.putUChar("hazFMV", hazardForceModeValue);                                   // write Hazard force mode value
     pref.putUChar("extFMV", extBtnForceModeValue);                                   // write ExtBtn force mode value
     pref.putUChar("lastMode", lastMode);                                             // write last mode
-    pref.putUChar("disableThrottle", disableThrottle);                               // write throttle disable
-    pref.putUShort("disengageUSpeed", disengageUnderSpeed);                          // write disengage under speed
-    pref.putUShort("disengageASpeed", disengageAboveSpeed);                          // write disengage above speed
-    pref.putBytes("speedArray", (byte *)(&speedArray), sizeof(speedArray));          // write speed array
-    pref.putBytes("throttleArray", (byte *)(&throttleArray), sizeof(throttleArray)); // write throttle array
-    pref.putBytes("lockArray", (byte *)(&lockArray), sizeof(lockArray));             // write lock array
-    pref.putBool("learnOK", haldexLearnTableValid);                                  // write learn valid flag
-    if (haldexLearnTableValid)
+    pref.putUChar("disableThrottle", snapDisableThrottle);                     // write throttle disable
+    pref.putUShort("disengageUSpeed", snapDisengageUnder);                     // write disengage under speed
+    pref.putUShort("disengageASpeed", snapDisengageAbove);                     // write disengage above speed
+    pref.putBytes("speedArray", snapSpeed, sizeof(snapSpeed));                 // write speed array
+    pref.putBytes("throttleArray", snapThrottle, sizeof(snapThrottle));        // write throttle array
+    pref.putBytes("lockArray", snapLock, sizeof(snapLock));                    // write lock array
+    pref.putBool("learnOK", snapLearnValid);                                   // write learn valid flag
+    if (snapLearnValid)
     {
-      pref.putBytes("learnTbl", haldexLearnTable, sizeof(haldexLearnTable)); // write learn table bytes
+      pref.putBytes("learnTbl", snapLearn, sizeof(snapLearn)); // write learn table bytes
     }
     pref.putString("wifiSsid", wifiSsid);    // write WiFi AP SSID
     pref.putString("wifiPwd", wifiPassword); // write WiFi AP password

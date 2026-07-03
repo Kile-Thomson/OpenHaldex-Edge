@@ -130,12 +130,14 @@ bool isSystemSafeForOTA() {
   // SAFETY CHECK 3: Outputs safe
   // If controller is disabled, we're safe. Otherwise, force STOCK.
   if (!disableController) {
+    xSemaphoreTake(stateMutex, portMAX_DELAY); // check-then-force must be one atomic step
     if (state.mode != MODE_STOCK) {
 #if enableDebug || detailedDebugWiFi
       DEBUG("[OTA SAFETY] Controller active in non-stock mode - auto-switching to STOCK for OTA safety");
 #endif
       state.mode = MODE_STOCK;
     }
+    xSemaphoreGive(stateMutex);
   }
 
   // SAFETY CHECK 4: No active Haldex faults (temp protection)

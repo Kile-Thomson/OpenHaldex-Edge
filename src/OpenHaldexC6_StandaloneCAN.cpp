@@ -14,6 +14,10 @@ void frames10(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -38,6 +42,7 @@ void frames10(void *arg)
         Gen5_0AY_frames10();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
@@ -55,6 +60,10 @@ void frames20(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -79,6 +88,7 @@ void frames20(void *arg)
         Gen5_0AY_frames20();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(20 / portTICK_PERIOD_MS);
   }
@@ -96,6 +106,10 @@ void frames25(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -117,6 +131,7 @@ void frames25(void *arg)
         Gen5_0AY_frames25();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(25 / portTICK_PERIOD_MS);
   }
@@ -134,6 +149,10 @@ void frames100(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       lock_target = get_lock_target_adjustment();
       switch (haldexGeneration)
       {
@@ -159,6 +178,7 @@ void frames100(void *arg)
         Gen5_0AY_frames100();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(100 / portTICK_PERIOD_MS);
   }
@@ -176,6 +196,10 @@ void frames200(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -200,6 +224,7 @@ void frames200(void *arg)
         Gen5_0AY_frames200();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(200 / portTICK_PERIOD_MS);
   }
@@ -217,6 +242,10 @@ void frames1000(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -241,6 +270,7 @@ void frames1000(void *arg)
         Gen5_0AY_frames1000();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
@@ -806,6 +836,10 @@ void frames13(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
 #if detailedDebugStack
       stackframes13 = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -815,6 +849,7 @@ void frames13(void *arg)
         Gen41_frames13();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(13 / portTICK_PERIOD_MS);
   }
@@ -832,6 +867,10 @@ void frames50(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
 #if detailedDebugStack
       stackframes50 = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -841,6 +880,7 @@ void frames50(void *arg)
         Gen41_frames50();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
@@ -858,6 +898,10 @@ void frames250(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
 #if detailedDebugStack
       stackframes250 = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -867,6 +911,7 @@ void frames250(void *arg)
         Gen41_frames250();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(250 / portTICK_PERIOD_MS);
   }

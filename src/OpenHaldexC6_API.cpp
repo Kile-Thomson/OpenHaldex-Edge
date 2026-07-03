@@ -129,7 +129,13 @@ static void statusOutgoing(AsyncWebServerRequest *request)
     const bool chassisOk = hasCANChassis;
     const bool haldexOk = hasCANHaldex;
 
-    data["mode"] = state.mode;
+    // snapshot the guarded values once so the JSON reflects one coherent moment
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    const openhaldex_mode_t modeSnapshot = state.mode;
+    const float lockTargetSnapshot = lock_target;
+    xSemaphoreGive(stateMutex);
+
+    data["mode"] = modeSnapshot;
 
     // Ext-button force flag is driven by the external button
     data["extButtonActive"] = extButtonForceModeFlag;
@@ -180,7 +186,7 @@ static void statusOutgoing(AsyncWebServerRequest *request)
         data["handbrakeFromCAN"] = nullptr; // if chassis CAN not ok, set to null (displayed as "--" in the UI)
     }
 
-    data["lockTarget"] = int(lock_target);
+    data["lockTarget"] = int(lockTargetSnapshot);
 
     if (haldexOk) // if haldex CAN ok set related values
     {
@@ -309,7 +315,9 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
 
     data["ledBrightness"] = ledBrightness;
 
-    // throttle/speed/lock array send
+    // throttle/speed/lock array send - read under the lock so a tune being
+    // published by /api/tune is never serialized half-old half-new
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
     // row array
     JsonArray throttleArrayJSON = data["throttleArray"].to<JsonArray>();
     for (uint8_t i = 0; i < throttleArrayCount; i++)
@@ -334,6 +342,7 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
             throttleRow.add(lockArray[throttlePos][speedPos]);
         }
     }
+    xSemaphoreGive(stateMutex);
 
     sendJSON(request, 200, data);
 }
@@ -382,20 +391,26 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
     if (data["disengageUnderSpeed"].is<uint16_t>())
     {
         uint16_t value = data["disengageUnderSpeed"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
         disengageUnderSpeed = constrain(value, 0, 300);
+        xSemaphoreGive(stateMutex);
     }
 
     if (data["disengageAboveSpeed"].is<uint16_t>())
     {
         uint16_t value = data["disengageAboveSpeed"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
         disengageAboveSpeed = constrain(value, 0, 300);
+        xSemaphoreGive(stateMutex);
     }
 
     if (data["disableThrottle"].is<uint8_t>())
     {
         uint8_t value = data["disableThrottle"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY); // both fields land together
         disableThrottle = constrain(value, 0, 100);
         state.pedal_threshold = disableThrottle;
+        xSemaphoreGive(stateMutex);
     }
 
     if (data["disableController"].is<bool>())
@@ -403,8 +418,10 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         disableController = data["disableController"];
         if (disableController)
         {
+            xSemaphoreTake(stateMutex, portMAX_DELAY);
             state.mode = MODE_STOCK;
             lastMode = 0;
+            xSemaphoreGive(stateMutex);
         }
         if (!disableController && analyzerMode)
         {
@@ -567,6 +584,7 @@ static void modeIncoming(AsyncWebServerRequest *request, const String &body)
     {
         if (!disableController)
         {
+            xSemaphoreTake(stateMutex, portMAX_DELAY);
             if (isStandalone && (openhaldex_mode_t)data["mode"] == 0)
             {
                 state.mode = (openhaldex_mode_t)lastMode;
@@ -576,6 +594,7 @@ static void modeIncoming(AsyncWebServerRequest *request, const String &body)
                 state.mode = (openhaldex_mode_t)data["mode"];
             }
             lastMode = state.mode;
+            xSemaphoreGive(stateMutex);
         }
     }
 }
@@ -600,16 +619,24 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
         return;
     }
 
+    // Parse and validate the whole tune into staging copies first, then publish
+    // all three tables under one short hold - so getLockData's interpolation
+    // never reads a half-updated map, and an invalid row leaves the live tables
+    // untouched instead of partially overwritten
+    uint8_t stagedThrottle[throttleArrayCount];
+    uint16_t stagedSpeed[speedArrayCount];
+    uint8_t stagedLock[throttleArrayCount][speedArrayCount];
+
     // fill throttle array
     for (uint8_t i = 0; i < throttleArrayCount; i++)
     {
-        throttleArray[i] = (uint8_t)(throttleArrayJSON[i] | 0);
+        stagedThrottle[i] = (uint8_t)(throttleArrayJSON[i] | 0);
     }
 
     // fill speed array
     for (uint8_t i = 0; i < speedArrayCount; i++)
     {
-        speedArray[i] = (uint16_t)(speedArrayJSON[i] | 0);
+        stagedSpeed[i] = (uint16_t)(speedArrayJSON[i] | 0);
     }
 
     // fill lock array
@@ -623,9 +650,15 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
         }
         for (uint8_t speed = 0; speed < speedArrayCount; speed++)
         {
-            lockArray[throttle][speed] = (uint8_t)throttleRow[speed];
+            stagedLock[throttle][speed] = (uint8_t)throttleRow[speed];
         }
     }
+
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    memcpy(throttleArray, stagedThrottle, sizeof(throttleArray));
+    memcpy(speedArray, stagedSpeed, sizeof(speedArray));
+    memcpy(lockArray, stagedLock, sizeof(lockArray));
+    xSemaphoreGive(stateMutex);
 
     JsonDocument resp;
     resp["ok"] = true;
@@ -736,15 +769,19 @@ void setupAPI()
                      JsonDocument data;
                      data["active"]     = (bool)haldexLearnActive;
                      data["progress"]   = (uint8_t)haldexLearnStep;
-                     data["tableValid"] = haldexLearnTableValid;
                      data["currentCF"]  = (uint8_t)haldexLearnCF;
                      data["currentEng"] = received_haldex_engagement;
+                     // read flag + table under the lock so a table mid-publish
+                     // is never serialized half-old half-new
+                     xSemaphoreTake(stateMutex, portMAX_DELAY);
+                     data["tableValid"] = haldexLearnTableValid;
                      if (haldexLearnTableValid)
                      {
                          JsonArray table = data["table"].to<JsonArray>();
                          for (uint8_t i = 0; i <= 100; i++)
                              table.add(haldexLearnTable[i]);
                      }
+                     xSemaphoreGive(stateMutex);
                      sendJSON(request, 200, data); });
 
     // ===== POST ENDPOINTS =====
@@ -835,8 +872,10 @@ void setupAPI()
     webServer.on("/api/learn/clear", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
                      if (!requireOtaAuth(request)) return;
+                     xSemaphoreTake(stateMutex, portMAX_DELAY);
                      haldexLearnTableValid = false;
                      memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
+                     xSemaphoreGive(stateMutex);
                      JsonDocument resp;
                      resp["ok"] = true;
                      sendJSON(request, 200, resp); });

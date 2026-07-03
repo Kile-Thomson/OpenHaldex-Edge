@@ -18,6 +18,14 @@ void broadcastOpenHaldex(void *arg)
       continue;
     }
 
+    // Snapshot the shared values under a short hold so the broadcast frame
+    // reflects one coherent moment, not a value being rewritten mid-broadcast
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    float snapshot_lock_target = lock_target;
+    bool snapshot_mode_override = state.mode_override;
+    openhaldex_mode_t snapshot_mode = state.mode;
+    xSemaphoreGive(stateMutex);
+
     // build up the 'OpenHaldex' frame for broadcasting back over CAN
     twai_message_t broadcast_frame;
     broadcast_frame.identifier = OPENHALDEX_BROADCAST_ID;
@@ -27,10 +35,10 @@ void broadcastOpenHaldex(void *arg)
     broadcast_frame.data[0] = 0;
     broadcast_frame.data[1] = isStandalone;
     broadcast_frame.data[2] = (uint8_t)received_haldex_engagement_raw;
-    broadcast_frame.data[3] = (uint8_t)lock_target;
+    broadcast_frame.data[3] = (uint8_t)snapshot_lock_target;
     broadcast_frame.data[4] = received_vehicle_speed;
-    broadcast_frame.data[5] = state.mode_override;
-    broadcast_frame.data[6] = (uint8_t)state.mode;
+    broadcast_frame.data[5] = snapshot_mode_override;
+    broadcast_frame.data[6] = (uint8_t)snapshot_mode;
     broadcast_frame.data[7] = (uint8_t)received_pedal_value;
 
     twai_transmit_v2(twai_bus_0, &broadcast_frame, (10 / portTICK_PERIOD_MS));
@@ -472,7 +480,11 @@ void parseCAN_chs(void *arg)
           if (broadcastOpenHaldexOverCAN &&
               rx_message_chs.data[0] < (uint8_t)openhaldex_mode_t_MAX)
           {
+            // Short hold, released before getLockData() below (which takes the
+            // non-recursive stateMutex itself - nesting would self-deadlock)
+            xSemaphoreTake(stateMutex, portMAX_DELAY);
             state.mode = (openhaldex_mode_t)rx_message_chs.data[0];
+            xSemaphoreGive(stateMutex);
           }
           break;
         }
@@ -510,8 +522,15 @@ void parseCAN_chs(void *arg)
           // enabled/asserted flag. This is the global kill-switch for all frame work.
           if (!disableController)
           {
+          // Snapshot the mode under the lock so the STOCK / non-STOCK decision is
+          // coherent with concurrent writers (API, buttons, external control).
+          // getLockData() takes stateMutex itself, so it MUST run outside this hold
+          xSemaphoreTake(stateMutex, portMAX_DELAY);
+          const openhaldex_mode_t modeSnapshot = state.mode;
+          xSemaphoreGive(stateMutex);
+
           // Edit the CAN frame, if not in STOCK mode (or if learn is active - learn must run regardless of mode)
-          if (state.mode != MODE_STOCK || haldexLearnActive)
+          if (modeSnapshot != MODE_STOCK || haldexLearnActive)
           {
             if (haldexGeneration == 1 || haldexGeneration == 2 || haldexGeneration == 4 || haldexGeneration == 50 || haldexGeneration == 51 || haldexGeneration == 41)
             {
@@ -520,7 +539,9 @@ void parseCAN_chs(void *arg)
           }
           else
           {
+            xSemaphoreTake(stateMutex, portMAX_DELAY);
             lock_target = received_haldex_engagement;
+            xSemaphoreGive(stateMutex);
 
             /*
                         if (extBtnForceMode || tcForceMode || hazardForceMode)
@@ -560,7 +581,9 @@ void parseCAN_chs(void *arg)
             // Controller disabled: read-only. Mirror the Haldex's reported
             // engagement for telemetry only; rx_message_chs is left untouched
             // and forwarded verbatim below.
+            xSemaphoreTake(stateMutex, portMAX_DELAY);
             lock_target = received_haldex_engagement;
+            xSemaphoreGive(stateMutex);
           }
 
           tx_message_hdx = rx_message_chs;

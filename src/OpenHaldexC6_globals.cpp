@@ -27,6 +27,8 @@ TaskHandle_t handle_updateTriggers      = nullptr; // notified by CAN_RX wake IS
 // for EEP
 Preferences pref; // for EEPROM / storing settings
 
+SemaphoreHandle_t stateMutex = nullptr; // created in setupTasks() before any task starts
+
 // for LED - will be initialized in setupIO()
 Freenove_ESP32_WS2812 strip = Freenove_ESP32_WS2812(1, gpio_led, led_channel, TYPE_RGB); // 1 led, gpio pin, channel, type of LED
 

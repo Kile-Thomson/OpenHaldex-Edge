@@ -154,6 +154,8 @@ void modeChange(void)
   if (disableOnboardButton)
     return; // onboard button disabled, ignore press
 
+  // read-modify-write of state.mode races the CAN and web tasks - hold the lock
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
   uint8_t next_mode = (uint8_t)state.mode + 1; // Determine the next mode in the sequence.
 
   if (isStandalone)
@@ -182,6 +184,7 @@ void modeChange(void)
     }
   }
   lastMode = state.mode;
+  xSemaphoreGive(stateMutex);
 }
 
 void modeChangeExt(void)
@@ -194,6 +197,7 @@ void modeChangeExt(void)
   if (extBtnForceMode)
     return; // Hold mode: short press has no effect; only hold triggers force mode
 
+  xSemaphoreTake(stateMutex, portMAX_DELAY); // same read-modify-write as modeChange
   uint8_t next_mode = (uint8_t)state.mode + 1; // Determine the next mode in the sequence.
 
   if (isStandalone)
@@ -222,6 +226,7 @@ void modeChangeExt(void)
     }
   }
   lastMode = state.mode;
+  xSemaphoreGive(stateMutex);
 }
 
 void modeChangeExtLong(void)
@@ -438,7 +443,10 @@ void updateTriggers(void *arg)
 
     if (!lowPowerMode)
     {
-      switch (state.mode)
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
+      const openhaldex_mode_t ledMode = state.mode; // snapshot for the LED colour
+      xSemaphoreGive(stateMutex);
+      switch (ledMode)
       {
       case 0:
         strip.setLedColorData(led_channel, ledBrightness, 0, 0); // red

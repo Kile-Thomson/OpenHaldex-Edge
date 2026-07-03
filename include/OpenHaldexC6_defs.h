@@ -139,6 +139,11 @@ extern bool isMPH;       // 0 = kph, 1 = mph
 // for EEP
 extern Preferences pref; // for EEPROM / storing settings
 
+// guards the shared control state (state, lock_target, expert tables, learn
+// table, disengage gates) against torn reads between the CAN tasks, the web
+// callbacks, the buttons and the standalone frame generators
+extern SemaphoreHandle_t stateMutex;
+
 // for LED
 extern Freenove_ESP32_WS2812 strip; // 1 led, gpio pin, channel, type of LED
 

@@ -40,6 +40,9 @@ void haldexLearnTask(void *arg)
 
   if (!haldexLearnCancel)
   {
+    // Publish the finished table and the valid flag together under the lock so
+    // the hot path never sees a valid flag pointing at a half-scanned table
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
     // only mark valid if at least one non-zero engagement was recorded
     bool anyNonZero = false;
     for (uint8_t i = 0; i <= 100; i++)
@@ -48,6 +51,7 @@ void haldexLearnTask(void *arg)
     }
     haldexLearnTableValid = anyNonZero;
     haldexLearnStep = anyNonZero ? 101 : 102; // 101 = complete OK, 102 = complete but no data
+    xSemaphoreGive(stateMutex);
   }
 
   haldexLearnActive = false;
@@ -57,6 +61,20 @@ void haldexLearnTask(void *arg)
 
 void setupTasks()
 {
+  // Create the shared-state mutex BEFORE any task is spawned, so the CAN hot
+  // path (parseCAN_chs -> getLockData) never sees a null handle
+  stateMutex = xSemaphoreCreateMutex();
+  if (stateMutex == NULL)
+  {
+    // Without the lock every guarded write site would run unsynchronized -
+    // refuse to spawn any task rather than edit Haldex frames unsafely
+    DEBUG("FATAL: stateMutex creation failed - halting before task startup");
+    while (true)
+    {
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+  }
+
   // max task priority = 24
   xTaskCreate(showHaldexState, "showHaldexState", 5000, NULL, 1, &handle_showHaldexState);
   xTaskCreate(writeEEP, "writeEEP", 2000, NULL, 3, NULL);
