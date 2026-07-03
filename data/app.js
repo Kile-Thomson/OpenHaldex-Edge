@@ -262,9 +262,18 @@ async function initStoredSettings() {
 }
 
 // refresh ongoing data
+const POLL_TIMEOUT_MS = 2000; // bound a stalled poll so the in-flight guard can't wedge
+
 async function refreshStatus() {
+  // one poll at a time: on a busy ESP a slow response must not let the 500ms
+  // interval stack requests and flood the async web server once it recovers
+  if (refreshStatus._inFlight) return;
+  refreshStatus._inFlight = true;
+  const ctrl = new AbortController();
+  const pollTimeout = setTimeout(() => ctrl.abort(), POLL_TIMEOUT_MS);
   try {
-    const data = await fetchJson("/api/dashboard"); // send request for basic data
+    const data = await fetchJson("/api/dashboard", { signal: ctrl.signal }); // send request for basic data
+    if (!data) return; // fetch failed or timed out - skip this cycle
 
     // Live frame-rate monitor for LP wake threshold tuning
     if (data.lpChassisFrameCount !== undefined && data.lpHaldexFrameCount !== undefined) {
@@ -414,6 +423,9 @@ async function refreshStatus() {
     refreshTrace(data); // update the live trace
   } catch (error) {
     console.log("Status failed: " + error.message);
+  } finally {
+    clearTimeout(pollTimeout);
+    refreshStatus._inFlight = false;
   }
 }
 
@@ -654,7 +666,19 @@ function initNavigation() {
 // initialise dashboard:
 function initDashboard() {
   refreshStatus(); //
-  setInterval(refreshStatus, setIntervalDuration); // request for new data every xms
+  let pollTimer = setInterval(refreshStatus, setIntervalDuration); // request for new data every xms
+
+  // Stop polling while the page is hidden (phone locked or app backgrounded) so
+  // we don't keep waking the ESP's web server; resume with a fresh read on return.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    } else if (pollTimer === null) {
+      refreshStatus();
+      pollTimer = setInterval(refreshStatus, setIntervalDuration);
+    }
+  });
 }
 
 // initialise mode buttons
