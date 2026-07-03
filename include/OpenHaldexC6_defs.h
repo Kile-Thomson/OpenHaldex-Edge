@@ -38,6 +38,20 @@
 #include "InterruptButton.h" // for mode button (internal & external)
 
 // debug options
+// Release builds (-D OPENHALDEX_RELEASE, [env:esp32c6-release]) force every
+// debug flag OFF regardless of what the developer defaults below are set to.
+#ifdef OPENHALDEX_RELEASE
+#define enableDebug 0
+#define detailedDebug 0
+#define detailedDebugStack 0
+#define detailedDebugRuntimeStats 0
+#define detailedDebugCAN 0
+#define detailedDebugWiFi 0
+#define detailedDebugEEP 0
+#define detailedDebugIO 0
+#define detailedDebugArray 0
+#define debugCANSleep 0
+#else
 #define enableDebug 0               // set to 1 to enable debug messages over Serial; set to 0 to disable
 #define detailedDebug 0             // set to 1 to enable more detailed debug messages (only recommended when debugging specific issues, as it can be very verbose)
 #define detailedDebugStack 0        // set to 1 to print stack traces on errors (only useful if enableDebug is also 1)
@@ -48,6 +62,7 @@
 #define detailedDebugIO 0           // set to 1 to enable detailed IO debug messages (only recommended when debugging IO-related issues, as it can be very verbose)
 #define detailedDebugArray 0        // set to 1 to enable detailed debug messages for arrays (like throttle/speed/lock curves) - only recommended when debugging issues related to those, as it can be very verbose
 #define debugCANSleep 0             // set to 1 to skip the 5-min idle/60-s count and sleep after ~2 s with no clients
+#endif
 
 // refresh rates
 #define eepRefresh 2000           // EEPROM save in ms
