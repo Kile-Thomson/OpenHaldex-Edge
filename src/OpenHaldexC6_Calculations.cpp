@@ -262,6 +262,30 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert)
   return (invert ? 0xFE : 0x00); // if lock not enabled, return 0 (or inverted)
 }
 
+// Slew one step of the lock-target rate limiter. Rising transitions are capped
+// at engage_rate_per_sec %/s (0 = instantaneous, the historical behaviour);
+// falling transitions at release_rate_per_sec %/s.
+float lock_rate_limit_step(float current, float target, float engage_rate_per_sec, float release_rate_per_sec, float dt_s)
+{
+  if (target > current)
+  {
+    if (engage_rate_per_sec <= 0.0f)
+    {
+      return target; // instant lock-up
+    }
+    const float max_rise = engage_rate_per_sec * dt_s;
+    return (target < current + max_rise) ? target : current + max_rise;
+  }
+
+  if (target < current)
+  {
+    const float max_drop = release_rate_per_sec * dt_s;
+    return (target > current - max_drop) ? target : current - max_drop;
+  }
+
+  return target;
+}
+
 void startHaldexLearn()
 {
   // Guard + wipe + flag reset in one critical section, so the hot path can
@@ -287,11 +311,11 @@ void startHaldexLearn()
 
 void getLockData(twai_message_t &rx_message_chs)
 {
-  // Calculate raw lock target then (optionally) apply rate-limited release decay.
+  // Calculate raw lock target then (optionally) apply rate-limited slewing.
   // When lockReleaseEnabled is false, all transitions to new lock % are instantaneous.
-  // When enabled, rising transitions are always instantaneous; falling
-  // transitions are limited to `lockReleaseRatePerSec` %/s so the clutch
-  // releases gradually rather than snapping open.
+  // When enabled, falling transitions are limited to `lockReleaseRatePerSec` %/s
+  // so the clutch releases gradually rather than snapping open, and rising
+  // transitions to `lockEngageRatePerSec` %/s (0 = instantaneous, the default).
   static float smoothed_lock_target = 0.0f;
   static uint32_t last_lock_ms = 0;
 
@@ -313,17 +337,8 @@ void getLockData(twai_message_t &rx_message_chs)
     const float dt_s = (last_lock_ms == 0) ? 0.0f : (float)(now_ms - last_lock_ms) / 1000.0f;
     last_lock_ms = now_ms;
 
-    if (raw_target >= smoothed_lock_target)
-    {
-      smoothed_lock_target = raw_target; // rise: immediate
-    }
-    else
-    {
-      const float max_drop = lockReleaseRatePerSec * dt_s;
-      smoothed_lock_target = (raw_target > smoothed_lock_target - max_drop)
-                                 ? raw_target
-                                 : smoothed_lock_target - max_drop;
-    }
+    smoothed_lock_target = lock_rate_limit_step(smoothed_lock_target, raw_target,
+                                                lockEngageRatePerSec, lockReleaseRatePerSec, dt_s);
   }
   lock_target = smoothed_lock_target;
 

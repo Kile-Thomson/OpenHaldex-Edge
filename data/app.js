@@ -114,12 +114,24 @@ async function initStoredSettings() {
       if (lockRateVal) lockRateVal.textContent = data.lockReleaseRatePerSec;
     }
 
+    const lockEngageRange = document.getElementById("lockEngageRateRange");
+    const lockEngageVal   = document.getElementById("lockEngageRateValue");
+    if (lockEngageRange && data.lockEngageRatePerSec !== undefined) {
+      lockEngageRange.value = data.lockEngageRatePerSec;
+      if (lockEngageVal) lockEngageVal.textContent = data.lockEngageRatePerSec;
+    }
+
     const lockReleaseEnabledElem = document.getElementById("lockReleaseEnabled");
     if (lockReleaseEnabledElem) {
       lockReleaseEnabledElem.checked = data.lockReleaseEnabled !== undefined ? data.lockReleaseEnabled : true;
-      const container = document.getElementById("lockReleaseRateContainer");
-      if (container) container.style.opacity = lockReleaseEnabledElem.checked ? "" : "0.4";
-      if (lockRateRange) lockRateRange.disabled = !lockReleaseEnabledElem.checked;
+      const en = lockReleaseEnabledElem.checked;
+      const containers = ["lockReleaseRateContainer", "lockEngageRateContainer"];
+      containers.forEach((id) => {
+        const container = document.getElementById(id);
+        if (container) container.style.opacity = en ? "" : "0.4";
+      });
+      if (lockRateRange) lockRateRange.disabled = !en;
+      if (lockEngageRange) lockEngageRange.disabled = !en;
     }
 
     if (data.forceModesPriority !== undefined) {
@@ -551,12 +563,19 @@ function initNavigation() {
     });
   }
 
-  // Lock release rate slider (display update only — save handled in initSettings)
+  // Lock response rate sliders (display update only — save handled in initSettings)
   const lockRateRange = document.getElementById("lockReleaseRateRange");
   const lockRateVal   = document.getElementById("lockReleaseRateValue");
   if (lockRateRange) {
     lockRateRange.addEventListener("input", () => {
       if (lockRateVal) lockRateVal.textContent = lockRateRange.value;
+    });
+  }
+  const lockEngageRange = document.getElementById("lockEngageRateRange");
+  const lockEngageVal   = document.getElementById("lockEngageRateValue");
+  if (lockEngageRange) {
+    lockEngageRange.addEventListener("input", () => {
+      if (lockEngageVal) lockEngageVal.textContent = lockEngageRange.value;
     });
   }
 }
@@ -633,6 +652,7 @@ function initSettings() {
     { element: "disengageAboveSpeedRange", key: "disengageAboveSpeed", parse: parseInt },
     { element: "disableThrottleRange",     key: "disableThrottle",     parse: parseInt },
     { element: "lockReleaseRateRange",     key: "lockReleaseRatePerSec", parse: parseFloat },
+    { element: "lockEngageRateRange",      key: "lockEngageRatePerSec",  parse: parseFloat },
   ];
   rangeSliders.forEach(({ element, key, parse }) => {
     const elem = document.getElementById(element);
@@ -700,15 +720,19 @@ function initSettings() {
     }
   }
 
-  // Lock release: toggle slider enabled state and opacity when checkbox changes.
+  // Lock response: toggle slider enabled state and opacity when checkbox changes.
   const lockReleaseEnabledElem = document.getElementById("lockReleaseEnabled");
   const lockReleaseRateElem    = document.getElementById("lockReleaseRateRange");
   const lockReleaseContainer   = document.getElementById("lockReleaseRateContainer");
+  const lockEngageRateElem     = document.getElementById("lockEngageRateRange");
+  const lockEngageContainer    = document.getElementById("lockEngageRateContainer");
   if (lockReleaseEnabledElem) {
     lockReleaseEnabledElem.addEventListener("change", () => {
       const en = lockReleaseEnabledElem.checked;
       if (lockReleaseRateElem) lockReleaseRateElem.disabled = !en;
       if (lockReleaseContainer) lockReleaseContainer.style.opacity = en ? "" : "0.4";
+      if (lockEngageRateElem) lockEngageRateElem.disabled = !en;
+      if (lockEngageContainer) lockEngageContainer.style.opacity = en ? "" : "0.4";
     });
   }
 

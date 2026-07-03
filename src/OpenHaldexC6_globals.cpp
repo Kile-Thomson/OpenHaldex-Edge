@@ -200,6 +200,7 @@ openhaldex_state_t state;
 float lock_target = 0;
 
 float lockReleaseRatePerSec = 120.0f;
+float lockEngageRatePerSec = 0.0f; // max %/s the lock target may rise; 0 = instantaneous
 bool lockReleaseEnabled = true;  // when false, lock target changes are instantaneous
 uint8_t forceModesPriority = 0; // 0=Haz>TC>Ext, 1=TC>Haz>Ext, 2=Haz>Ext>TC, 3=TC>Ext>Haz, 4=Ext>TC>Haz, 5=Ext>Haz>TC
 

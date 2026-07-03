@@ -407,6 +407,7 @@ extern float lock_target;
 
 // Settings
 extern float lockReleaseRatePerSec;
+extern float lockEngageRatePerSec; // max %/s the lock target may rise; 0 = instantaneous
 extern bool lockReleaseEnabled;  // when false, lock target changes are instantaneous
 extern uint8_t forceModesPriority; // 0=Haz>TC>Ext, 1=TC>Haz>Ext, 2=Haz>Ext>TC, 3=TC>Ext>Haz, 4=Ext>TC>Haz, 5=Ext>Haz>TC
 extern uint32_t lastABSResponse;

@@ -285,9 +285,11 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["disableThrottle"] = disableThrottle;
     data["mode"] = lastMode;
     data["lockReleaseRatePerSec"] = lockReleaseRatePerSec;
+    data["lockEngageRatePerSec"] = lockEngageRatePerSec;
     data["FW_VERSION"] = FW_VERSION;
 
     // bools
+    data["lockReleaseEnabled"] = lockReleaseEnabled;
     data["disableController"] = disableController;
     data["isStandalone"] = isStandalone;
     data["useCANifAvailable"] = useCANifAvailable;
@@ -411,6 +413,30 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         disableThrottle = constrain(value, 0, 100);
         state.pedal_threshold = disableThrottle;
         xSemaphoreGive(stateMutex);
+    }
+
+    // Lock-response rates: the UI has always POSTed these on save, but nothing
+    // accepted them, so the sliders silently did nothing. Read on the hot path
+    // inside getLockData's critical section, so write under the same lock.
+    if (data["lockReleaseRatePerSec"].is<float>())
+    {
+        float value = data["lockReleaseRatePerSec"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        lockReleaseRatePerSec = constrain(value, 5.0f, 500.0f); // 0 would leave the lock unable to release
+        xSemaphoreGive(stateMutex);
+    }
+
+    if (data["lockEngageRatePerSec"].is<float>())
+    {
+        float value = data["lockEngageRatePerSec"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        lockEngageRatePerSec = constrain(value, 0.0f, 500.0f); // 0 = instant lock-up
+        xSemaphoreGive(stateMutex);
+    }
+
+    if (data["lockReleaseEnabled"].is<bool>())
+    {
+        lockReleaseEnabled = data["lockReleaseEnabled"];
     }
 
     if (data["disableController"].is<bool>())

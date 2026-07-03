@@ -56,6 +56,7 @@ static void loadSettingsFrom(Preferences &src)
   udsMQBEnabled = src.getBool("udsMQBEn", false);                   // load UDS MQB polling enable
   forceModesPriority = src.getUChar("forceModesPrio", 0);           // load force-modes priority (0=TC>Haz>Ext)
   lockReleaseRatePerSec = src.getFloat("lockReleaseRate", 120.0f);  // load lock release rate (%/s)
+  lockEngageRatePerSec = src.getFloat("lockEngageRate", 0.0f);      // load lock engage rate (%/s, 0 = instant)
   lockReleaseEnabled = src.getBool("lockReleaseEn", true);          // load lock release enable
 }
 
@@ -107,6 +108,7 @@ static void persistSettingsToPref()
   pref.putBool("udsMQBEn", udsMQBEnabled);                 // save UDS MQB polling enable
   pref.putUChar("forceModesPrio", forceModesPriority);     // save force-modes priority order
   pref.putFloat("lockReleaseRate", lockReleaseRatePerSec); // save lock release rate (%/s)
+  pref.putFloat("lockEngageRate", lockEngageRatePerSec);   // save lock engage rate (%/s)
   pref.putBool("lockReleaseEn", lockReleaseEnabled);       // save lock release enable
 }
 
@@ -298,6 +300,7 @@ void writeEEP(void *arg) // task function to periodically write preferences
     pref.putBool("udsMQBEn", udsMQBEnabled); // write UDS MQB polling enable
     pref.putUChar("forceModesPrio", forceModesPriority);      // write force-modes priority order
     pref.putFloat("lockReleaseRate", lockReleaseRatePerSec);  // write lock release rate (%/s)
+    pref.putFloat("lockEngageRate", lockEngageRatePerSec);    // write lock engage rate (%/s)
     pref.putBool("lockReleaseEn", lockReleaseEnabled);        // write lock release enable
 
 #if detailedDebugEEP
