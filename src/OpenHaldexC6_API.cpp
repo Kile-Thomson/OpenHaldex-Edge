@@ -2,6 +2,7 @@
 #include <OpenHaldexC6_UDS.h>
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_WiFi.h>
+#include <OpenHaldexC6_OTA.h> // requireOtaAuth
 
 #include <cstring>
 
@@ -80,19 +81,44 @@ static void parseJSON(AsyncWebServerRequest *request, uint8_t *data, size_t len,
 {
     if (index == 0)
     {
-        request->_tempObject = new String();              // create a new String to hold the incoming data, stored in the request's temp object pointer
-        ((String *)request->_tempObject)->reserve(total); // reserve space for the incoming data to optimize memory usage and prevent fragmentation
+        if (total == 0) // empty body: nothing to buffer, let the handler send its 400
+        {
+            done(request, String());
+            return;
+        }
+        // malloc'd (not new'd) because the request destructor releases _tempObject
+        // with plain free() if the client aborts the POST mid-body
+        request->_tempObject = malloc(total + 1);
+        if (request->_tempObject == nullptr)
+        {
+            JsonDocument err;
+            err["error"] = "Body buffer allocation failed";
+            sendJSON(request, 500, err);
+            return;
+        }
+        memset(request->_tempObject, 0, total + 1); // zero-fill so the terminator is always in place
+    }
+    else if (request->_tempObject == nullptr)
+    {
+        return; // allocation failed on chunk 0 (500 already sent) - skip the rest
     }
 
-    String *body = (String *)request->_tempObject; // get the pointer to the String object from the request's temp object pointer
-    body->concat((const char *)data, len);         // append the incoming data chunk to the String object
+    if (index >= total) // never write past the buffer
+    {
+        return;
+    }
+    if (len > total - index)
+    {
+        len = total - index;
+    }
+    memcpy((char *)request->_tempObject + index, data, len); // append the incoming chunk
 
     if (index + len == total)
     {
-        String bodyString = *body;      // create a copy of the body string to pass to the done callback, since we'll be deleting the original String object to free memory
-        delete body;                    // delete the original String object to free memory, since we have a copy of the data in bodyString for the callback
-        request->_tempObject = nullptr; // clear the temp object pointer to avoid dangling pointer issues
-        done(request, bodyString);      // call the done callback with the request and the complete body string
+        String bodyString((const char *)request->_tempObject); // copy out before freeing
+        free(request->_tempObject);                            // plain free() matches the malloc above
+        request->_tempObject = nullptr;                        // restore the sentinel for the body-lambda guards
+        done(request, bodyString);                             // hand the complete body to the done callback
     }
 }
 
@@ -617,11 +643,26 @@ void setupWebServer()
     }
     DEBUG("LittleFS mounted successfully");
 
-    // when "/" is requested, send index.html page
-    webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-                 { request->send(LittleFS, "/index.html", "text/html"); });
+    // When "/" or "/index.html" is requested and no credential is provisioned yet,
+    // redirect to the first-run setup page. Both routes need the same guard because
+    // serveStatic("/", ...) serves /index.html directly, bypassing the "/" handler.
+    auto rootHandler = [](AsyncWebServerRequest *request) {
+        if (!isOtaCredentialProvisioned()) {
+            request->redirect("/setup");
+            return;
+        }
+        request->send(LittleFS, "/index.html", "text/html");
+    };
+    webServer.on("/", HTTP_GET, rootHandler);
+    webServer.on("/index.html", HTTP_GET, rootHandler);
 
-    webServer.serveStatic("/", LittleFS, "/").setDefaultFile("index.html"); // dunno - same as above?
+    // Static assets only once provisioned; otherwise the filter drops the request
+    // through to onNotFound (end of setupAPI), which redirects to /setup
+    webServer.serveStatic("/", LittleFS, "/")
+        .setDefaultFile("index.html")
+        .setFilter([](AsyncWebServerRequest *request) -> bool {
+            return isOtaCredentialProvisioned();
+        });
 
     webServer.begin(); // begin the webServer
     DEBUG("Web server started");
@@ -649,6 +690,8 @@ void setupAPI()
     // GET /api/uds/read - UDS read-by-identifier helper
     webServer.on("/api/uds/read", HTTP_GET, [](AsyncWebServerRequest *request)
                  {
+                     if (!requireOtaAuth(request)) return; // injects a UDS request frame onto CAN
+
                      auto reqP = request->getParam("req", false);
                      auto resP = request->getParam("res", false);
                      auto didP = request->getParam("did", false);
@@ -712,6 +755,18 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
+            // The auth gate must live HERE in the body handler, not in onRequest:
+            // ESPAsyncWebServer delivers the body first, so gating onRequest is too
+            // late to stop the mutation. On refusal _tempObject stays null and the
+            // trailing chunks of the rejected body no-op. Same pattern below.
+            if (index == 0)
+            {
+                if (!requireOtaAuth(request)) return;
+            }
+            else if (request->_tempObject == nullptr)
+            {
+                return;
+            }
             parseJSON(request, data, len, index, total, settingsIncoming);
         });
 
@@ -721,6 +776,14 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
+            if (index == 0) // auth in the body handler - see /api/settings above
+            {
+                if (!requireOtaAuth(request)) return;
+            }
+            else if (request->_tempObject == nullptr)
+            {
+                return;
+            }
             parseJSON(request, data, len, index, total, modeIncoming);
         });
 
@@ -730,12 +793,22 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
+            if (index == 0) // auth in the body handler - see /api/settings above
+            {
+                if (!requireOtaAuth(request)) return;
+            }
+            else if (request->_tempObject == nullptr)
+            {
+                return;
+            }
             parseJSON(request, data, len, index, total, tuneIncoming);
         });
 
     // POST /api/learn/start - begin the learn sweep
     webServer.on("/api/learn/start", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
+                     if (!requireOtaAuth(request)) return; // the sweep drives live lock on the car
+
                      if (!hasCANHaldex)
                      {
                          JsonDocument resp;
@@ -752,6 +825,7 @@ void setupAPI()
     // POST /api/learn/cancel - abort an in-progress learn sweep
     webServer.on("/api/learn/cancel", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
+                     if (!requireOtaAuth(request)) return;
                      haldexLearnCancel = true;
                      JsonDocument resp;
                      resp["ok"] = true;
@@ -760,6 +834,7 @@ void setupAPI()
     // POST /api/learn/clear - discard the stored learn table and revert to formula
     webServer.on("/api/learn/clear", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
+                     if (!requireOtaAuth(request)) return;
                      haldexLearnTableValid = false;
                      memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
                      JsonDocument resp;
@@ -775,6 +850,7 @@ void setupAPI()
     // POST /api/wifi/ssid/reset - restore factory SSID and restart AP
     webServer.on("/api/wifi/ssid/reset", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
+                     if (!requireOtaAuth(request)) return;
                      resetWifiSsid();
                      JsonDocument resp;
                      resp["ok"] = true;
@@ -795,6 +871,14 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
+            if (index == 0) // auth in the body handler - see /api/settings above
+            {
+                if (!requireOtaAuth(request)) return;
+            }
+            else if (request->_tempObject == nullptr)
+            {
+                return;
+            }
             parseJSON(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
                       {
                 JsonDocument d;
@@ -842,6 +926,7 @@ void setupAPI()
     // POST /api/wifi/reset - clear password and restart AP as open network
     webServer.on("/api/wifi/reset", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
+                     if (!requireOtaAuth(request)) return; // clears the AP password, reopens the network
                      resetWifiPassword();
                      JsonDocument resp;
                      resp["ok"] = true;
@@ -860,6 +945,14 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
+            if (index == 0) // auth in the body handler - see /api/settings above
+            {
+                if (!requireOtaAuth(request)) return;
+            }
+            else if (request->_tempObject == nullptr)
+            {
+                return;
+            }
             parseJSON(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
                       {
                 JsonDocument d;
@@ -893,4 +986,14 @@ void setupAPI()
                 resp["passwordSet"] = (pwdLen >= 8);
                 sendJSON(req, 200, resp); });
         });
+
+    // While unprovisioned, every unmatched URL (including static assets blocked by
+    // the serveStatic filter) redirects to the first-run setup page.
+    webServer.onNotFound([](AsyncWebServerRequest *request) {
+        if (!isOtaCredentialProvisioned()) {
+            request->redirect("/setup");
+            return;
+        }
+        request->send(404, "text/plain", "Not found");
+    });
 }
