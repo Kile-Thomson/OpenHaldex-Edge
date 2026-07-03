@@ -4,26 +4,38 @@
     box-sizing: border-box;
 }
 
+/* Ecotune dark theme tokens. Variable names are load-bearing: app.js sets
+   inline colors via var(--success/--danger/--warning/--text-dim). */
 :root {
-    --primary: #00D9FF;
-    --secondary: #FF6B35;
-    --background: #0F1419;
-    --surface: #1A1F26;
-    --surface-light: #252B34;
-    --text: #FFFFFF;
-    --text-dim: #8B949E;
-    --success: #2EA043;
-    --warning: #FFA657;
-    --danger: #F85149;
-    --border: #30363D;
+    --primary: #dc2626;
+    --primary-light: #ef4444;
+    --primary-dark: #b91c1c;
+    --secondary: #ef4444;
+    --background: #1a1a1a;
+    --surface: #2a2a2a;
+    --surface-light: #3a3a3a;
+    --text: #ffffff;
+    --text-dim: #9ca3af;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --border: #404040;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --focus-ring: 0 0 0 3px rgba(220, 38, 38, 0.2);
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
     background: var(--background);
     color: var(--text);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
+    -webkit-text-size-adjust: 100%;
+    /* clear the fixed bottom tab bar (mobile); removed on wide screens below */
+    padding-bottom: calc(3.9rem + env(safe-area-inset-bottom, 0px));
 }
 
 .container {
@@ -33,7 +45,7 @@ body {
 }
 
 header {
-    background: var(--surface);
+    background: linear-gradient(180deg, #242424, var(--background));
     padding: 1rem;
     border-bottom: 2px solid var(--primary);
     position: sticky;
@@ -43,7 +55,13 @@ header {
 
 header h1 {
     font-size: 1.5rem;
-    margin-bottom: 0.25rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    margin-bottom: 0.5rem;
+}
+
+header h1 .accent {
+    color: var(--primary-light);
 }
 
 .status-bar {
@@ -55,50 +73,131 @@ header h1 {
 .status-badge {
     display: inline-block;
     padding: 0.25rem 0.75rem;
-    background: var(--surface-light);
-    border-radius: 12px;
-    font-size: 0.85rem;
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
     border: 1px solid var(--border);
+    color: var(--text-dim);
 }
 
 .status-badge.connected {
-    background: var(--success);
+    background: rgba(16, 185, 129, 0.15);
     border-color: var(--success);
+    color: var(--success);
 }
 
 .status-badge.error {
-    background: var(--danger);
+    background: rgba(239, 68, 68, 0.15);
     border-color: var(--danger);
+    color: var(--danger);
 }
 
+/* Navigation. Mobile-first: a fixed bottom tab bar (thumb reach, native-app
+   feel), switching to a conventional top tab row on wide screens. */
 .nav-tabs {
-    display: flex;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 200;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    background: rgba(20, 20, 20, 0.92);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .nav-tab {
-    flex: 1;
-    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 0.5rem 0.15rem 0.55rem;
     background: none;
     border: none;
     color: var(--text-dim);
-    font-size: 0.9rem;
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     cursor: pointer;
-    border-bottom: 3px solid transparent;
-    transition: all 0.2s;
+    min-height: 52px;
     white-space: nowrap;
+    transition: color 0.2s, transform 0.1s;
+}
+
+.nav-icon {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
 }
 
 .nav-tab.active {
-    color: var(--primary);
-    border-bottom-color: var(--primary);
+    color: var(--primary-light);
 }
 
-.nav-tab:hover {
-    background: var(--surface-light);
+.nav-tab.active .nav-icon {
+    filter: drop-shadow(0 0 6px rgba(220, 38, 38, 0.55));
+}
+
+.nav-tab:active {
+    transform: scale(0.94);
+}
+
+@media (min-width: 700px) {
+    body {
+        padding-bottom: 0;
+    }
+
+    .nav-tabs {
+        position: static;
+        border-top: none;
+        border-bottom: 1px solid var(--border);
+        background: var(--background);
+        padding-bottom: 0;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+
+    .nav-tab {
+        flex-direction: row;
+        gap: 0.5rem;
+        font-size: 0.8rem;
+        letter-spacing: 0.06em;
+        padding: 0.9rem 1rem;
+        border-bottom: 3px solid transparent;
+        min-height: 48px;
+        transition: color 0.2s, border-color 0.2s, background 0.2s;
+    }
+
+    .nav-icon {
+        width: 17px;
+        height: 17px;
+    }
+
+    .nav-tab.active {
+        color: var(--text);
+        border-bottom-color: var(--primary);
+    }
+
+    .nav-tab.active .nav-icon {
+        filter: none;
+        color: var(--primary-light);
+    }
+
+    .nav-tab:hover {
+        background: var(--surface);
+        color: var(--text);
+    }
+
+    .nav-tab:active {
+        transform: none;
+    }
 }
 
 .page {
@@ -113,48 +212,39 @@ header h1 {
 .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1.5rem;
-    margin-bottom: 1rem;
+    border-radius: var(--radius-lg);
+    padding: 1rem 1.25rem 1.1rem;
+    margin-bottom: 0.75rem;
+    position: relative;
+    overflow: hidden;
+}
+
+/* Brand accent bar across the top of every card */
+.card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--primary-dark), var(--primary), transparent 70%);
 }
 
 .card h2 {
-    font-size: 1.25rem;
-    margin-bottom: 1rem;
-    color: var(--primary);
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 0.6rem;
+    color: var(--text);
+}
+
+.card h2:not(:first-child) {
+    margin-top: 1rem;
 }
 
 .hint {
     color: var(--text-dim);
-    font-size: 0.9rem;
-    margin-bottom: 1rem;
-}
-
-.state-legend {
-    margin-top: 0.75rem;
-    font-size: 0.78rem;
-    color: var(--text-dim);
-    line-height: 1.6;
-}
-.state-legend table {
-    border-collapse: collapse;
-    width: 100%;
-}
-.state-legend th, .state-legend td {
-    padding: 2px 6px;
-    text-align: left;
-    border-bottom: 1px solid var(--border);
-}
-.state-legend th {
-    color: var(--text);
-    font-weight: 600;
-}
-.state-legend .bit-active {
-    color: var(--danger);
-    font-weight: 700;
-}
-.state-legend .bit-inactive {
-    color: var(--text-dim);
+    font-size: 0.875rem;
+    margin-bottom: 0.6rem;
 }
 
 .mode-grid {
@@ -168,72 +258,206 @@ header h1 {
     padding: 1rem;
     background: var(--surface-light);
     border: 2px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     color: var(--text);
     font-size: 1rem;
-    font-weight: 600;
+    font-weight: 700;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: border-color 0.2s, background 0.2s, box-shadow 0.2s, transform 0.15s;
+    min-height: 48px;
 }
 
 .mode-btn:hover {
-    background: var(--surface);
     border-color: var(--primary);
 }
 
 .mode-btn.active {
-    background: var(--primary);
+    background: linear-gradient(135deg, var(--primary), var(--primary-dark));
     border-color: var(--primary);
-    color: var(--background);
+    color: #fff;
+    box-shadow: 0 4px 16px rgba(220, 38, 38, 0.4);
 }
 
-.current-mode {
+/* Engagement hero gauge: semi-circular arc, actual engagement sweeps the fill,
+   the white tick marks the target so response lag reads at a glance. */
+.gauge-hero {
+    position: relative;
+    max-width: 340px;
+    margin: 0.25rem auto 0;
+}
+
+.gauge-arc {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.gauge-arc-track {
+    fill: none;
+    stroke: #333333;
+    stroke-width: 14;
+    stroke-linecap: round;
+}
+
+.gauge-arc-fill {
+    fill: none;
+    stroke: url(#gaugeGrad);
+    stroke-width: 14;
+    stroke-linecap: round;
+    /* semicircle of radius 80: length = pi * 80 */
+    stroke-dasharray: 251.33;
+    stroke-dashoffset: 251.33;
+    transition: stroke-dashoffset 0.3s ease;
+    filter: drop-shadow(0 0 6px rgba(220, 38, 38, 0.45));
+}
+
+.gauge-target-tick {
+    stroke: #ffffff;
+    stroke-width: 3;
+    stroke-linecap: round;
+    opacity: 0.85;
+}
+
+.gauge-hero-center {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 4%;
     text-align: center;
-    font-size: 1.1rem;
-    padding: 0.75rem;
-    background: var(--surface-light);
-    border-radius: 8px;
+    pointer-events: none;
 }
 
-.current-mode span {
-    color: var(--primary);
+.gauge-hero-value {
+    font-size: 3rem;
+    font-weight: 800;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+}
+
+.gauge-hero-unit {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    margin-left: 0.15rem;
+}
+
+.gauge-hero-sub {
+    margin-top: 0.35rem;
+    color: var(--text-dim);
+    font-size: 0.85rem;
     font-weight: 600;
 }
 
-.gauge-grid {
+.gauge-hero-sub span {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Stat tiles (Live Data / Haldex Status) */
+.stat-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 1rem;
+    gap: 0.75rem;
 }
 
-.gauge {
-    text-align: center;
-    padding: 1rem;
+.stat-tile {
+    padding: 0.9rem 1rem;
     background: var(--surface-light);
-    border-radius: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
 }
 
-.gauge-label {
+.stat-label {
     color: var(--text-dim);
-    font-size: 0.9rem;
-    margin-bottom: 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.35rem;
 }
 
-.gauge-value {
-    font-size: 2rem;
+.stat-value {
+    font-size: 1.7rem;
     font-weight: 700;
-    color: var(--primary);
-    line-height: 1;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    align-items: baseline;
+    gap: 0.3rem;
 }
 
-.gauge-unit {
+.stat-unit {
+    font-size: 0.8rem;
+    font-weight: 600;
     color: var(--text-dim);
-    font-size: 0.85rem;
-    margin-top: 0.25rem;
 }
 
-.engagement-display {
-    padding: 1rem;
+.stat-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1.15rem;
+    letter-spacing: 0.08em;
+    padding-top: 0.3rem;
+}
+
+.stat-bar {
+    margin-top: 0.6rem;
+    height: 6px;
+    background: #333333;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.stat-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--primary-dark), var(--primary-light));
+    border-radius: 999px;
+    transition: width 0.3s ease;
+}
+
+/* Status chips (Haldex report flags) */
+.chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.8rem;
+    background: var(--surface-light);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+.status-chip .chip-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4a4a4a;
+    flex-shrink: 0;
+    transition: background 0.2s, box-shadow 0.2s;
+}
+
+.status-chip.on {
+    color: var(--text);
+    border-color: rgba(245, 158, 11, 0.5);
+}
+
+.status-chip.on .chip-dot {
+    background: var(--warning);
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.7);
+}
+
+.status-chip.unknown {
+    opacity: 0.55;
 }
 
 .engagement-label {
@@ -241,45 +465,60 @@ header h1 {
     justify-content: space-between;
     margin-bottom: 0.75rem;
     font-size: 0.95rem;
+    color: var(--text-dim);
 }
 
 .engagement-label span span {
-    color: var(--primary);
-    font-weight: 600;
+    color: var(--text);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
 }
 
 .engagement-bar {
     width: 100%;
     height: 2rem;
-    background: var(--surface-light);
-    border-radius: 4px;
+    background: #333333;
+    border-radius: 999px;
     overflow: hidden;
     position: relative;
+    border: 1px solid var(--border);
 }
 
 .engagement-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--primary), var(--secondary));
+    background: linear-gradient(90deg, var(--primary-dark), var(--primary), var(--primary-light));
+    box-shadow: 0 0 12px rgba(220, 38, 38, 0.5);
     transition: width 0.3s ease;
     width: 0%;
+    border-radius: 999px;
 }
 
 .input-select {
     width: 100%;
     padding: 0.75rem;
     background: var(--surface-light);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
     color: var(--text);
     font-size: 1rem;
     cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    min-height: 44px;
+}
+
+.input-select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
 }
 
 .slider-container {
-    padding: 0.5rem 0;
+    padding: 0.25rem 0 0;
 }
 
 .slider {
+    -webkit-appearance: none;
+    appearance: none;
     width: 100%;
     height: 8px;
     background: var(--surface-light);
@@ -292,76 +531,99 @@ header h1 {
     -webkit-appearance: none;
     width: 24px;
     height: 24px;
-    background: var(--primary);
+    background: linear-gradient(135deg, var(--primary-light), var(--primary-dark));
     border-radius: 50%;
     cursor: pointer;
+    box-shadow: 0 2px 8px rgba(220, 38, 38, 0.5);
+    transition: box-shadow 0.2s;
+}
+
+.slider::-webkit-slider-thumb:hover {
+    box-shadow: 0 2px 12px rgba(220, 38, 38, 0.8);
 }
 
 .slider::-moz-range-thumb {
     width: 24px;
     height: 24px;
-    background: var(--primary);
+    background: linear-gradient(135deg, var(--primary-light), var(--primary-dark));
     border-radius: 50%;
     cursor: pointer;
     border: none;
+    box-shadow: 0 2px 8px rgba(220, 38, 38, 0.5);
+}
+
+.slider:focus-visible {
+    box-shadow: var(--focus-ring);
 }
 
 .slider-value {
     text-align: center;
     font-size: 1.1rem;
-    color: var(--primary);
+    color: var(--primary-light);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Compact slider rows: label and live value on one line above the track,
+   no per-slider heading or hint paragraph. */
+.setting-compact {
+    margin-top: 0.85rem;
+}
+
+.setting-compact .slider {
+    margin-bottom: 0;
+}
+
+.setting-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.4rem;
+}
+
+.setting-label {
+    color: var(--text-dim);
+    font-size: 0.85rem;
     font-weight: 600;
 }
 
-/* Compact inline brightness row inside toggle-group */
-.brightness-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
+.setting-value {
+    color: var(--primary-light);
+    font-size: 1rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
 }
 
-.brightness-controls {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex: 1;
-    color: var(--primary);
+/* Collapsed long-form explanation so cards stay short by default */
+.more-info {
+    margin-top: 0.85rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.6rem;
+}
+
+.more-info summary {
+    color: var(--text-dim);
+    font-size: 0.85rem;
     font-weight: 600;
-    font-size: 0.9rem;
-}
-
-.slider-inline {
-    flex: 1;
-    height: 6px;
-    background: var(--surface-light);
-    border-radius: 3px;
-    outline: none;
-    -webkit-appearance: none;
-    appearance: none;
-}
-
-.slider-inline::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 18px;
-    height: 18px;
-    background: var(--primary);
-    border-radius: 50%;
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
 }
 
-.slider-inline::-moz-range-thumb {
-    width: 18px;
-    height: 18px;
-    background: var(--primary);
-    border-radius: 50%;
-    cursor: pointer;
-    border: none;
+.more-info summary:hover {
+    color: var(--text);
+}
+
+.more-info p {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    margin-top: 0.5rem;
+    line-height: 1.5;
 }
 
 .toggle-group {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.7rem;
 }
 
 .toggle {
@@ -369,6 +631,7 @@ header h1 {
     align-items: center;
     cursor: pointer;
     user-select: none;
+    min-height: 28px;
 }
 
 .toggle input {
@@ -380,8 +643,9 @@ header h1 {
     width: 48px;
     height: 28px;
     background: var(--surface-light);
+    border: 1px solid var(--border);
     border-radius: 14px;
-    transition: background 0.3s;
+    transition: background 0.3s, border-color 0.3s;
     margin-right: 0.75rem;
     flex-shrink: 0;
 }
@@ -390,20 +654,22 @@ header h1 {
     content: '';
     position: absolute;
     left: 3px;
-    top: 3px;
+    top: 2px;
     width: 22px;
     height: 22px;
-    background: white;
+    background: #fff;
     border-radius: 50%;
     transition: transform 0.3s;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
 .toggle input:checked+.toggle-slider {
     background: var(--primary);
+    border-color: var(--primary);
 }
 
 .toggle input:checked+.toggle-slider::after {
-    transform: translateX(20px);
+    transform: translateX(19px);
 }
 
 .toggle-label {
@@ -415,37 +681,60 @@ header h1 {
     width: 100%;
     padding: 1rem;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     font-size: 1rem;
-    font-weight: 600;
+    font-weight: 700;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: transform 0.15s, box-shadow 0.2s, border-color 0.2s, background 0.2s;
+    min-height: 48px;
 }
 
 .btn-primary {
-    background: var(--primary);
-    color: var(--background);
+    background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+    color: #fff;
+    box-shadow: 0 4px 16px rgba(220, 38, 38, 0.4);
 }
 
 .btn-primary:hover {
-    background: #00C0E6;
-    transform: translateY(-1px);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(220, 38, 38, 0.55);
+}
+
+.btn-primary:active {
+    transform: translateY(0);
 }
 
 .btn-secondary {
     background: var(--surface-light);
     color: var(--text);
-    border: 1px solid var(--border);
+    border: 2px solid var(--border);
 }
 
 .btn-secondary:hover {
-    background: var(--surface);
     border-color: var(--primary);
+    transform: translateY(-2px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6), 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.btn-secondary:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible,
+.mode-btn:focus-visible,
+.nav-tab:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
 }
 
 .map-container {
     display: grid;
-    grid-template-columns: auto 1fr;
+    /* Symmetric gutters: the throttle legend occupies the left 1.25rem column
+       and an equal empty column is reserved on the right, so the map grid sits
+       centred in the card instead of being pushed right by the legend. */
+    grid-template-columns: 1.25rem 1fr 1.25rem;
     grid-template-rows: 1fr auto;
     gap: 0.5rem;
     margin: 1rem 0;
@@ -456,7 +745,10 @@ header h1 {
     transform: rotate(180deg);
     text-align: center;
     color: var(--text-dim);
-    font-size: 0.85rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -466,7 +758,10 @@ header h1 {
     grid-column: 2;
     text-align: center;
     color: var(--text-dim);
-    font-size: 0.85rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 .map-grid {
@@ -485,48 +780,142 @@ header h1 {
     justify-content: center;
     font-size: 0.6rem;
     font-weight: 600;
+    font-variant-numeric: tabular-nums;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 
 .map-cellHeader {
     aspect-ratio: 1;
-    background: var(--surface-light);
+    background: var(--background);
     border: 1px solid var(--border);
     border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 0.6rem;
-    font-weight: 600;
+    font-weight: 700;
+    color: var(--text-dim);
     cursor: pointer;
-    transition: all 0.2s;
+    transition: border-color 0.15s;
+}
+
+.map-cellHeader:hover {
+    border-color: var(--primary);
 }
 
 .map-cell:hover {
-    background: var(--surface);
     border-color: var(--primary);
-    transform: scale(1.05);
+    transform: scale(1.08);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    z-index: 1;
 }
 
+/* Heat scale: green (low lock) -> amber -> red (high lock) */
 .map-cell.low {
-    background: #1a3a3a;
+    background: rgba(16, 185, 129, 0.12);
     color: var(--success);
 }
 
 .map-cell.medium {
-    background: #3a3a1a;
+    background: rgba(245, 158, 11, 0.14);
     color: var(--warning);
 }
 
 .map-cell.high {
-    background: #3a1a1a;
-    color: var(--secondary);
+    background: rgba(220, 38, 38, 0.2);
+    color: var(--primary-light);
 }
 
 .map-cell.activeTrace {
-    background: #09d135;
-    color: var(--warning);
+    background: var(--primary);
+    border-color: var(--primary-light);
+    color: #fff;
+    box-shadow: 0 0 10px rgba(220, 38, 38, 0.8);
+}
+
+/* Tune map curve chart */
+.chart-toggle {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.chart-toggle-btn {
+    padding: 0.5rem 0.75rem;
+    background: var(--surface-light);
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s, background 0.2s;
+    min-height: 40px;
+}
+
+.chart-toggle-btn:hover {
+    border-color: var(--primary);
+    color: var(--text);
+}
+
+.chart-toggle-btn.active {
+    background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+    border-color: var(--primary);
+    color: #fff;
+}
+
+.chart-toggle-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.tune-chart {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.5rem;
+}
+
+.tune-chart svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+/* Chart legend: the line colours form one continuous ramp, so a single
+   gradient strip with the series values spaced beneath it replaces the old
+   wrapped list of per-line swatches. */
+.chart-legend {
+    margin-top: 0.75rem;
+}
+
+.chart-legend-caption {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    text-align: center;
+    margin-bottom: 0.35rem;
+}
+
+.chart-legend-bar {
+    height: 5px;
+    border-radius: 3px;
+}
+
+.chart-legend-scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 0.3rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
 }
 
 .map-controls {
@@ -543,7 +932,9 @@ header h1 {
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(0, 0, 0, 0.8);
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
     z-index: 1000;
     align-items: center;
     justify-content: center;
@@ -556,27 +947,49 @@ header h1 {
 .modal-content {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--radius-xl);
     padding: 2rem;
     max-width: 320px;
     width: 90%;
+    animation: slide-up 0.3s ease-out;
+}
+
+@keyframes slide-up {
+    from {
+        opacity: 0;
+        transform: translateY(16px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .modal-content h3 {
     margin-bottom: 1rem;
-    color: var(--primary);
+    color: var(--text);
+    font-weight: 700;
 }
 
 .input-number {
     width: 100%;
     padding: 0.75rem;
     background: var(--surface-light);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
     color: var(--text);
     font-size: 1.5rem;
+    font-variant-numeric: tabular-nums;
     text-align: center;
     margin-bottom: 1rem;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.input-number:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
 }
 
 .modal-buttons {
@@ -591,30 +1004,25 @@ header h1 {
     gap: 0.75rem;
 }
 
-.subsection-title {
-    font-size: 0.95rem;
-    font-weight: 600;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin: 1rem 0 0.5rem;
-}
-
 .diag-item {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     padding: 0.75rem;
     background: var(--surface-light);
-    border-radius: 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
 }
 
 .diag-label {
     color: var(--text-dim);
+    font-size: 0.9rem;
 }
 
 .diag-value {
-    color: var(--primary);
-    font-weight: 600;
+    color: var(--text);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
 }
 
 /* Learn Haldex progress bar */
@@ -628,23 +1036,27 @@ header h1 {
 .learn-progress-bar {
     flex: 1;
     height: 1.25rem;
-    background: var(--surface-light);
-    border-radius: 4px;
+    background: #333333;
+    border: 1px solid var(--border);
+    border-radius: 999px;
     overflow: hidden;
 }
 
 .learn-progress-fill {
     height: 100%;
     width: 0%;
-    background: linear-gradient(90deg, var(--primary), var(--secondary));
+    background: linear-gradient(90deg, var(--primary-dark), var(--primary-light));
+    box-shadow: 0 0 8px rgba(220, 38, 38, 0.5);
     transition: width 0.4s ease;
+    border-radius: 999px;
 }
 
 .learn-progress-label {
     min-width: 3rem;
     text-align: right;
-    font-weight: 600;
-    color: var(--primary);
+    font-weight: 700;
+    color: var(--primary-light);
+    font-variant-numeric: tabular-nums;
     font-size: 0.9rem;
 }
 
@@ -683,22 +1095,211 @@ header h1 {
 .learn-bar-fill-cf {
     height: 100%;
     width: 0%;
-    background: linear-gradient(90deg, var(--secondary), var(--warning));
+    background: linear-gradient(90deg, var(--warning), var(--primary-light));
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
     transition: width 0.4s ease;
+    border-radius: 999px;
 }
 
-/*
-@media (max-width: 600px) {
-    .gauge-grid {
-        grid-template-columns: 1fr;
-    }
+.learn-chart-wrap {
+    margin: 0.75rem 0;
+}
 
+.learn-chart-wrap .hint {
+    margin: 0.5rem 0 0;
+    font-size: 0.8rem;
+}
+
+@media (max-width: 480px) {
     .mode-grid {
         grid-template-columns: repeat(2, 1fr);
     }
-}*/
 
-/* WiFi password card */
+    .card {
+        padding: 0.9rem 1rem 1rem;
+    }
+}
+
+/* Touch-first interaction: kill the grey tap flash, give buttons a physical
+   press, and drop hover-only lift effects on devices that cannot hover. */
+button,
+.toggle,
+.map-cell,
+.map-cellHeader,
+.status-chip {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+.btn-primary:active,
+.btn-secondary:active,
+.mode-btn:active,
+.chart-toggle-btn:active {
+    transform: scale(0.98);
+}
+
+@media (hover: none) {
+
+    .btn-primary:hover,
+    .btn-secondary:hover {
+        transform: none;
+    }
+
+    .map-cell:hover {
+        transform: none;
+        box-shadow: none;
+        z-index: auto;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Private-firmware components not present in the Edge dashboard shell. These
+   drive cards the Edge UI never had (Gen 4.1 data, richer UDS grid, CAN-sleep
+   controls, WiFi SSID/password, state-bit legend). They reference the shared
+   red theme tokens above, so they inherit the Edge look automatically.
+   --------------------------------------------------------------------------- */
+
+/* Legacy gauge grid: Live Data / Haldex Data / Gen4.1 / UDS tiles */
+.gauge-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+}
+
+.gauge {
+    text-align: center;
+    padding: 0.9rem 1rem;
+    background: var(--surface-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+
+.gauge-label {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.4rem;
+}
+
+.gauge-value {
+    font-size: 1.9rem;
+    font-weight: 700;
+    color: var(--primary-light);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+}
+
+.gauge-unit {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    margin-top: 0.25rem;
+}
+
+/* State-bit legend table under the Haldex state readout */
+.state-legend {
+    margin-top: 0.75rem;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    line-height: 1.6;
+}
+
+.state-legend table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+.state-legend th,
+.state-legend td {
+    padding: 2px 6px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+.state-legend th {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.state-legend .bit-active {
+    color: var(--danger);
+    font-weight: 700;
+}
+
+.state-legend .bit-inactive {
+    color: var(--text-dim);
+}
+
+/* Sub-heading inside a card (e.g. Gen 4.1 axle sections) */
+.subsection-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 1rem 0 0.5rem;
+}
+
+/* Inline slider row (LED brightness, LP wake threshold) inside a toggle-group */
+.brightness-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.25rem;
+}
+
+.brightness-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    color: var(--primary-light);
+    font-weight: 700;
+    font-size: 0.9rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.slider-inline {
+    flex: 1;
+    height: 6px;
+    background: var(--surface-light);
+    border-radius: 3px;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.slider-inline::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    background: linear-gradient(135deg, var(--primary-light), var(--primary-dark));
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(220, 38, 38, 0.5);
+}
+
+.slider-inline::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    background: linear-gradient(135deg, var(--primary-light), var(--primary-dark));
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+
+/* WiFi SSID / password cards */
 .wifi-password-row {
     display: flex;
     gap: 0.5rem;
@@ -709,10 +1310,11 @@ header h1 {
     flex: 1;
     padding: 0.75rem;
     background: var(--surface-light);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
     color: var(--text);
     font-size: 1rem;
+    transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .input-wifi-password::placeholder {
@@ -722,13 +1324,14 @@ header h1 {
 .input-wifi-password:focus {
     outline: none;
     border-color: var(--primary);
+    box-shadow: var(--focus-ring);
 }
 
 .btn-icon-eye {
     padding: 0.75rem;
     background: var(--surface-light);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
     color: var(--text);
     font-size: 1.1rem;
     cursor: pointer;
