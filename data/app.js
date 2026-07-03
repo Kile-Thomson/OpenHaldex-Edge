@@ -302,8 +302,7 @@ async function refreshStatus() {
     document.getElementById("lockActual").textContent = displayValue(
       data.lockActual,
     );
-    document.getElementById("engagementFill").style.width =
-      `${data.lockActual ?? 0}%`;
+    updateEngagementGauge(data.lockTarget ?? null, data.lockActual ?? null);
 
     // Haldex Data card (Gen 1–4, non-UDS)
     document.getElementById("haldexEngagement").textContent = displayValue(data.haldexEngagement);
@@ -529,6 +528,30 @@ async function saveSetting(key, value) {
   } catch (error) {
     console.log("Saving setting failed: " + error.message);
     showNotification("Error saving setting", "error");
+  }
+}
+
+// Semi-circular engagement arc, radius 80 centred at (100,100): the fill sweeps
+// with the ACTUAL engagement, the tick marks the TARGET, so the lag between them
+// (lock response rates, coupling response) reads at a glance.
+const GAUGE_ARC_LEN = Math.PI * 80; // length of the 180-degree track
+
+function updateEngagementGauge(target, actual) {
+  const fill = document.getElementById("gaugeArcFill");
+  const tick = document.getElementById("gaugeTargetTick");
+  if (!fill) return;
+
+  const a = actual === null ? 0 : Math.max(0, Math.min(100, Number(actual) || 0));
+  fill.style.strokeDashoffset = GAUGE_ARC_LEN * (1 - a / 100);
+
+  if (tick) {
+    if (target === null || Number.isNaN(Number(target))) {
+      tick.setAttribute("visibility", "hidden");
+    } else {
+      const t = Math.max(0, Math.min(100, Number(target)));
+      tick.setAttribute("transform", `rotate(${t * 1.8} 100 100)`);
+      tick.setAttribute("visibility", "visible");
+    }
   }
 }
 

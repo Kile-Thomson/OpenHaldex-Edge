@@ -65,15 +65,26 @@
             -->
             </section>
 
-            <section class="card">
+            <section class="card hero-card">
                 <h2>Haldex Engagement</h2>
-                <div class="engagement-display">
-                    <div class="engagement-label">
-                        <span>Target: <span id="lockTarget">--</span>%</span>
-                        <span>Actual: <span id="lockActual">--</span>%</span>
-                    </div>
-                    <div class="engagement-bar">
-                        <div class="engagement-fill" id="engagementFill"></div>
+                <div class="gauge-hero">
+                    <svg class="gauge-arc" viewBox="0 0 200 118" role="img" aria-label="Haldex engagement gauge">
+                        <defs>
+                            <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="0">
+                                <stop offset="0%" stop-color="#b91c1c" />
+                                <stop offset="60%" stop-color="#dc2626" />
+                                <stop offset="100%" stop-color="#ef4444" />
+                            </linearGradient>
+                        </defs>
+                        <path class="gauge-arc-track" d="M 20 100 A 80 80 0 0 1 180 100" />
+                        <path class="gauge-arc-fill" id="gaugeArcFill" d="M 20 100 A 80 80 0 0 1 180 100" />
+                        <line class="gauge-target-tick" id="gaugeTargetTick" x1="12" y1="100" x2="30" y2="100"
+                            transform="rotate(0 100 100)" visibility="hidden" />
+                    </svg>
+                    <div class="gauge-hero-center">
+                        <div class="gauge-hero-value"><span id="lockActual">--</span><span
+                                class="gauge-hero-unit">%</span></div>
+                        <div class="gauge-hero-sub">Target <span id="lockTarget">--</span>%</div>
                     </div>
                 </div>
             </section>
