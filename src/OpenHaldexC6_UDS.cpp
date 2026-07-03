@@ -280,6 +280,11 @@ bool UDS::sendRequest(uint32_t requestId,
     if (requestData == nullptr || responseBuf == nullptr || responseLen == 0)
         return false;
 
+    // responseLen carries the buffer capacity on entry and the received length
+    // on return; capture the capacity before responseLen is reused as the
+    // output, otherwise every copy below is bounded by 0.
+    const size_t capacity = responseLen;
+
     // Send the request (single or multi-frame)
     if (requestLen <= 7)
     {
@@ -350,7 +355,7 @@ bool UDS::sendRequest(uint32_t requestId,
     {
         // Single Frame
         uint8_t dataLen = frame.data[0] & 0x0F;
-        size_t copyLen = min<size_t>(dataLen, responseLen);
+        size_t copyLen = min<size_t>(dataLen, capacity);
         memcpy(responseBuf, &frame.data[1], copyLen);
         responseLen = copyLen;
         return true;
@@ -361,7 +366,7 @@ bool UDS::sendRequest(uint32_t requestId,
         // First Frame
         uint16_t totalLength = ((frame.data[0] & 0x0F) << 8) | frame.data[1];
         size_t bytesCopied = min<size_t>(6, totalLength);
-        if (bytesCopied > responseLen)
+        if (bytesCopied > capacity)
             return false; // buffer too small
 
         memcpy(responseBuf, &frame.data[2], bytesCopied);
@@ -380,7 +385,7 @@ bool UDS::sendRequest(uint32_t requestId,
             if ((frame.data[0] & 0xF0) != 0x20)
                 return false;
             uint8_t payloadLen = min<uint8_t>(7, totalLength - receivedTotal);
-            if (payloadLen > responseLen - receivedTotal)
+            if (payloadLen > capacity - receivedTotal)
                 return false;
 
             memcpy(responseBuf + receivedTotal, &frame.data[1], payloadLen);
