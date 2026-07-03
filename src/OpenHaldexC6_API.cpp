@@ -729,7 +729,7 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
     for (uint8_t throttle = 0; throttle < throttleArrayCount; throttle++)
     {
         JsonArray throttleRow = lockArrayJSON[throttle].as<JsonArray>();
-        if (throttleRow.size() != throttleArrayCount)
+        if (throttleRow.size() != speedArrayCount)
         {
             DEBUG("Invalid lock array");
             return;
