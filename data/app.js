@@ -990,9 +990,7 @@ function arrayIndex(value, array) {
 function refreshTrace(data) {
   const cell = [...document.querySelectorAll(".map-cell")]; // find all the cells in the grid (as an array)
 
-  for (i in cell) {
-    cell[i].classList.remove("activeTrace"); // remove the active trace from all cells (so only the current one is highlighted)
-  }
+  cell.forEach((c) => c.classList.remove("activeTrace")); // clear the active trace from every cell so only the current one stays highlighted
 
   if (
     data.speed === undefined ||
@@ -1127,6 +1125,7 @@ function restoreDefaults() {
 // initialise Learn Haldex UI
 function initLearn() {
   let learnPollInterval = null;
+  let pollInFlight = false;
 
   const statusText    = document.getElementById("learnStatusText");
   const progressWrap  = document.getElementById("learnProgressWrap");
@@ -1173,25 +1172,36 @@ function initLearn() {
   }
 
   async function pollStatus() {
-    const data = await fetchJson("/api/learn/status");
-    if (!data) return;
+    // one poll at a time, and bound a stalled request, so the 100ms interval
+    // can't stack requests and flood the async web server (same as refreshStatus)
+    if (pollInFlight) return;
+    pollInFlight = true;
+    const ctrl = new AbortController();
+    const pollTimeout = setTimeout(() => ctrl.abort(), POLL_TIMEOUT_MS);
+    try {
+      const data = await fetchJson("/api/learn/status", { signal: ctrl.signal });
+      if (!data) return; // fetch failed or timed out - skip this cycle
 
-    const pct = Math.min(100, Math.round(data.progress));
-    setProgress(pct);
-    setTracking(data.currentCF ?? 0, data.currentEng ?? 0);
+      const pct = Math.min(100, Math.round(data.progress));
+      setProgress(pct);
+      setTracking(data.currentCF ?? 0, data.currentEng ?? 0);
 
-    if (!data.active) {
-      stopPolling();
-      if (data.progress === 102) {
-        statusText.textContent = "No Haldex CAN data recorded - check connection";
-        statusText.style.color = "var(--danger)";
-      } else if (data.tableValid) {
-        statusText.textContent = "Learn complete \u2713 - calibration table active";
-        statusText.style.color = "var(--success)";
-      } else {
-        statusText.textContent = "Learn cancelled or failed";
-        statusText.style.color = "var(--warning)";
+      if (!data.active) {
+        stopPolling();
+        if (data.progress === 102) {
+          statusText.textContent = "No Haldex CAN data recorded - check connection";
+          statusText.style.color = "var(--danger)";
+        } else if (data.tableValid) {
+          statusText.textContent = "Learn complete \u2713 - calibration table active";
+          statusText.style.color = "var(--success)";
+        } else {
+          statusText.textContent = "Learn cancelled or failed";
+          statusText.style.color = "var(--warning)";
+        }
       }
+    } finally {
+      clearTimeout(pollTimeout);
+      pollInFlight = false;
     }
   }
 
@@ -1321,6 +1331,7 @@ function initWifi() {
   const status  = document.getElementById("wifiPasswordStatus");
   const btnSave = document.getElementById("wifiPasswordSave");
   const btnReset= document.getElementById("wifiPasswordReset");
+  if (!input || !toggle || !status || !btnSave || !btnReset) return;
 
   // show / hide password toggle
   toggle.addEventListener("click", () => {
