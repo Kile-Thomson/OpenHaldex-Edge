@@ -1,0 +1,16 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# GSD planning (local only, never committed)
+.gsd/
+
+# Editor
+.vscode/.browse.c_cpp.db*
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+src.zip

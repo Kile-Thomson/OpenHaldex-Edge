@@ -1,0 +1,28 @@
+# .dropboxignore for OpenHaldexEdge (private build)
+# Prevents Dropbox sync storms from PlatformIO build output and toolchains.
+
+# PlatformIO build output + downloaded toolchains/frameworks
+.pio
+**/.pio
+.pioenvs
+.piolibdeps
+
+# GSD machine-local / transient state (if a .gsd/ is added later)
+.gsd/gsd.db-shm
+.gsd/worktrees
+.gsd/runtime
+.gsd/activity
+.gsd/forensics
+.gsd/parallel
+.gsd.migrating
+
+# Editor / caches
+.vscode/.browse.c_cpp.db*
+.cache
+
+# Python
+__pycache__
+*.pyc
+
+# Misc
+.DS_Store
