@@ -542,8 +542,12 @@ function initNavigation() {
     tab.addEventListener("click", () => {
       const page = tab.dataset.page;
 
-      tabs.forEach((t) => t.classList.remove("active"));
+      tabs.forEach((t) => {
+        t.classList.remove("active");
+        t.removeAttribute("aria-current");
+      });
       tab.classList.add("active");
+      tab.setAttribute("aria-current", "page");
 
       pages.forEach((p) => p.classList.remove("active"));
       document.getElementById(`${page}-page`).classList.add("active");
