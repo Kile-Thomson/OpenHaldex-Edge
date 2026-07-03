@@ -262,9 +262,18 @@ async function initStoredSettings() {
 }
 
 // refresh ongoing data
+const POLL_TIMEOUT_MS = 2000; // bound a stalled poll so the in-flight guard can't wedge
+
 async function refreshStatus() {
+  // one poll at a time: on a busy ESP a slow response must not let the 500ms
+  // interval stack requests and flood the async web server once it recovers
+  if (refreshStatus._inFlight) return;
+  refreshStatus._inFlight = true;
+  const ctrl = new AbortController();
+  const pollTimeout = setTimeout(() => ctrl.abort(), POLL_TIMEOUT_MS);
   try {
-    const data = await fetchJson("/api/dashboard"); // send request for basic data
+    const data = await fetchJson("/api/dashboard", { signal: ctrl.signal }); // send request for basic data
+    if (!data) return; // fetch failed or timed out - skip this cycle
 
     // Live frame-rate monitor for LP wake threshold tuning
     if (data.lpChassisFrameCount !== undefined && data.lpHaldexFrameCount !== undefined) {
@@ -302,8 +311,7 @@ async function refreshStatus() {
     document.getElementById("lockActual").textContent = displayValue(
       data.lockActual,
     );
-    document.getElementById("engagementFill").style.width =
-      `${data.lockActual ?? 0}%`;
+    updateEngagementGauge(data.lockTarget ?? null, data.lockActual ?? null);
 
     // Haldex Data card (Gen 1–4, non-UDS)
     document.getElementById("haldexEngagement").textContent = displayValue(data.haldexEngagement);
@@ -415,6 +423,9 @@ async function refreshStatus() {
     refreshTrace(data); // update the live trace
   } catch (error) {
     console.log("Status failed: " + error.message);
+  } finally {
+    clearTimeout(pollTimeout);
+    refreshStatus._inFlight = false;
   }
 }
 
@@ -532,6 +543,30 @@ async function saveSetting(key, value) {
   }
 }
 
+// Semi-circular engagement arc, radius 80 centred at (100,100): the fill sweeps
+// with the ACTUAL engagement, the tick marks the TARGET, so the lag between them
+// (lock response rates, coupling response) reads at a glance.
+const GAUGE_ARC_LEN = Math.PI * 80; // length of the 180-degree track
+
+function updateEngagementGauge(target, actual) {
+  const fill = document.getElementById("gaugeArcFill");
+  const tick = document.getElementById("gaugeTargetTick");
+  if (!fill) return;
+
+  const a = actual === null ? 0 : Math.max(0, Math.min(100, Number(actual) || 0));
+  fill.style.strokeDashoffset = GAUGE_ARC_LEN * (1 - a / 100);
+
+  if (tick) {
+    if (target === null || Number.isNaN(Number(target))) {
+      tick.setAttribute("visibility", "hidden");
+    } else {
+      const t = Math.max(0, Math.min(100, Number(target)));
+      tick.setAttribute("transform", `rotate(${t * 1.8} 100 100)`);
+      tick.setAttribute("visibility", "visible");
+    }
+  }
+}
+
 // initialise navigation:
 function initNavigation() {
   // setup tabs
@@ -631,7 +666,19 @@ function initNavigation() {
 // initialise dashboard:
 function initDashboard() {
   refreshStatus(); //
-  setInterval(refreshStatus, setIntervalDuration); // request for new data every xms
+  let pollTimer = setInterval(refreshStatus, setIntervalDuration); // request for new data every xms
+
+  // Stop polling while the page is hidden (phone locked or app backgrounded) so
+  // we don't keep waking the ESP's web server; resume with a fresh read on return.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    } else if (pollTimer === null) {
+      refreshStatus();
+      pollTimer = setInterval(refreshStatus, setIntervalDuration);
+    }
+  });
 }
 
 // initialise mode buttons
