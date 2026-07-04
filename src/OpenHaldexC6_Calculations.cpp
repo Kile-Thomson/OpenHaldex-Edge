@@ -1342,6 +1342,21 @@ void getLockData(twai_message_t &rx_message_chs)
   xSemaphoreGive(stateMutex);
 }
 
+// Pure bus-health predicate: any failure bit set means a fault.
+// Plain arithmetic, no TWAI symbols, so it runs in the native test suite.
+bool can_alerts_indicate_failure(uint32_t alerts, uint32_t failure_mask)
+{
+  return (alerts & failure_mask) != 0;
+}
+
+// Pure bus-recovery predicate: true when a recovered bit is set, meaning a bus
+// that went off has finished recovery and can be restarted with twai_start_v2.
+// Plain arithmetic, no TWAI symbols, so it runs on host.
+bool can_alerts_indicate_recovered(uint32_t alerts, uint32_t recovered_mask)
+{
+  return (alerts & recovered_mask) != 0;
+}
+
 // HTTP request-body buffer ownership. Pure <cstdlib>/<cstring> logic,
 // no Arduino/Async symbols, so the malloc-owned single-block contract is pinned
 // by the env:native suite. See include/OpenHaldexC6_Calculations.h.

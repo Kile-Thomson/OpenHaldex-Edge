@@ -18,6 +18,14 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert);
 void getLockData(twai_message_t& rx_message_chs);
 void startHaldexLearn();
 
+// Pure CAN bus-health predicates. Plain arithmetic ((alerts & mask) != 0), no
+// TWAI driver symbols, so the always-on failure/recovery decision that drives
+// isBusFailure is host-testable. can_alerts_indicate_failure: true when any
+// failure bit is set. can_alerts_indicate_recovered: true when a bus that went
+// off has finished recovery and can be restarted with twai_start_v2.
+bool can_alerts_indicate_failure(uint32_t alerts, uint32_t failure_mask);
+bool can_alerts_indicate_recovered(uint32_t alerts, uint32_t recovered_mask);
+
 // HTTP request-body buffer ownership, extracted from parseJSON so the
 // malloc-owned single-block contract that ESPAsyncWebServer frees with plain
 // free() can be host-tested. Both reference only <cstdlib>/<cstring>, no
