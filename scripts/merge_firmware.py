@@ -104,9 +104,14 @@ def main() -> int:
         (app_off, firmware),
         (fs_off, littlefs),
     ]
-    if args.boot_app0 and Path(args.boot_app0).is_file():
+    if args.boot_app0:
+        boot_app0 = Path(args.boot_app0)
+        if not boot_app0.is_file():
+            print(f"error: --boot-app0 given but not a file: {boot_app0}",
+                  file=sys.stderr)
+            return 1
         otadata_off = offset_of((DATA_TYPE, SUBTYPE_OTADATA), "otadata")
-        segments.append((otadata_off, Path(args.boot_app0)))
+        segments.append((otadata_off, boot_app0))
 
     segments.sort(key=lambda s: s[0])
 

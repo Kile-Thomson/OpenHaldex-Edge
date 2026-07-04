@@ -44,10 +44,19 @@ jobs:
 
       - name: Merge into a single flashable binary
         run: |
+          # boot_app0.bin seeds the otadata partition so a blank chip boots ota_0.
+          # The partition table is OTA-only (no factory slot), so this file is
+          # required for a bootable flash-from-scratch image, not optional. Fail
+          # hard if the framework did not provide it rather than silently emitting
+          # a merged image that may not boot on a blank device.
           BOOT_APP0=$(ls ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin 2>/dev/null | head -n1)
+          if [ -z "$BOOT_APP0" ]; then
+            echo "error: boot_app0.bin not found under framework-arduinoespressif32; cannot build a bootable merged image" >&2
+            exit 1
+          fi
           python scripts/merge_firmware.py \
             --build-dir .pio/build/esp32c6-release \
-            ${BOOT_APP0:+--boot-app0 "$BOOT_APP0"}
+            --boot-app0 "$BOOT_APP0"
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
