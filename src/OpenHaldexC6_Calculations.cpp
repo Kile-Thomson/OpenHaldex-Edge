@@ -1342,6 +1342,40 @@ void getLockData(twai_message_t &rx_message_chs)
   xSemaphoreGive(stateMutex);
 }
 
+// OTA credential policy. Pure pointer logic, no Arduino/NVS symbols,
+// so it compiles under env:native and the flash-authorization decision lives in
+// one reviewable, host-tested place. See include/OpenHaldexC6_Calculations.h.
+const char* select_ota_password(const char* nvs_pw, const char* build_default)
+{
+  // Runtime-provisioned NVS value wins over the build-time default; an empty
+  // string at either source counts as "unset". Never returns NULL - a missing
+  // credential yields "" so the caller fails closed instead of using a literal.
+  if (nvs_pw != nullptr && nvs_pw[0] != '\0')
+  {
+    return nvs_pw;
+  }
+  if (build_default != nullptr && build_default[0] != '\0')
+  {
+    return build_default;
+  }
+  return "";
+}
+
+bool ota_credential_configured(const char* effective_pw)
+{
+  return effective_pw != nullptr && effective_pw[0] != '\0';
+}
+
+// Analyzer injection authorization. Composition over ota_credential_configured
+// so the fail-closed injection policy has one source of truth: host->device CAN
+// transmit on the analyzer port is allowed only when a credential is configured.
+// References no Arduino/NVS/TWAI symbols, so it stays host-compilable under
+// env:native. See include/OpenHaldexC6_Calculations.h.
+bool analyzer_injection_allowed(const char* effective_pw)
+{
+  return ota_credential_configured(effective_pw);
+}
+
 // Pure bus-health predicate: any failure bit set means a fault.
 // Plain arithmetic, no TWAI symbols, so it runs in the native test suite.
 bool can_alerts_indicate_failure(uint32_t alerts, uint32_t failure_mask)

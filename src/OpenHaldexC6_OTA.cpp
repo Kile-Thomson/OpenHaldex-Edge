@@ -1,4 +1,5 @@
 #include <OpenHaldexC6_OTA.h>
+#include <OpenHaldexC6_Calculations.h> // select_ota_password / ota_credential_configured / analyzer_injection_allowed
 
 //static AsyncWebServer *otaServer = nullptr;
 
@@ -53,8 +54,10 @@ static const char *resolveOtaCredential() {
     otaPref.end();
   }
 
-  // Copy out while nvsValue is still alive
-  strlcpy(effective, nvsValue.length() ? nvsValue.c_str() : OPENHALDEX_OTA_PASSWORD, sizeof(effective));
+  // Copy out while nvsValue is still alive. select_ota_password applies the
+  // NVS-over-build-default-over-empty precedence in one host-tested place.
+  const char *eff = select_ota_password(nvsValue.c_str(), OPENHALDEX_OTA_PASSWORD);
+  strlcpy(effective, eff, sizeof(effective));
   return effective;
 }
 
@@ -66,7 +69,7 @@ static const char *resolveOtaCredential() {
 bool requireOtaAuth(AsyncWebServerRequest *request) {
   const char *effective = resolveOtaCredential();
 
-  if (effective[0] == '\0') {
+  if (!ota_credential_configured(effective)) {
     // No credential set: refuse rather than accept a default password
     request->send(503, "text/plain", "BLOCKED: No password set - visit /setup first");
     return false;
@@ -83,7 +86,7 @@ bool requireOtaAuth(AsyncWebServerRequest *request) {
 // True when a password is set (NVS or build-time). Gates the first-run /setup
 // page, which closes permanently once a credential exists.
 bool isOtaCredentialProvisioned() {
-  return resolveOtaCredential()[0] != '\0';
+  return ota_credential_configured(resolveOtaCredential());
 }
 
 // ============================================================================

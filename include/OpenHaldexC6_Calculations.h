@@ -18,6 +18,28 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert);
 void getLockData(twai_message_t& rx_message_chs);
 void startHaldexLearn();
 
+// OTA credential policy. Pure pointer logic, no Arduino/NVS symbols, so the
+// flash-authorization decision is a single host-testable definition.
+//
+// select_ota_password: resolves the effective OTA password in precedence order -
+// a runtime NVS-provisioned value wins over the build-time default; an empty ("")
+// or NULL value at either source is treated as "unset". Returns "" when neither
+// source supplies a non-empty credential, so the caller fails closed rather than
+// falling back to a hardcoded literal.
+const char* select_ota_password(const char* nvs_pw, const char* build_default);
+
+// ota_credential_configured: true only when the effective password is non-NULL
+// and non-empty. The flash surface must refuse (HTTP 503, fail-closed) whenever
+// this is false.
+bool ota_credential_configured(const char* effective_pw);
+
+// analyzer_injection_allowed: single host-testable decision for the fail-closed
+// analyzer-injection policy, delegating to ota_credential_configured. host->device
+// CAN transmit on the analyzer port is authorized only when a credential is set;
+// the analyzer transmit paths MUST drop the frame otherwise (passive sniffing is
+// unaffected). Pure pointer logic, no Arduino/NVS/TWAI symbols.
+bool analyzer_injection_allowed(const char* effective_pw);
+
 // Pure CAN bus-health predicates. Plain arithmetic ((alerts & mask) != 0), no
 // TWAI driver symbols, so the always-on failure/recovery decision that drives
 // isBusFailure is host-testable. can_alerts_indicate_failure: true when any
