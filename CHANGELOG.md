@@ -126,3 +126,12 @@ limiting - are Forbes's own work and are not repeated here.
   forces all debug output off.
 - **Board definition added.** The `esp32-c6-mini-1-n4` board file the build
   requires, which the upstream source drop did not include.
+- **CI now packages a flashable binary.** The `firmware-build` job builds the
+  LittleFS web-UI image and merges the bootloader, partition table, firmware and
+  filesystem into one `firmware-merged.bin` (flash at `0x0`) via
+  `scripts/merge_firmware.py`, which resolves the flash offsets from the built
+  partition table. Every run uploads the individual binaries plus the merged
+  image and `SHA256SUMS.txt` as artifacts. A tag push (`v*`) publishes a merged
+  flash-from-scratch image and per-partition binaries to a GitHub Release. The
+  release job holds `contents: write` scoped to itself; the rest of CI stays
+  read-only.

@@ -283,15 +283,36 @@ The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the mo
 
 ## Flashing firmware
 
-This fork does not ship pre-built binaries. You need to build from source using PlatformIO.
+You can either flash a pre-built release binary or build from source with PlatformIO.
 
-**Build and flash via USB:**
+### Pre-built release binary
+
+Each tagged release on this fork's [Releases page](https://github.com/Kile-Thomson/OpenHaldex-C6-Edge/releases) attaches a single merged image, `openhaldex-c6-<tag>-merged.bin`. It bundles the bootloader, partition table, firmware and the LittleFS web UI, so it is a complete flash-from-scratch build - no separate filesystem upload needed. Flash it at offset `0x0`:
+
+```sh
+esptool.py --chip esp32c6 write_flash 0x0 openhaldex-c6-<tag>-merged.bin
+```
+
+Or drag it into a browser flasher such as [ESP Web Tools](https://web.esptool.js.org/). `SHA256SUMS.txt` is attached so you can verify the download. The separate `app` and `littlefs` binaries are also attached for partial or OTA updates.
+
+> These binaries are a non-commercial fork build, distributed free of charge under the [FASL v1.0](LICENSE.md); the changes over upstream V8.00.2 are in [CHANGELOG.md](CHANGELOG.md). For official, supported firmware use the upstream project - see [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater). Note the upstream binary does not include the security and correctness fixes in this fork.
+
+### Build and flash via USB
 
 ```sh
 pio run -e esp32c6 --target upload
 ```
 
 Connect the controller using a **data-capable USB-C cable**. Power-only cables will not work.
+
+To reproduce the release's single merged image locally:
+
+```sh
+pio run -e esp32c6-release
+pio run -e esp32c6-release -t buildfs
+python scripts/merge_firmware.py --build-dir .pio/build/esp32c6-release
+esptool.py --chip esp32c6 write_flash 0x0 .pio/build/esp32c6-release/firmware-merged.bin
+```
 
 **Build a release image (debug output disabled):**
 
@@ -315,7 +336,7 @@ curl -u admin:your-ota-secret \
 The update is refused unless the safety checks pass (vehicle stationary, buses
 healthy, no Haldex temperature fault); check `GET /ota/check` first.
 
-If you want a ready-to-flash binary without building from source, use the official upstream firmware from [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater). Note that the upstream binary does not include the security and correctness fixes in this fork.
+For a ready-to-flash binary of this fork, see [Pre-built release binary](#pre-built-release-binary) above. For official, supported firmware, use the upstream build from [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater); note the upstream binary does not include the security and correctness fixes in this fork.
 
 ---
 
