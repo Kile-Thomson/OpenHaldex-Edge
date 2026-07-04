@@ -558,6 +558,7 @@ static void analyzerTask(void *arg) {
       // Neither mode active: close WiFi client if any, reset Serial-started flag.
       analyzerCloseClient();
       analyzerServerStarted = false;
+      analyzerClientInjectionAllowed = false; // fail closed until a session re-evaluates the gate
       if (serialStarted) {
         serialStarted = false;
         resetGvretParser();
@@ -578,7 +579,13 @@ static void analyzerTask(void *arg) {
         Serial.setTxTimeoutMs(10);
         serialStarted = true;
         resetGvretParser();
-        DEBUG("[Analyzer] Serial GVRET started at 1 Mbaud");
+        // Evaluate the injection gate for this serial session, exactly as the
+        // WiFi connect path does. Without this the flag would carry over from a
+        // prior (permitted) WiFi client and let serial inject without a fresh
+        // credential check.
+        analyzerClientInjectionAllowed = analyzerInjectionPermitted();
+        DEBUG("[Analyzer] Serial GVRET started at 1 Mbaud (injection %s)",
+              analyzerClientInjectionAllowed ? "permitted" : "refused: unprovisioned");
       }
       // Always GVRET for serial
       while (Serial.available()) {

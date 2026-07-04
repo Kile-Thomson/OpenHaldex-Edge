@@ -34,7 +34,11 @@ static void udsStoreValue(uint16_t did, float value)
     case 0x0286: udsTerminalVoltage = value; break; // Terminal Voltage, V
     case 0x028D: udsModuleTemp = value; break;       // Control Module Temperature, degC
     case 0x2BE6: udsClutchCurrent = value; break;    // Haldex Clutch Current, A
-    case 0x2BE7: udsClutchPWM = value; break;        // Haldex Clutch PWM, %
+    case 0x2BE7:                                     // Haldex Clutch PWM, %
+        // udsClutchPWM is uint8_t; round and clamp so the float store cannot
+        // silently truncate or wrap (the DID scales to a raw 0-255 byte).
+        udsClutchPWM = (uint8_t)(value < 0.0f ? 0.0f : (value > 255.0f ? 255.0f : value + 0.5f));
+        break;
     case 0x2BF1: udsClutchTemp = value; break;       // Clutch Temperature, degC
     case 0x2BE4: udsCoolingFinTemp = value; break;   // Cooling Fin Temperature, degC
     case 0x2BE9: udsClutchVoltage = value; break;    // Haldex Clutch Voltage, V
