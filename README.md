@@ -81,7 +81,7 @@ Origin attribution and the FASL v1.0 license are preserved unchanged.
 - [Mode numbers](#mode-numbers-can-byte-0)
 - [Broadcasted state](#broadcasted-state)
 - [WiFi setup](#wi-fi-setup)
-- [Low power mode](#low-power-mode-planned-not-yet-built)
+- [Low power mode](#low-power-mode)
 - [Flashing firmware](#flashing-firmware)
 - [CAN sniffing](#can-sniffing-savvycan--gvret)
 - [Hardware](#hardware)
@@ -227,48 +227,57 @@ Until you set it, flashing and all state-changing calls are **refused** (HTTP 50
 
 ---
 
-## Low power mode (planned, not yet built)
+## Low power mode
 
-> [!NOTE]
-> Low Power Mode is not implemented in this fork yet. The three layers below describe the planned design. Layer 1 (idle AP shutdown) is self-contained and buildable now; Layers 2-3 need a spike to coordinate ESP32-C6 light sleep with the active SoftAP and both TWAI controllers. The current-draw figures below are upstream's numbers and are unverified on this fork until measured on a bench meter.
+Low Power Mode ships in this fork and is **enabled by default**. It is three layers of power saving, each building on the previous, all configured from the **Settings** page:
 
-The controller is designed to live on a **permanent +12 V** feed. With Low Power Mode configured correctly it is expected to draw approximately:
+- **Layer 1 - Idle AP shutdown** is always active (no toggle).
+- **Layer 2 - CAN Sleep** is **on by default** (`canSleepEnabled = true`).
+- **Layer 3 - CAN Sleep (Aggressive)** is **opt-in / off by default** (`canSleepAggressive = false`).
+
+The controller is designed to live on a **permanent +12 V** feed. With Low Power Mode active it draws approximately:
 
 | State | Current |
 |-------|---------|
 | Sleeping (car off, WiFi off, CAN quiet) | ~14 mA |
 | Awake (CAN activity detected or WiFi client connected) | ~50 mA |
 
-The plan is three layers of power saving, each building on the previous, all configured from the **Settings** page.
+> [!WARNING]
+> Estimated, inherited from upstream — **not yet measured on this fork.** These current-draw figures are order-of-magnitude expectations only, pending a bench-meter measurement (see the bench-pending note below).
 
 ### Layer 1 - Idle AP shutdown (always active)
 
 After **5 minutes** with no WiFi clients connected and no CAN activity, the controller automatically shuts down the WiFi AP and turns off the LED. WiFi is restored automatically as soon as CAN traffic resumes.
 
-### Layer 2 - CAN sleep (optional)
+### Layer 2 - CAN sleep (enabled by default)
 
-Enable the **CAN Sleep** toggle in Settings. The ESP32-C6 CPU enters light sleep when idle; the TWAI peripheral powers down but preserves its receive queue; the first incoming CAN frame wakes the controller immediately.
+Controlled by the **CAN Sleep** toggle in Settings and **on out of the box**. The ESP32-C6 CPU enters light sleep when idle; the TWAI peripheral powers down but preserves its receive queue; the first incoming CAN frame wakes the controller immediately.
 
-### Layer 3 - CAN sleep aggressive (optional, builds on Layer 2)
+### Layer 3 - CAN sleep aggressive (opt-in, builds on Layer 2)
 
-Enable **CAN Sleep (Aggressive)** in Settings. The CAN transceiver chips shut down completely, CPU minimum clock drops to 10 MHz, and WiFi AP transmit power is trimmed. Wake is interrupt-driven from a GPIO ISR on each CAN_RX line.
+Off by default — enable **CAN Sleep (Aggressive)** in Settings to turn it on. The CAN transceiver chips shut down completely, CPU minimum clock drops to 10 MHz, and WiFi AP transmit power is trimmed. Wake is interrupt-driven from a GPIO ISR on each CAN_RX line.
 
 ### Setting it up
 
-Low Power Mode needs one calibration step because every car idles its CAN bus at a different rate.
+Low Power Mode works out of the box, but the wake threshold is calibratable because every car idles its CAN bus at a different rate.
+
+The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the module stays awake while the **Chassis fps** rate is at or above the threshold and sleeps when it drops below it — so the default keeps the module awake while the vehicle is actively driving the chassis bus (typically well above 1100 fps) and lets it sleep once the bus goes quiet.
 
 1. Park and lock the car. Wait 30 minutes or until the Chassis bus goes fully quiet.
 2. Stay connected to the OpenHaldex WiFi AP while you check (the controller stays awake while a client is connected).
 3. Open the Web UI and watch the **Chassis fps** and **Haldex fps** counters in Settings.
-4. Set **LP Wake Threshold (fps)** to a value above the parked-bus reading, e.g. 5 if the bus is quiet at 0 fps, 15 if it idles at 8 fps.
-5. Enable **CAN Sleep** (and optionally **CAN Sleep Aggressive**) in Settings.
+4. Set **LP Wake Threshold (fps)** above the parked-bus reading and below the driving-bus reading — the default of 1100 fps suits most installs; lower it only if your car's active chassis-bus rate sits below 1100 fps.
+5. **CAN Sleep** is already enabled; optionally enable **CAN Sleep (Aggressive)** in Settings.
 6. Disconnect from the WiFi AP.
 
 > [!NOTE]
-> **Standalone mode:** with no chassis bus, any Haldex-bus CAN traffic wakes the module regardless of the slider value.
+> **Standalone mode:** with no chassis bus, the module wakes on a fixed **50 fps** Haldex-bus threshold. This is independent of the LP Wake Threshold slider, which only governs the chassis-bus decision in OEM installs.
 
 > [!NOTE]
 > **Switched-ignition installs:** if the module is already powered off with the ignition, Low Power Mode saves little and is optional.
+
+> [!NOTE]
+> **Bench-pending on this fork:** the following hardware-only behaviours are inherited from upstream and have **not yet been measured on real metal** for this fork — the sleeping/awake current draw, the wake latency, transceiver standby in Layer 3, and the exact standalone-threshold value. They are flagged pending a bench-rig measurement increment.
 
 ---
 

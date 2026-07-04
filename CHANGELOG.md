@@ -118,8 +118,10 @@ limiting - are Forbes's own work and are not repeated here.
 
 - **Host-runnable native test suite added.** A PlatformIO `[env:native]`
   environment with Unity characterization tests pins the pure-function core:
-  CRC8/AUTOSAR checksum, expert-map interpolation, lock-response rate limiting
-  and steering-gain reduction. Run with `pio test -e native`.
+  CRC8/AUTOSAR checksum, expert-map interpolation, lock-response rate limiting,
+  steering-gain reduction, and the low-power fps-threshold wake decision. The
+  wake decision was extracted into a pure `lpCanActive` seam so the firmware and
+  the native test share one source of truth. Run with `pio test -e native`.
 - **Release build profile added.** A separate `esp32c6-release` environment that
   forces all debug output off.
 - **Board definition added.** The `esp32-c6-mini-1-n4` board file the build

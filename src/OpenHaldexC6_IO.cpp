@@ -1,6 +1,7 @@
 #include <OpenHaldexC6_IO.h>
 #include <OpenHaldexC6_can.h>
 #include <OpenHaldexC6_WiFi.h>
+#include <OpenHaldexC6_lowpower.h>
 
 // Low-power state machine: WATCHING = WiFi up, normal IO; SLEEPING = WiFi
 // down, LED off, and (if canSleepAggressive) CAN transceivers in standby
@@ -316,8 +317,9 @@ void updateTriggers(void *arg)
       const bool noClients = (WiFi.softAPgetStationNum() == 0) && (WiFi.getMode() != WIFI_OFF);
       // Standalone: Haldex fps >= fixed 50 fps threshold.
       // OEM: chassis fps >= lpWakeThresholdFps (UI slider, default 50).
-      const bool canActive = isStandalone ? (lpHaldexFps >= 50U)
-                                          : (lpChassisFps >= lpWakeThresholdFps);
+      // Decision lives in the pure lpCanActive() seam (include/OpenHaldexC6_lowpower.h)
+      // so the shipped logic is pinned by the native Unity test.
+      const bool canActive = lpCanActive(isStandalone, lpHaldexFps, lpChassisFps, lpWakeThresholdFps);
 
       switch (lpState)
       {
