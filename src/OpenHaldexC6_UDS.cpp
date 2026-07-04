@@ -1,4 +1,5 @@
 #include <OpenHaldexC6_UDS.h>
+#include <OpenHaldexC6_Calculations.h> // uds_parse_sf_rdbi / uds_scale_mqb_did
 
 using namespace OpenHaldexC6;
 
@@ -23,59 +24,39 @@ static bool udsSendFrame(uint32_t canId, const uint8_t *payload, uint8_t payload
     return (twai_transmit_v2(twai_bus_1, &msg, pdMS_TO_TICKS(10)) == ESP_OK);
 }
 
-static void udsDecodeDID(uint16_t did, const twai_message_t &frame)
+// Assign a decoded engineering value to the matching live-data global. Split
+// from the parse/scale so the wire decode stays a pure, host-tested function and
+// this dispatch is the only place that touches the runtime globals.
+static void udsStoreValue(uint16_t did, float value)
 {
-    // Validate: single-frame (PCI high nibble 0), positive RDBI response (0x62), DID echo matches.
-    if ((frame.data[0] & 0xF0) != 0x00) return;
-    const uint8_t payloadLen = frame.data[0] & 0x0F;
-    if (payloadLen < 4) return;                                      // need SID(1) + DID(2) + data(1+)
-    if (frame.data[1] != 0x62) return;
-    const uint16_t respDID = ((uint16_t)frame.data[2] << 8) | frame.data[3];
-    if (respDID != did) return;
-
-    // Actual measurement data starts at frame.data[4]
     switch (did)
     {
-    case 0x0286: // Terminal Voltage: 1 byte, × 0.1 V  (0x8F=143 → 14.3 V confirmed)
-        if (payloadLen >= 4)
-            udsTerminalVoltage = frame.data[4] * 0.1f;
+    case 0x0286: udsTerminalVoltage = value; break; // Terminal Voltage, V
+    case 0x028D: udsModuleTemp = value; break;       // Control Module Temperature, degC
+    case 0x2BE6: udsClutchCurrent = value; break;    // Haldex Clutch Current, A
+    case 0x2BE7:                                     // Haldex Clutch PWM, %
+        // udsClutchPWM is uint8_t; round and clamp so the float store cannot
+        // silently truncate or wrap (the DID scales to a raw 0-255 byte).
+        udsClutchPWM = (uint8_t)(value < 0.0f ? 0.0f : (value > 255.0f ? 255.0f : value + 0.5f));
         break;
-
-    case 0x028D: // Control Module Temperature: 1 byte, temp = raw − 55 °C  (0x52=82 → 27 °C confirmed)
-        if (payloadLen >= 4)
-            udsModuleTemp = (float)frame.data[4] - 55.0f;
-        break;
-
-    case 0x2BE6: // Haldex Clutch Current: 2 bytes BE, × 0.001 A  (0x000F=15 → 0.015 A confirmed)
-        if (payloadLen >= 5)
-            udsClutchCurrent = (((uint16_t)frame.data[4] << 8) | frame.data[5]) * 0.001f;
-        break;
-
-    case 0x2BE7: // Haldex Clutch PWM: 1 byte, raw %  (0x00=0 → 0 % confirmed)
-        if (payloadLen >= 4)
-            udsClutchPWM = frame.data[4];
-        break;
-
-    case 0x2BF1: // Clutch Temperature: 2 bytes LE16, (D6×256+D5 − 22767)/100 °C
-                 // D5=0x53,D6=0x63 → LE16=25427 → 26.60 °C confirmed
-        if (payloadLen >= 5)
-            udsClutchTemp = ((int32_t)((uint16_t)frame.data[5] * 256 + frame.data[4]) - 22767) / 100.0f;
-        break;
-
-    case 0x2BE4: // Cooling Fin Temperature: 2 bytes LE16, (D6×256+D5 − 22767)/100 °C
-                 // D5=0x71,D6=0x63 → LE16=25457 → 26.90 °C confirmed
-        if (payloadLen >= 5)
-            udsCoolingFinTemp = ((int32_t)((uint16_t)frame.data[5] * 256 + frame.data[4]) - 22767) / 100.0f;
-        break;
-
-    case 0x2BE9: // Haldex Clutch Voltage: 2 bytes BE, × 0.001 V  (0x001F=31 → 0.031 V ≈ 0 V at rest confirmed)
-        if (payloadLen >= 5)
-            udsClutchVoltage = (((uint16_t)frame.data[4] << 8) | frame.data[5]) * 0.001f;
-        break;
-
-    default:
-        break;
+    case 0x2BF1: udsClutchTemp = value; break;       // Clutch Temperature, degC
+    case 0x2BE4: udsCoolingFinTemp = value; break;   // Cooling Fin Temperature, degC
+    case 0x2BE9: udsClutchVoltage = value; break;    // Haldex Clutch Voltage, V
     }
+}
+
+static void udsDecodeDID(uint16_t did, const twai_message_t &frame)
+{
+    // Parse the single-frame RDBI response and scale it through the host-tested
+    // pure functions; the mixed-endian per-DID scaling lives in uds_scale_mqb_did.
+    uint8_t payload[4]; // max SF payload after the 62 <DID_hi> <DID_lo> header
+    const int n = uds_parse_sf_rdbi(frame.data, frame.data_length_code, did, payload, sizeof(payload));
+    if (n < 0) return;
+
+    float value;
+    if (!uds_scale_mqb_did(did, payload, (uint8_t)n, value)) return;
+
+    udsStoreValue(did, value);
 }
 
 void udsMQBTask(void *arg)

@@ -212,8 +212,8 @@ void showHaldexState(void *arg)
     uint32_t alerts_bus1 = 0;
     twai_read_alerts_v2(twai_bus_0, &alerts_bus0, pdMS_TO_TICKS(0));
     twai_read_alerts_v2(twai_bus_1, &alerts_bus1, pdMS_TO_TICKS(0));
-    bool failure0 = (alerts_bus0 & CAN_ALERTS_FAILURE_MASK) != 0;
-    bool failure1 = (alerts_bus1 & CAN_ALERTS_FAILURE_MASK) != 0;
+    bool failure0 = can_alerts_indicate_failure(alerts_bus0, CAN_ALERTS_FAILURE_MASK);
+    bool failure1 = can_alerts_indicate_failure(alerts_bus1, CAN_ALERTS_FAILURE_MASK);
     static bool busFailure0 = false; // per-bus latches: a bus stays failed until it recovers,
     static bool busFailure1 = false; // so one bus recovering can't clear the other's failure
     if (failure0) { busFailure0 = true; }
@@ -223,8 +223,8 @@ void showHaldexState(void *arg)
       isBusFailure = true;
     }
 
-    bool recovered0 = (alerts_bus0 & TWAI_ALERT_BUS_RECOVERED) != 0;
-    bool recovered1 = (alerts_bus1 & TWAI_ALERT_BUS_RECOVERED) != 0;
+    bool recovered0 = can_alerts_indicate_recovered(alerts_bus0, CAN_ALERTS_RECOVERED_MASK);
+    bool recovered1 = can_alerts_indicate_recovered(alerts_bus1, CAN_ALERTS_RECOVERED_MASK);
     bool restarted0 = recovered0 && !failure0 && (twai_start_v2(twai_bus_0) == ESP_OK);
     bool restarted1 = recovered1 && !failure1 && (twai_start_v2(twai_bus_1) == ESP_OK);
     if (restarted0) { busFailure0 = false; }

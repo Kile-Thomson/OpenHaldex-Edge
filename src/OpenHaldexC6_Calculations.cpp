@@ -1,5 +1,8 @@
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_tasks.h>
+#include <cstdlib> // malloc/free for http_body_alloc
+#include <cstring> // memset/memcpy for the request-body buffer helpers
+#include <cstdint> // SIZE_MAX for the overflow guard in http_body_alloc
 
 // Only executed when in MODE_FWD/MODE_5050/MODE_Expert
 static inline bool lock_enabled()
@@ -1337,4 +1340,220 @@ void getLockData(twai_message_t &rx_message_chs)
   }
 
   xSemaphoreGive(stateMutex);
+}
+
+// NVS init policy. Pure decision over two booleans, no Arduino/NVS symbols, so
+// the readEEP first-run/migrate/seed branch is host-tested under env:native.
+// See include/OpenHaldexC6_Calculations.h.
+EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data)
+{
+  // Already seeded on the canonical namespace -> nothing to migrate or write,
+  // just load. Checked first so a seeded device never re-reads legacy data.
+  if (new_ns_seeded)
+  {
+    return EEP_LOAD_EXISTING;
+  }
+  // Not seeded but the de-facto legacy namespace holds a prior install's
+  // settings -> migrate them forward so existing devices keep their config.
+  if (legacy_ns_has_data)
+  {
+    return EEP_MIGRATE_LEGACY;
+  }
+  // First ever run on a blank device -> write the compiled defaults.
+  return EEP_SEED_DEFAULTS;
+}
+
+// OTA credential policy. Pure pointer logic, no Arduino/NVS symbols,
+// so it compiles under env:native and the flash-authorization decision lives in
+// one reviewable, host-tested place. See include/OpenHaldexC6_Calculations.h.
+const char* select_ota_password(const char* nvs_pw, const char* build_default)
+{
+  // Runtime-provisioned NVS value wins over the build-time default; an empty
+  // string at either source counts as "unset". Never returns NULL - a missing
+  // credential yields "" so the caller fails closed instead of using a literal.
+  if (nvs_pw != nullptr && nvs_pw[0] != '\0')
+  {
+    return nvs_pw;
+  }
+  if (build_default != nullptr && build_default[0] != '\0')
+  {
+    return build_default;
+  }
+  return "";
+}
+
+bool ota_credential_configured(const char* effective_pw)
+{
+  return effective_pw != nullptr && effective_pw[0] != '\0';
+}
+
+// Analyzer injection authorization. Composition over ota_credential_configured
+// so the fail-closed injection policy has one source of truth: host->device CAN
+// transmit on the analyzer port is allowed only when a credential is configured.
+// References no Arduino/NVS/TWAI symbols, so it stays host-compilable under
+// env:native. See include/OpenHaldexC6_Calculations.h.
+bool analyzer_injection_allowed(const char* effective_pw)
+{
+  return ota_credential_configured(effective_pw);
+}
+
+// Pure bus-health predicate: any failure bit set means a fault.
+// Plain arithmetic, no TWAI symbols, so it runs in the native test suite.
+bool can_alerts_indicate_failure(uint32_t alerts, uint32_t failure_mask)
+{
+  return (alerts & failure_mask) != 0;
+}
+
+// Pure bus-recovery predicate: true when a recovered bit is set, meaning a bus
+// that went off has finished recovery and can be restarted with twai_start_v2.
+// Plain arithmetic, no TWAI symbols, so it runs on host.
+bool can_alerts_indicate_recovered(uint32_t alerts, uint32_t recovered_mask)
+{
+  return (alerts & recovered_mask) != 0;
+}
+
+// HTTP request-body buffer ownership. Pure <cstdlib>/<cstring> logic,
+// no Arduino/Async symbols, so the malloc-owned single-block contract is pinned
+// by the env:native suite. See include/OpenHaldexC6_Calculations.h.
+char* http_body_alloc(size_t total)
+{
+  // A zero-length body has no buffer to own; return nullptr so the caller falls
+  // through to its empty-body path instead of holding a 1-byte allocation.
+  if (total == 0)
+  {
+    return nullptr;
+  }
+
+  // Guard against total + 1 wrapping to zero (SIZE_MAX edge case from a
+  // request-controlled Content-Length). malloc(0) returns a valid pointer on ESP32
+  // but the NUL-write at index `total` would write past the allocation.
+  if (total == SIZE_MAX)
+  {
+    return nullptr;
+  }
+
+  // One block of total + 1 bytes: the body plus a trailing NUL slot at index
+  // `total`. A single malloc means ESPAsyncWebServer's free(_tempObject) matches
+  // exactly and an aborted POST releases the whole thing in one call.
+  char* buf = (char*)malloc(total + 1);
+  if (buf == nullptr)
+  {
+    return nullptr; // allocation failed; caller treats as empty body
+  }
+
+  // Zero-fill so the NUL terminator at `total` (and any not-yet-written gap) is
+  // already in place before chunks arrive.
+  memset(buf, 0, total + 1);
+  return buf;
+}
+
+void http_body_write_chunk(char* buf, const uint8_t* data, size_t len, size_t index, size_t total)
+{
+  // Refuse every malformed call: no buffer, no source, a zero-length chunk, or
+  // an offset already at/after the terminator. Each is a no-op, never a write.
+  if (buf == nullptr || data == nullptr || len == 0 || index >= total)
+  {
+    return;
+  }
+
+  // Truncate a chunk that would run past `total` so the NUL guard at index
+  // `total` is never overwritten and we never write outside the allocation.
+  size_t writable = total - index;
+  if (len > writable)
+  {
+    len = writable;
+  }
+
+  memcpy(buf + index, data, len);
+}
+
+// ---- Gen5 (MQB) Haldex UDS live data ----------------------------------------
+// Wire format and scaling recovered from the upstream V8.00.2 binary and
+// confirmed against the author's V8.00.2 source. Pure byte/float arithmetic, no
+// TWAI/Arduino symbols, so the decode that feeds the dashboard values is pinned
+// on the host (test/test_uds). See include/OpenHaldexC6_Calculations.h.
+int uds_parse_sf_rdbi(const uint8_t *data, uint8_t dlc, uint16_t did, uint8_t *out, uint8_t out_cap)
+{
+  if (data == nullptr || out == nullptr)
+  {
+    return -1;
+  }
+  if (dlc < 1 || (data[0] & 0xF0) != 0x00)
+  {
+    return -1; // no PCI byte, or not an ISO-TP single frame
+  }
+  const uint8_t sfLen = data[0] & 0x0F; // declared single-frame payload length
+  if (sfLen < 3 || sfLen > 7)
+  {
+    return -1; // must at least carry 62 <DID_hi> <DID_lo>
+  }
+  if (dlc < (uint8_t)(sfLen + 1))
+  {
+    return -1; // frame shorter than its own declared length
+  }
+  if (data[1] != 0x62)
+  {
+    return -1; // not a positive ReadDataByIdentifier response (covers 0x7F NRC)
+  }
+  if (data[2] != (uint8_t)(did >> 8) || data[3] != (uint8_t)(did & 0xFF))
+  {
+    return -1; // response to a different DID
+  }
+  const uint8_t payloadLen = sfLen - 3;
+  if (payloadLen > out_cap)
+  {
+    return -1; // caller's buffer too small - no partial copy
+  }
+  memcpy(out, &data[4], payloadLen);
+  return payloadLen;
+}
+
+bool uds_scale_mqb_did(uint16_t did, const uint8_t *payload, uint8_t len, float &out)
+{
+  if (payload == nullptr)
+  {
+    return false;
+  }
+
+  switch (did)
+  {
+  case 0x0286: // terminal voltage, V
+    if (len < 1) return false;
+    out = payload[0] * 0.1f;
+    return true;
+
+  case 0x028D: // module temperature, degC
+    if (len < 1) return false;
+    out = (float)payload[0] - 55.0f;
+    return true;
+
+  case 0x2BF1: // clutch temperature, degC
+  case 0x2BE4: // cooling fin temperature, degC
+  {
+    if (len < 2) return false;
+    const uint16_t raw = (uint16_t)(((uint16_t)payload[1] << 8) | payload[0]);
+    out = ((float)raw - 22767.0f) / 100.0f;
+    return true;
+  }
+
+  case 0x2BE6: // clutch pump current, A
+  case 0x2BE9: // clutch pump voltage, V
+  {
+    // Big-endian on the wire, unlike the little-endian temperature DIDs -
+    // confirmed against the upstream V8.00.2 source (its poller reads
+    // data[4]<<8 | data[5] for these two DIDs only).
+    if (len < 2) return false;
+    const uint16_t raw = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);
+    out = raw * 0.001f;
+    return true;
+  }
+
+  case 0x2BE7: // clutch PWM duty, %, raw byte
+    if (len < 1) return false;
+    out = payload[0];
+    return true;
+
+  default:
+    return false; // unknown DID - caller ignores the frame
+  }
 }
