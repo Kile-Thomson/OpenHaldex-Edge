@@ -302,7 +302,11 @@ async function refreshStatus() {
       // fetch failed or timed out - count the miss and surface staleness instead
       // of silently freezing the dashboard on the last-known values
       refreshStatus._missCount = (refreshStatus._missCount || 0) + 1;
-      setConnStatus(refreshStatus._missCount >= CONN_OFFLINE_AFTER ? "offline" : "stale");
+      const offline = refreshStatus._missCount >= CONN_OFFLINE_AFTER;
+      setConnStatus(offline ? "offline" : "stale");
+      // Clear the trace once the link is declared dead so the reconnect starts a
+      // fresh line instead of bridging the outage with a flat segment.
+      if (offline) resetLockTrace();
       return;
     }
     // got data: link is live. Set this before the render block so a later DOM
@@ -347,6 +351,11 @@ async function refreshStatus() {
       data.lockActual,
     );
     updateEngagementGauge(data.lockTarget ?? null, data.lockActual ?? null);
+
+    // Feed the rolling lock-response strip chart from the same poll.
+    const traceNow = Date.now();
+    pushLockSample(data.lockTarget, data.lockActual, traceNow);
+    renderLockTrace(traceNow);
 
     // Haldex Data card (Gen 1–4, non-UDS)
     document.getElementById("haldexEngagement").textContent = displayValue(data.haldexEngagement);
@@ -602,6 +611,94 @@ function updateEngagementGauge(target, actual) {
   }
 }
 
+// ---- Live lock-response trace ----------------------------------------------
+// Rolling time-history of lock target vs actual engagement. The gauge shows the
+// instant target/actual pair; this shows how the actual chased the target over
+// the last window, so coupling lag and the effect of the attack/release rate
+// limits read at a glance while tuning. Poll-fed from /api/dashboard, so no
+// extra device load. Reset on a dropped link so a reconnect never draws a line
+// bridging the outage gap.
+const TRACE_WINDOW_MS = 15000; // rolling window shown on the strip chart
+const lockTrace = []; // ring of { t, target, actual }, pruned to the window
+
+function resetLockTrace() {
+  lockTrace.length = 0;
+  renderLockTrace(Date.now());
+}
+
+function pushLockSample(target, actual, now) {
+  // Only plot a real actual reading; a missing engagement value would otherwise
+  // draw a phantom drop to zero. Target may be absent (e.g. no CAN yet).
+  if (actual === undefined || actual === null) return;
+  // null/undefined target means "no CAN target right now" - keep it as null so the
+  // dashed line breaks rather than coercing to 0 (Number(null) === 0 would plot it).
+  const hasTarget = target !== undefined && target !== null && Number.isFinite(Number(target));
+  const t = hasTarget ? Math.max(0, Math.min(100, Number(target))) : null;
+  const a = Math.max(0, Math.min(100, Number(actual) || 0));
+  lockTrace.push({ t: now, target: t, actual: a });
+
+  // Drop points that have scrolled off the left edge, keeping one older sample
+  // so the leftmost segment enters from off-screen instead of starting mid-plot.
+  const cutoff = now - TRACE_WINDOW_MS;
+  let firstKept = 0;
+  while (firstKept < lockTrace.length - 1 && lockTrace[firstKept + 1].t < cutoff) firstKept++;
+  if (firstKept > 0) lockTrace.splice(0, firstKept);
+}
+
+function renderLockTrace(now) {
+  const svg = document.getElementById("lockTraceSvg");
+  if (!svg) return;
+
+  const W = 320, H = 160;
+  const padL = 26, padR = 6, padT = 8, padB = 18;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const baseY = padT + plotH; // 0% lock (chart floor)
+
+  const windowStart = now - TRACE_WINDOW_MS;
+  const xPix = (t) => Math.max(padL, Math.min(W - padR, padL + ((t - windowStart) / TRACE_WINDOW_MS) * plotW));
+  const yPix = (v) => padT + (1 - Math.max(0, Math.min(100, Number(v) || 0)) / 100) * plotH;
+
+  // Literal hex (not var()) so the colours render inside string-built SVG on all
+  // browsers, matching the tune chart. ACTUAL = --primary-light, others --text-dim/--border.
+  const GRID = "#404040", LABEL = "#9ca3af", ACTUAL = "#ef4444", TARGET = "#9ca3af";
+
+  let out = "";
+  for (let g = 0; g <= 100; g += 25) {
+    const y = yPix(g);
+    out += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="${GRID}" stroke-width="0.5"/>`;
+    out += `<text x="${padL - 4}" y="${(y + 3).toFixed(1)}" fill="${LABEL}" font-size="8" text-anchor="end">${g}</text>`;
+  }
+  out += `<text x="${padL}" y="${H - 5}" fill="${LABEL}" font-size="8" text-anchor="start">-15s</text>`;
+  out += `<text x="${W - padR}" y="${H - 5}" fill="${LABEL}" font-size="8" text-anchor="end">now</text>`;
+
+  // lockTrace is already pruned to the window (plus one older sample for a
+  // clean left edge), so it plots directly; xPix clamps any off-screen point.
+  const pts = lockTrace;
+  if (pts.length >= 2) {
+    // Actual: filled area to the floor plus a bold line on top.
+    let line = "";
+    for (const p of pts) line += `${xPix(p.t).toFixed(1)},${yPix(p.actual).toFixed(1)} `;
+    const x0 = xPix(pts[0].t).toFixed(1);
+    const xN = xPix(pts[pts.length - 1].t).toFixed(1);
+    out += `<polygon points="${x0},${baseY.toFixed(1)} ${line.trim()} ${xN},${baseY.toFixed(1)}" fill="${ACTUAL}" fill-opacity="0.15" stroke="none"/>`;
+    out += `<polyline points="${line.trim()}" fill="none" stroke="${ACTUAL}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+    // Target: dashed line, only across the spans where a target was present.
+    let seg = "";
+    for (const p of pts) {
+      if (p.target === null) {
+        if (seg.trim()) { out += `<polyline points="${seg.trim()}" fill="none" stroke="${TARGET}" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`; seg = ""; }
+        continue;
+      }
+      seg += `${xPix(p.t).toFixed(1)},${yPix(p.target).toFixed(1)} `;
+    }
+    if (seg.trim()) out += `<polyline points="${seg.trim()}" fill="none" stroke="${TARGET}" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`;
+  }
+
+  svg.innerHTML = out;
+}
+
 // initialise navigation:
 function initNavigation() {
   // setup tabs
@@ -700,6 +797,7 @@ function initNavigation() {
 
 // initialise dashboard:
 function initDashboard() {
+  renderLockTrace(Date.now()); // draw the empty grid before the first poll lands
   refreshStatus(); //
   let pollTimer = setInterval(refreshStatus, setIntervalDuration); // request for new data every xms
 

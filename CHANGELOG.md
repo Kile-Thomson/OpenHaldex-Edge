@@ -125,6 +125,13 @@ limiting - are Forbes's own work and are not repeated here.
   "Reconnecting…" after the first missed poll and "Offline" after three, so
   stale numbers can't be mistaken for live data while driving. Recovers to
   "Live" on the next good poll.
+- **Live lock-response trace.** The dashboard now plots a rolling 15-second
+  strip chart of lock target vs actual engagement beneath the gauge. Where the
+  gauge shows the instant pair, the trace shows how the actual chased the target
+  over time, so coupling lag and the effect of the attack/release rate limits
+  read at a glance while tuning. It is fed from the same dashboard poll (no extra
+  device load), the dashed target line breaks where no CAN target is present, and
+  the trace clears on a dropped link so a reconnect never bridges the outage.
 
 ### Build and test
 
