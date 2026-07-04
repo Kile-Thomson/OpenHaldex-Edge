@@ -266,6 +266,29 @@ async function initStoredSettings() {
 // refresh ongoing data
 const POLL_TIMEOUT_MS = 2000; // bound a stalled poll so the in-flight guard can't wedge
 
+// Connection health. The dashboard is poll-based (no WebSocket), so "connected"
+// just means recent polls are landing. A dropped AP link in a moving car used to
+// leave the last gauge values frozen on screen looking live; now the header badge
+// flips to Reconnecting after the first miss and Offline after a few, so stale
+// numbers are never mistaken for current ones.
+const CONN_OFFLINE_AFTER = 3; // consecutive missed polls before declaring Offline
+
+function setConnStatus(state) {
+  const el = document.getElementById("connStatus");
+  if (!el) return;
+  el.classList.remove("connected", "stale", "error");
+  if (state === "offline") {
+    el.textContent = "Offline";
+    el.classList.add("error");
+  } else if (state === "stale") {
+    el.textContent = "Reconnecting…";
+    el.classList.add("stale");
+  } else {
+    el.textContent = "Live";
+    el.classList.add("connected");
+  }
+}
+
 async function refreshStatus() {
   // one poll at a time: on a busy ESP a slow response must not let the 500ms
   // interval stack requests and flood the async web server once it recovers
@@ -275,7 +298,17 @@ async function refreshStatus() {
   const pollTimeout = setTimeout(() => ctrl.abort(), POLL_TIMEOUT_MS);
   try {
     const data = await fetchJson("/api/dashboard", { signal: ctrl.signal }); // send request for basic data
-    if (!data) return; // fetch failed or timed out - skip this cycle
+    if (!data) {
+      // fetch failed or timed out - count the miss and surface staleness instead
+      // of silently freezing the dashboard on the last-known values
+      refreshStatus._missCount = (refreshStatus._missCount || 0) + 1;
+      setConnStatus(refreshStatus._missCount >= CONN_OFFLINE_AFTER ? "offline" : "stale");
+      return;
+    }
+    // got data: link is live. Set this before the render block so a later DOM
+    // error can't leave the badge stuck on a stale state.
+    refreshStatus._missCount = 0;
+    setConnStatus("connected");
 
     // Live frame-rate monitor for LP wake threshold tuning
     if (data.lpChassisFrameCount !== undefined && data.lpHaldexFrameCount !== undefined) {

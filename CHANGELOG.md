@@ -119,6 +119,12 @@ limiting - are Forbes's own work and are not repeated here.
   band) and lock-vs-throttle (one line per speed band), with a colour ramp and
   legend for the bands. It is read-only and redraws as cells or axis values
   change; it does not alter what is written to the Haldex.
+- **Connection-status badge.** The header now shows a live/reconnecting/offline
+  badge driven by the dashboard poll. A dropped access-point link used to leave
+  the last gauge values frozen on screen looking current; the badge flips to
+  "Reconnecting…" after the first missed poll and "Offline" after three, so
+  stale numbers can't be mistaken for live data while driving. Recovers to
+  "Live" on the next good poll.
 
 ### Build and test
 
