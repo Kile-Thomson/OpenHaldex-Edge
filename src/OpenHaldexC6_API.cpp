@@ -81,42 +81,40 @@ static void parseJSON(AsyncWebServerRequest *request, uint8_t *data, size_t len,
 {
     if (index == 0)
     {
-        if (total == 0) // empty body: nothing to buffer, let the handler send its 400
-        {
-            done(request, String());
-            return;
-        }
-        // malloc'd (not new'd) because the request destructor releases _tempObject
-        // with plain free() if the client aborts the POST mid-body
-        request->_tempObject = malloc(total + 1);
+        // Single malloc(total+1) block, owned by ESPAsyncWebServer's request
+        // destructor which frees it with plain free() - matching the allocation
+        // and releasing cleanly if the POST aborts mid-body.
+        request->_tempObject = http_body_alloc(total);
         if (request->_tempObject == nullptr)
         {
+            if (total == 0) // empty body: no buffer needed, let the handler send its 400
+            {
+                done(request, String());
+                return;
+            }
+            // Non-empty body but malloc failed: send an explicit error so the
+            // client gets a response rather than waiting for a timeout.
             JsonDocument err;
             err["error"] = "Body buffer allocation failed";
             sendJSON(request, 500, err);
             return;
         }
-        memset(request->_tempObject, 0, total + 1); // zero-fill so the terminator is always in place
-    }
-    else if (request->_tempObject == nullptr)
-    {
-        return; // allocation failed on chunk 0 (500 already sent) - skip the rest
     }
 
-    if (index >= total) // never write past the buffer
+    // Guard: if allocation failed on chunk 0 (500 already sent), skip every
+    // later chunk so the completion path cannot reach free()/done().
+    if (request->_tempObject == nullptr)
     {
         return;
     }
-    if (len > total - index)
-    {
-        len = total - index;
-    }
-    memcpy((char *)request->_tempObject + index, data, len); // append the incoming chunk
+
+    // Bounds-checked copy into the malloc block; preserves the NUL guard at index `total`.
+    http_body_write_chunk((char *)request->_tempObject, data, len, index, total);
 
     if (index + len == total)
     {
         String bodyString((const char *)request->_tempObject); // copy out before freeing
-        free(request->_tempObject);                            // plain free() matches the malloc above
+        free(request->_tempObject);                            // plain free() matches http_body_alloc's malloc
         request->_tempObject = nullptr;                        // restore the sentinel for the body-lambda guards
         done(request, bodyString);                             // hand the complete body to the done callback
     }

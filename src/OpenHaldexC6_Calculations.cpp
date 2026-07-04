@@ -1,5 +1,8 @@
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_tasks.h>
+#include <cstdlib> // malloc/free for http_body_alloc
+#include <cstring> // memset/memcpy for the request-body buffer helpers
+#include <cstdint> // SIZE_MAX for the overflow guard in http_body_alloc
 
 // Only executed when in MODE_FWD/MODE_5050/MODE_Expert
 static inline bool lock_enabled()
@@ -1337,4 +1340,59 @@ void getLockData(twai_message_t &rx_message_chs)
   }
 
   xSemaphoreGive(stateMutex);
+}
+
+// HTTP request-body buffer ownership. Pure <cstdlib>/<cstring> logic,
+// no Arduino/Async symbols, so the malloc-owned single-block contract is pinned
+// by the env:native suite. See include/OpenHaldexC6_Calculations.h.
+char* http_body_alloc(size_t total)
+{
+  // A zero-length body has no buffer to own; return nullptr so the caller falls
+  // through to its empty-body path instead of holding a 1-byte allocation.
+  if (total == 0)
+  {
+    return nullptr;
+  }
+
+  // Guard against total + 1 wrapping to zero (SIZE_MAX edge case from a
+  // request-controlled Content-Length). malloc(0) returns a valid pointer on ESP32
+  // but the NUL-write at index `total` would write past the allocation.
+  if (total == SIZE_MAX)
+  {
+    return nullptr;
+  }
+
+  // One block of total + 1 bytes: the body plus a trailing NUL slot at index
+  // `total`. A single malloc means ESPAsyncWebServer's free(_tempObject) matches
+  // exactly and an aborted POST releases the whole thing in one call.
+  char* buf = (char*)malloc(total + 1);
+  if (buf == nullptr)
+  {
+    return nullptr; // allocation failed; caller treats as empty body
+  }
+
+  // Zero-fill so the NUL terminator at `total` (and any not-yet-written gap) is
+  // already in place before chunks arrive.
+  memset(buf, 0, total + 1);
+  return buf;
+}
+
+void http_body_write_chunk(char* buf, const uint8_t* data, size_t len, size_t index, size_t total)
+{
+  // Refuse every malformed call: no buffer, no source, a zero-length chunk, or
+  // an offset already at/after the terminator. Each is a no-op, never a write.
+  if (buf == nullptr || data == nullptr || len == 0 || index >= total)
+  {
+    return;
+  }
+
+  // Truncate a chunk that would run past `total` so the NUL guard at index
+  // `total` is never overwritten and we never write outside the allocation.
+  size_t writable = total - index;
+  if (len > writable)
+  {
+    len = writable;
+  }
+
+  memcpy(buf + index, data, len);
 }
