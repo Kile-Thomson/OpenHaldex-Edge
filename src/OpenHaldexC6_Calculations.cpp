@@ -4,6 +4,30 @@
 #include <cstring> // memset/memcpy for the request-body buffer helpers
 #include <cstdint> // SIZE_MAX for the overflow guard in http_body_alloc
 
+// Speed-disengage gate. See include/OpenHaldexC6_Calculations.h for the full
+// rationale. Lock is permitted only while speed is at or above the lower bound
+// AND at or below the upper bound; a bound of 0 disables that side.
+bool speed_disengage_ok(uint16_t speed, uint16_t disengage_under, uint16_t disengage_above)
+{
+  bool above_lower = (disengage_under == 0) || (speed >= disengage_under);
+  bool below_upper = (disengage_above == 0) || (speed <= disengage_above);
+  return above_lower && below_upper;
+}
+
+// Strictly-ascending axis check for the expert-map interpolation.
+// See include/OpenHaldexC6_Calculations.h.
+bool is_strictly_ascending_u16(const uint16_t* arr, uint8_t count)
+{
+  for (uint8_t i = 1; i < count; i++)
+  {
+    if (arr[i] <= arr[i - 1])
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Only executed when in MODE_FWD/MODE_5050/MODE_Expert
 static inline bool lock_enabled()
 {
@@ -13,7 +37,7 @@ static inline bool lock_enabled()
   if (state.mode != MODE_EXPERT)
   {
     throttle_ok = (state.pedal_threshold == 0) || (int(received_pedal_value) >= state.pedal_threshold);
-    speed_ok = (disengageUnderSpeed == 0) || (received_vehicle_speed <= disengageUnderSpeed) || (received_vehicle_speed >= disengageAboveSpeed);
+    speed_ok = speed_disengage_ok(received_vehicle_speed, disengageUnderSpeed, disengageAboveSpeed);
     return throttle_ok && speed_ok;
   }
 
@@ -234,15 +258,10 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert)
   uint8_t correction_factor = 0; // calculate correction factor based on learn table if valid, otherwise use a default formula to determine correction factor (which is not very accurate, but better than nothing)
   if (haldexLearnTableValid)
   {
-    // find the smallest correction factor where the learned engagement meets or exceeds lock_target
-    for (uint8_t i = 0; i <= 100; i++)
-    {
-      if (haldexLearnTable[i] >= (uint8_t)lock_target)
-      {
-        correction_factor = i;
-        break;
-      }
-    }
+    // smallest correction factor whose learned engagement meets lock_target;
+    // clamps to 100 (highest learned engagement) when more lock is requested
+    // than was ever learned, instead of falling through to 0.
+    correction_factor = lookup_learn_correction_factor(haldexLearnTable, (uint8_t)lock_target);
   }
   else if (haldexGeneration == 41)
   {
@@ -1361,6 +1380,69 @@ EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data)
   }
   // First ever run on a blank device -> write the compiled defaults.
   return EEP_SEED_DEFAULTS;
+}
+
+// Learn-table lookup. Returns the smallest index i in 0..100 with table[i] >=
+// target - the lowest correction factor whose learned engagement meets the
+// requested lock target, matching the previous inline loop. When NO learned
+// entry meets target (more lock requested than was ever learned), the old loop
+// left correction_factor at 0 and delivered ZERO lock exactly when maximum lock
+// was wanted; this returns 100 instead, clamping to the highest learned
+// engagement. See include/OpenHaldexC6_Calculations.h.
+uint8_t lookup_learn_correction_factor(const uint8_t* table, uint8_t target)
+{
+  for (uint8_t i = 0; i <= 100; i++)
+  {
+    if (table[i] >= target)
+    {
+      return i;
+    }
+  }
+  return 100;
+}
+
+// Scale a received Haldex engagement byte into a 0..100 percentage.
+// Pure integer math, no Arduino symbols, so it compiles and tests on host and
+// the wire result for valid in-window frames is byte-identical to the previous
+// Arduino map(raw, in_min, in_max, 0, 100) call. Unlike map(), this never
+// extrapolates: a raw byte below in_min or above in_max is clamped first, so the
+// uint8_t result can never wrap (e.g. -1 -> 255) or exceed 100.
+uint8_t scale_haldex_engagement(uint8_t raw, uint8_t in_min, uint8_t in_max)
+{
+  // Defensive: a non-positive input span has no meaningful scale; fail to 0
+  // rather than divide by zero or by a negative span.
+  if (in_max <= in_min)
+  {
+    return 0;
+  }
+
+  // Clamp into [in_min, in_max] BEFORE scaling so we interpolate, never
+  // extrapolate. Below-window -> in_min (0%), above-window -> in_max (100%).
+  int value = raw;
+  if (value < in_min)
+  {
+    value = in_min;
+  }
+  else if (value > in_max)
+  {
+    value = in_max;
+  }
+
+  // Same arithmetic as Arduino map() with out_min=0, out_max=100. int math keeps
+  // the (value - in_min) * 100 product (max 25000) well clear of any overflow.
+  int scaled = (value - (int)in_min) * 100 / ((int)in_max - (int)in_min);
+
+  // The clamp above already bounds scaled to 0..100; constrain again so the
+  // post-condition (0..100, no wrap) holds by construction.
+  if (scaled < 0)
+  {
+    scaled = 0;
+  }
+  else if (scaled > 100)
+  {
+    scaled = 100;
+  }
+  return (uint8_t)scaled;
 }
 
 // OTA credential policy. Pure pointer logic, no Arduino/NVS symbols,

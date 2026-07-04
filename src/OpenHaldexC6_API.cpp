@@ -723,6 +723,21 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
         stagedSpeed[i] = (uint16_t)(speedArrayJSON[i] | 0);
     }
 
+    // Reject a non-monotonic map: the expert-map interpolation assumes strictly-
+    // ascending axes, so an out-of-order axis would silently mis-interpolate.
+    // Check both axes (throttle widened to u16) before touching the live tables.
+    uint16_t throttleAxis[throttleArrayCount];
+    for (uint8_t i = 0; i < throttleArrayCount; i++)
+    {
+        throttleAxis[i] = stagedThrottle[i];
+    }
+    if (!is_strictly_ascending_u16(throttleAxis, throttleArrayCount) ||
+        !is_strictly_ascending_u16(stagedSpeed, speedArrayCount))
+    {
+        DEBUG("Non-ascending tune axis");
+        return;
+    }
+
     // fill lock array
     for (uint8_t throttle = 0; throttle < throttleArrayCount; throttle++)
     {

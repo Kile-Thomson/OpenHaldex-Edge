@@ -18,6 +18,41 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert);
 void getLockData(twai_message_t& rx_message_chs);
 void startHaldexLearn();
 
+// Scale a received Haldex engagement byte to a 0..100 percentage.
+// Replaces a raw Arduino map(raw, in_min, in_max, 0, 100) at the CAN parse site:
+// for valid in-window frames the result is identical, but raw bytes outside
+// [in_min,in_max] are clamped (below -> 0, above -> 100) instead of extrapolated,
+// so the uint8_t result can never wrap or exceed 100. Returns 0 if in_max<=in_min.
+uint8_t scale_haldex_engagement(uint8_t raw, uint8_t in_min, uint8_t in_max);
+
+// Learn-table lookup. Returns the smallest index i in 0..100 with
+// table[i] >= target - the lowest correction factor whose learned engagement
+// meets the requested lock target. When NO entry meets target (more lock
+// requested than was ever learned), returns 100: clamp to the highest learned
+// engagement instead of the old loop's fall-through 0 (zero lock delivered
+// exactly when maximum lock is wanted). Pure array math, host-testable.
+uint8_t lookup_learn_correction_factor(const uint8_t* table, uint8_t target);
+
+// Speed-disengage gate. Returns true when lock is permitted at the
+// given speed: the vehicle must be at or ABOVE disengage_under AND at or BELOW
+// disengage_above. A bound of 0 disables that side (0 = "no lower/upper cut").
+// This replaces the previous inverted, default-defeated expression:
+//   (under==0) || (speed<=under) || (speed>=above)
+// which was always true because disengage_above defaults to 0 (speed>=0), and
+// which disengaged lock in the wrong band. Only the passive drive modes
+// (5050/6040/7525) consult this; expert mode bypasses this gate, while force mode
+// (TC/ESP or external button) returns its lock value before lock_enabled() runs,
+// so launch-control at a standstill still locks. Pure integer logic, no Arduino
+// symbols, host-testable.
+bool speed_disengage_ok(uint16_t speed, uint16_t disengage_under, uint16_t disengage_above);
+
+// True when arr[0..count-1] is strictly ascending (each element greater than the
+// previous). The expert 2D map (get_expert_lock_target) assumes ascending speed
+// and throttle axes; a non-monotonic axis makes the interpolation bracket search
+// pick the wrong pair and silently mis-interpolate. tuneIncoming rejects a tune
+// whose axes fail this. count 0 or 1 is vacuously ascending. Pure, host-testable.
+bool is_strictly_ascending_u16(const uint16_t* arr, uint8_t count);
+
 // OTA credential policy. Pure pointer logic, no Arduino/NVS symbols, so the
 // flash-authorization decision is a single host-testable definition.
 //
