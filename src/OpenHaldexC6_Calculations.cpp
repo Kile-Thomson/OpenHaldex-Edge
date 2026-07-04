@@ -1342,6 +1342,27 @@ void getLockData(twai_message_t &rx_message_chs)
   xSemaphoreGive(stateMutex);
 }
 
+// NVS init policy. Pure decision over two booleans, no Arduino/NVS symbols, so
+// the readEEP first-run/migrate/seed branch is host-tested under env:native.
+// See include/OpenHaldexC6_Calculations.h.
+EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data)
+{
+  // Already seeded on the canonical namespace -> nothing to migrate or write,
+  // just load. Checked first so a seeded device never re-reads legacy data.
+  if (new_ns_seeded)
+  {
+    return EEP_LOAD_EXISTING;
+  }
+  // Not seeded but the de-facto legacy namespace holds a prior install's
+  // settings -> migrate them forward so existing devices keep their config.
+  if (legacy_ns_has_data)
+  {
+    return EEP_MIGRATE_LEGACY;
+  }
+  // First ever run on a blank device -> write the compiled defaults.
+  return EEP_SEED_DEFAULTS;
+}
+
 // OTA credential policy. Pure pointer logic, no Arduino/NVS symbols,
 // so it compiles under env:native and the flash-authorization decision lives in
 // one reviewable, host-tested place. See include/OpenHaldexC6_Calculations.h.

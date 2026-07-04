@@ -48,6 +48,16 @@ bool analyzer_injection_allowed(const char* effective_pw);
 bool can_alerts_indicate_failure(uint32_t alerts, uint32_t failure_mask);
 bool can_alerts_indicate_recovered(uint32_t alerts, uint32_t recovered_mask);
 
+// NVS init policy. Pure decision over two booleans - no Arduino/NVS symbols -
+// so the readEEP first-run/migrate/seed branch lives in one host-testable place.
+// Given whether the canonical namespace is already seeded and whether the
+// de-facto legacy namespace still holds a previous device's data:
+//   * new_ns_seeded            -> EEP_LOAD_EXISTING (normal run, just load)
+//   * legacy data, not seeded  -> EEP_MIGRATE_LEGACY (copy legacy -> new, mark seeded)
+//   * neither                  -> EEP_SEED_DEFAULTS  (first ever run, write defaults)
+enum EepInitAction { EEP_LOAD_EXISTING, EEP_MIGRATE_LEGACY, EEP_SEED_DEFAULTS };
+EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data);
+
 // HTTP request-body buffer ownership, extracted from parseJSON so the
 // malloc-owned single-block contract that ESPAsyncWebServer frees with plain
 // free() can be host-tested. Both reference only <cstdlib>/<cstring>, no

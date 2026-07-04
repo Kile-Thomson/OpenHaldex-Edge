@@ -160,26 +160,26 @@ void readEEP() // function to read stored preferences into runtime variables
     legacyHas = legacyOpen && legacy.isKey("haldexGen");
   }
 
-  if (seeded) // normal run: load stored values from the canonical namespace
+  switch (eeprom_init_action(seeded, legacyHas)) // single LOAD/MIGRATE/SEED decision point
   {
+  case EEP_LOAD_EXISTING: // normal run: load stored values from the canonical namespace
     loadSettingsFrom(pref);
-  }
-  else if (legacyHas) // one-time: carry a prior install's settings forward, then mark seeded
-  {
+    break;
+  case EEP_MIGRATE_LEGACY: // one-time: carry a prior install's settings forward, then mark seeded
 #if detailedDebugEEPF
     DEBUG("Migrating legacy NVS namespace..."); // debug: legacy migration
 #endif
     loadSettingsFrom(legacy);     // pull the old device's settings into the runtime globals
     persistSettingsToPref();      // write them into "openhaldex" so the legacy namespace is no longer needed
     pref.putBool("seeded", true); // sentinel: this device is now seeded; never migrate again
-  }
-  else // first ever run on a blank device: write the compiled defaults
-  {
+    break;
+  case EEP_SEED_DEFAULTS: // first ever run on a blank device: write the compiled defaults
 #if detailedDebugEEPF
     DEBUG("First run..."); // debug: first run detected
 #endif
     persistSettingsToPref();      // globals still hold the compiled defaults
     pref.putBool("seeded", true); // sentinel: subsequent boots take the LOAD path
+    break;
   }
 
   if (legacyOpen)
