@@ -649,7 +649,7 @@ void parseCAN_hdx(void *arg)
       case 1:
         // Gen1 Haldex (early pre-PQ): engagement on byte 1, raw range ~128..198.
         received_haldex_engagement_raw = rx_message_hdx.data[1];
-        received_haldex_engagement = map(received_haldex_engagement_raw, 128, 198, 0, 100);
+        received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 128, 198);
         received_haldex_state = rx_message_hdx.data[0];
         break;
 
@@ -658,14 +658,14 @@ void parseCAN_hdx(void *arg)
         //   SG_ Kupplungssteifigkeit_Hinten__Ist : 32|8@1+ (0.7874,0) [0|100] "%" -> byte 4
         // Byte 1 is centre-clutch torque-rate (Nm/min), unrelated to engagement.
         received_haldex_engagement_raw = rx_message_hdx.data[4];
-        received_haldex_engagement = map(received_haldex_engagement_raw, 0, 127, 0, 100);
+        received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 0, 127);
         received_haldex_state = rx_message_hdx.data[0];
         break;
 
       case 4:
         // Gen4 Haldex (later PQ) / 0x2C). As per vw_pq.dbc: engagement on byte 1, raw 128..255.
         received_haldex_engagement_raw = rx_message_hdx.data[1];
-        received_haldex_engagement = map(received_haldex_engagement_raw, 128, 255, 0, 100);
+        received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 128, 255);
         received_haldex_state = rx_message_hdx.data[0];
         break;
 
@@ -713,7 +713,7 @@ void parseCAN_hdx(void *arg)
         if (rx_message_hdx.identifier == HALDEX_ID_GEN5)
         {
           received_haldex_engagement_raw = rx_message_hdx.data[2];
-          received_haldex_engagement = map(received_haldex_engagement_raw, 0, 250, 0, 100);
+          received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 0, 250);
           received_haldex_state = rx_message_hdx.data[3]; // Charisma byte (mode/status)
         }
         break;
@@ -727,7 +727,7 @@ void parseCAN_hdx(void *arg)
         if (rx_message_hdx.identifier == HALDEX_ID)
         {
           received_haldex_engagement_raw = rx_message_hdx.data[1];
-          received_haldex_engagement = map(received_haldex_engagement_raw, 128, 255, 0, 100);
+          received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 128, 255);
           // Snap the top of the curve: the pump audibly keeps ramping after the
           // decoded percentage stalls at 99, so treat >=99% as fully engaged.
           if (received_haldex_engagement >= 99)

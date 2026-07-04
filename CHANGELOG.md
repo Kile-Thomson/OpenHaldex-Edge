@@ -55,6 +55,28 @@ limiting - are Forbes's own work and are not repeated here.
   handler checked each lock-table row length against the throttle axis count when
   the row is indexed by the speed axis. Masked today because both are 7, but a
   malformed row would slip through if the grid dimensions ever diverged.
+- **Received engagement percentage clamped instead of extrapolated.** The CAN
+  parser scaled the raw Haldex engagement byte with Arduino `map()`, which
+  extrapolates outside its input window. A raw byte below the low bound produced a
+  negative percentage that wrapped when stored in the `uint8_t` engagement global
+  (e.g. -1 became 255), and a byte above the high bound exceeded 100. The scaling
+  now clamps into the window first, so every generation's decoded engagement stays
+  0-100; in-window frames are byte-identical to before.
+- **Speed-disengage gate corrected.** The passive-mode speed gate read
+  `(under==0) || (speed<=under) || (speed>=above)`, which was always true because
+  the upper bound defaults to 0 (so `speed>=0` always held) and which disengaged
+  lock in the wrong band. Lock is now permitted only while the vehicle speed is at
+  or above the lower cut AND at or below the upper cut, with either bound of 0
+  disabling that side.
+- **Learn-table over-request clamps to the highest learned engagement.** When a
+  requested lock target exceeded every value in the learn table, the correction-
+  factor search fell through with a factor of 0 and delivered zero lock exactly
+  when maximum lock was wanted. It now clamps to the highest learned engagement
+  instead.
+- **Non-monotonic tune axes rejected on upload.** The expert-map interpolation
+  assumes strictly-ascending speed and throttle axes; an out-of-order axis
+  silently mis-interpolated. The tune-upload handler now rejects a tune whose
+  speed or throttle axis is not strictly ascending.
 
 ### Concurrency and persistence
 
