@@ -74,3 +74,24 @@ char* http_body_alloc(size_t total);
 // is preserved). No-ops when buf is null, data is null, index >= total, or len
 // is zero; a chunk that would overrun `total` is truncated to fit.
 void http_body_write_chunk(char* buf, const uint8_t* data, size_t len, size_t index, size_t total);
+
+// ---- Gen5 (MQB) Haldex UDS live data ---------------------------------------
+// Wire format and per-DID scaling recovered from the upstream V8.00.2 binary and
+// confirmed against the author's V8.00.2 source. Both functions are pure
+// byte/float arithmetic (no TWAI/Arduino symbols), so the decode feeding the
+// dashboard live-data card is host-testable.
+//
+// uds_parse_sf_rdbi: parse an ISO-TP single-frame positive ReadDataByIdentifier
+// response for `did` out of a raw CAN payload. Returns the number of data bytes
+// (those after the 62 <DID_hi> <DID_lo> header) copied into `out`, or -1 when the
+// frame is anything else: not a single frame, a declared length the frame does
+// not actually carry, a negative response, a different service or DID, or more
+// data than `out_cap` can hold. All poller responses are single frames.
+int uds_parse_sf_rdbi(const uint8_t *data, uint8_t dlc, uint16_t did, uint8_t *out, uint8_t out_cap);
+
+// uds_scale_mqb_did: apply the per-DID raw->engineering-value scaling. The u16
+// byte order is mixed per DID, matching the upstream poller: temperatures
+// (0x2BF1, 0x2BE4) are little-endian, clutch current/voltage (0x2BE6, 0x2BE9) are
+// big-endian. Returns false for a short payload or an unknown DID, leaving `out`
+// untouched.
+bool uds_scale_mqb_did(uint16_t did, const uint8_t *payload, uint8_t len, float &out);

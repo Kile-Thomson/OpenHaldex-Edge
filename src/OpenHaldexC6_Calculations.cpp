@@ -1466,3 +1466,94 @@ void http_body_write_chunk(char* buf, const uint8_t* data, size_t len, size_t in
 
   memcpy(buf + index, data, len);
 }
+
+// ---- Gen5 (MQB) Haldex UDS live data ----------------------------------------
+// Wire format and scaling recovered from the upstream V8.00.2 binary and
+// confirmed against the author's V8.00.2 source. Pure byte/float arithmetic, no
+// TWAI/Arduino symbols, so the decode that feeds the dashboard values is pinned
+// on the host (test/test_uds). See include/OpenHaldexC6_Calculations.h.
+int uds_parse_sf_rdbi(const uint8_t *data, uint8_t dlc, uint16_t did, uint8_t *out, uint8_t out_cap)
+{
+  if (data == nullptr || out == nullptr)
+  {
+    return -1;
+  }
+  if (dlc < 1 || (data[0] & 0xF0) != 0x00)
+  {
+    return -1; // no PCI byte, or not an ISO-TP single frame
+  }
+  const uint8_t sfLen = data[0] & 0x0F; // declared single-frame payload length
+  if (sfLen < 3 || sfLen > 7)
+  {
+    return -1; // must at least carry 62 <DID_hi> <DID_lo>
+  }
+  if (dlc < (uint8_t)(sfLen + 1))
+  {
+    return -1; // frame shorter than its own declared length
+  }
+  if (data[1] != 0x62)
+  {
+    return -1; // not a positive ReadDataByIdentifier response (covers 0x7F NRC)
+  }
+  if (data[2] != (uint8_t)(did >> 8) || data[3] != (uint8_t)(did & 0xFF))
+  {
+    return -1; // response to a different DID
+  }
+  const uint8_t payloadLen = sfLen - 3;
+  if (payloadLen > out_cap)
+  {
+    return -1; // caller's buffer too small - no partial copy
+  }
+  memcpy(out, &data[4], payloadLen);
+  return payloadLen;
+}
+
+bool uds_scale_mqb_did(uint16_t did, const uint8_t *payload, uint8_t len, float &out)
+{
+  if (payload == nullptr)
+  {
+    return false;
+  }
+
+  switch (did)
+  {
+  case 0x0286: // terminal voltage, V
+    if (len < 1) return false;
+    out = payload[0] * 0.1f;
+    return true;
+
+  case 0x028D: // module temperature, degC
+    if (len < 1) return false;
+    out = (float)payload[0] - 55.0f;
+    return true;
+
+  case 0x2BF1: // clutch temperature, degC
+  case 0x2BE4: // cooling fin temperature, degC
+  {
+    if (len < 2) return false;
+    const uint16_t raw = (uint16_t)(((uint16_t)payload[1] << 8) | payload[0]);
+    out = ((float)raw - 22767.0f) / 100.0f;
+    return true;
+  }
+
+  case 0x2BE6: // clutch pump current, A
+  case 0x2BE9: // clutch pump voltage, V
+  {
+    // Big-endian on the wire, unlike the little-endian temperature DIDs -
+    // confirmed against the upstream V8.00.2 source (its poller reads
+    // data[4]<<8 | data[5] for these two DIDs only).
+    if (len < 2) return false;
+    const uint16_t raw = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);
+    out = raw * 0.001f;
+    return true;
+  }
+
+  case 0x2BE7: // clutch PWM duty, %, raw byte
+    if (len < 1) return false;
+    out = payload[0];
+    return true;
+
+  default:
+    return false; // unknown DID - caller ignores the frame
+  }
+}
