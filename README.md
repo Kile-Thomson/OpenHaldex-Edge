@@ -126,6 +126,8 @@ Expert mode allows lock targets to be configured based on **speed and throttle s
 
 *Expert mode grid configuration interface within the OpenHaldex C6 UI.*
 
+Below the grid, a read-only curve view plots the same lock surface so the table reads as lines while you tune. Toggle between **lock vs speed** (one line per throttle band) and **lock vs throttle** (one line per speed band); it redraws as you edit and never changes what is sent to the Haldex.
+
 ---
 
 ## Haldex learning

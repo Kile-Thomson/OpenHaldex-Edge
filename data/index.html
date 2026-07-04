@@ -582,6 +582,19 @@
                     <div class="map-axis-label-x">Speed (km/h)</div>
                 </div>
 
+                <div class="chart-toggle" role="tablist" aria-label="Lock map chart view">
+                    <button class="chart-toggle-btn active" id="chartViewSpeed" role="tab" aria-selected="true">Lock vs Speed</button>
+                    <button class="chart-toggle-btn" id="chartViewThrottle" role="tab" aria-selected="false">Lock vs Throttle</button>
+                </div>
+                <div class="tune-chart">
+                    <svg id="tuneChartSvg" viewBox="0 0 320 200" role="img" aria-label="Lock map curves"></svg>
+                </div>
+                <div class="chart-legend">
+                    <div class="chart-legend-caption" id="chartLegendCaption">Throttle %</div>
+                    <div class="chart-legend-bar" id="chartLegendBar"></div>
+                    <div class="chart-legend-scale" id="chartLegendScale"></div>
+                </div>
+
                 <div class="map-controls">
                     <button class="btn-secondary" id="saveMap">Save Tune</button>
                     <button class="btn-secondary" id="restoreDefaults">Restore Defaults</button>
