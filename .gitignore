@@ -15,6 +15,7 @@ __pycache__/
 *.pyc
 src.zip
 EDGE-AUDIT.md
+UPSTREAM-BUG-REPORT.md
 
 # Local UI dev helpers (not firmware): mock server, CDP render/verify scripts,
 # and generated screenshots.
