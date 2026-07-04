@@ -37,41 +37,35 @@ The firmware runs on an **ESP32-C6** and reads CAN bus messages from the vehicle
 
 ## Improvements over upstream
 
-This fork is a stability-and-security pass over [Forbes-Automotive/OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6). Same hardware, same modes, same wiring. The differences are all in how the firmware behaves. In plain terms, here is what you get over the stock firmware. The full change-by-change technical breakdown is in [CHANGELOG.md](CHANGELOG.md).
+This fork tracks Forbes Automotive's **V8.00.2** firmware and builds directly on it. Same hardware, same modes, same wiring. Most of the driving features - the MQB live-data readout over UDS, hazard force-open, lock-release rate limiting and the low-power sleep system - are Forbes's own work and ship in the V8.00.2 base this fork starts from. Full credit for the platform and its reverse-engineering belongs to them.
 
-### Safer to leave on the car's network
+What this fork adds on top is a focused security, correctness and testing pass, plus two optional driving features. Every item below was checked against the V8.00.2 source before it was listed here, so the list reflects what actually differs from the current upstream, not an older release. The change-by-change breakdown is in [CHANGELOG.md](CHANGELOG.md).
 
-- **No hidden default password.** The stock firmware shipped with a flashing password baked into the public source code, so anyone could read it and push firmware to your module. This fork removes it. On first power-up you set your own password, and until you do, over-the-air flashing and every setting-changing action are refused outright.
-- **Strangers can't poke your CAN bus.** Two ways an unknown device on the WiFi could previously send messages onto the car's bus (the diagnostics read tool and the SavvyCAN/analyzer port) are now closed unless you are logged in. Passive sniffing, just watching traffic, still works freely.
-- **The web app actually logs in.** Once you set a password, the on-device controls (mode, settings, tune, learn) send it automatically and tell you clearly if it is wrong, instead of silently failing to apply your changes.
+### Security hardening
 
-### More reliable in the car
+- **No committed default password.** The base firmware carries a flashing password in its source (and prints it to the serial log). This fork removes it: on first power-up you set your own password on the device, and until you do, over-the-air flashing and every setting-changing action are refused outright.
+- **Authenticated control surface.** The state-changing endpoints (mode, settings, tune, learn) and host-to-device CAN injection on the analyzer port now require that password. Passive sniffing still works freely; the web app sends the password for you and tells you clearly if it is wrong instead of silently failing to apply a change.
 
-- **Recovers from a CAN fault on its own.** A bus error used to leave the controller dead until you pulled power. It now detects the recovery and brings each bus back by itself, no restart needed.
-- **Buttons do what they say.** The onboard and external button long-press actions were swapped in the stock firmware. Onboard long-press now resets WiFi; the external button force-mode and its release work as labelled.
-- **`openhaldex.local` keeps working after a WiFi reset.** Previously the friendly hostname stopped resolving after the button WiFi reset until you power-cycled.
-- **Settings that fail to save now tell you**, instead of quietly ceasing to persist.
+### Correctness fixes
 
-### The AWD behaves the way the settings read
+- **Recovers from a CAN fault on its own.** A bus-off event left the controller stopped until you pulled power - the base firmware's bus-health check only ran under a debug flag and had no recovery path. It now detects the recovery and brings each bus back by itself, no restart needed.
+- **Corrected Gen5 checksum.** The Gen5 ESP_10 (0x116) frame carried the wrong E2E checksum DataID - a verbatim copy of another frame's table. The correct value is now used. (Still to be confirmed against a real Gen5 unit on the bench.)
+- **Diagnostic reads return real data.** The built-in ECU read returned empty every time because of a response-buffer bug; it now returns the actual response.
 
-- **"Disengage under speed" finally works.** This setting did nothing on the stock firmware; it was both backwards and switched off by default. It now correctly drops lock below your chosen speed (for car parks and low-speed manoeuvring) and re-engages above it. Force-mode launches from the button still lock regardless, so a standstill launch is unaffected.
-- **Lock values stay in range.** A scaling bug could turn an out-of-range reading into a near-zero or over-100% lock request. Values are now capped to a sane range before they reach the Haldex.
-- **Ask for full lock, get full lock.** When you requested more lock than the unit had learned, it used to fall back to zero. It now gives the highest useful value it knows.
-- **Corrected Gen5 checksum.** A copy-paste error meant the Gen5 ESP_10 frame carried the wrong safety checksum. The correct value is now used. (Still to be confirmed against a real Gen5 unit on the bench.)
-- **Diagnostic reads return real data.** The built-in ECU read tool returned empty every time because of a buffer bug; it now returns the actual response.
-- **Bad tune maps are rejected.** The expert map editor and the firmware now refuse out-of-range or out-of-order values instead of silently mis-reading the map.
-- **Optional steering-gain reduction.** A new, off-by-default feature that winds lock back as you add steering angle, so the rear axle isn't fighting the front through tight corners and car parks. You choose the angle where the reduction starts, the angle where it bottoms out, and the minimum it can drop to. If the steering signal disappears or is flagged faulty, the reduction switches itself off and behaviour returns to normal. The live steering angle is shown on the Diagnostics page so you can confirm the reading on your car before turning it on.
-- **Live Haldex health data (Gen5/MQB, optional).** An off-by-default poller reads the coupling's own diagnostics over UDS - clutch temperature, cooling fin temperature, module temperature, pump current/voltage, PWM duty and supply voltage - and shows them on a Home page card. The request wire format and per-value scaling were recovered from the upstream V8.00.2 firmware binary; the response CAN ID and 16-bit byte order still need confirming against a real car before the absolute numbers are trusted.
+### Robustness under the hood
 
-### Cleaner under the hood
+- **Won't trip over itself under load.** Data that the CAN tasks read and write concurrently is now guarded by a mutex.
+- **Settings survive a reboot correctly.** Storage is consolidated onto one flash namespace (with a one-time migration from the old layout), fixing a case where only the last-written setting persisted and first-run seeding was dead.
 
-- **Won't trip over itself under load.** Shared data that the CAN tasks read and write is now properly locked, and settings live in one place that survives power cycles correctly (with a one-time migration from the old layout).
-- **You can see dropped frames.** The Diagnostics page now shows a per-bus count of CAN frames that failed to send, so silent frame loss is visible.
-- **Sensible defaults out of the box.** A fresh device boots with a valid Haldex generation selected instead of sitting inert until you pick one, and the Gen 3 option that never did anything has been removed.
+### Added driving features
 
-### Built and tested properly
+- **Optional steering-gain reduction.** Off by default. Winds lock back as steering angle increases, so the rear axle isn't fighting the front through tight corners and car parks. The angle is decoded from the MQB LWI_01 (0x086) frame; you choose where the reduction starts, where it bottoms out, and the minimum it can drop to. If the steering signal goes stale or is flagged faulty the reduction switches itself off and behaviour returns to normal. The live angle and applied gain show on the Diagnostics page so you can confirm the reading on your car before turning it on.
+- **Working lock-rate sliders, plus an engage rate.** The base firmware's lock-release rate slider and enable toggle were sent by the web UI but ignored by the firmware, so they did nothing. This fork makes them work and adds a separate engage rate, so both lock-up and release can be slewed instead of snapping on and off.
 
-- **A test suite that runs on any computer.** A host-runnable native test suite pins the core maths and safety logic - Haldex checksums, expert-map interpolation, lock rate limiting, and steering-gain reduction - so a change can't quietly break what the Haldex sees, no hardware needed.
+### Built and tested
+
+- **A test suite that runs on any computer.** A host-runnable native test suite pins the core maths and safety logic - checksums, expert-map interpolation, lock-response rate limiting and steering-gain reduction - so a change can't quietly alter what the Haldex sees, no hardware needed.
+- **Release build profile.** A separate build with debug output disabled.
 
 Origin attribution and the FASL v1.0 license are preserved unchanged.
 
@@ -213,57 +207,23 @@ data[7] = pedal_value
 2. Open a browser and navigate to `192.168.1.1` or `openhaldex.local`.
 
 > [!NOTE]
-> **First power-up:** on a fresh or factory-reset device, step 2 redirects to `/setup` instead of the main UI. Set a password there (8-63 characters) to provision the OTA credential. Once submitted the setup page closes permanently and the main UI loads. See [OTA update credential](#ota-update-credential) below.
+> **First power-up:** on a fresh or factory-reset device, step 2 redirects to `/setup` instead of the main UI. Set a password there (8-63 characters). Once submitted the setup page closes permanently and the main UI loads. See [Setting your password](#setting-your-password-first-connection) below.
 
 <p align="center">
   <img src="/Images/UIDemo.png" alt="OpenHaldex C6 Web UI" width="900" style="max-width:100%;">
 </p>
 
-### Access point security
+### Setting your password (first connection)
 
-The access point is **open by default**. There is no in-UI password control and no button gesture to reset WiFi.
+There is no default password and no build step - you do not compile or flash anything to set one.
 
-To require a password, set a build-time WPA2 credential and reflash. The AP comes up open whenever the credential is unset or shorter than the 8-character WPA2 minimum, so the default build is unaffected:
+On a fresh or factory-reset device, connect to the access point, open `192.168.1.1`, and the device sends you straight to a short setup page. Enter a password and confirm it (8-63 characters). That password is stored on the device and from then on is required for firmware updates and every setting-changing action. The setup page closes for good and the main UI loads.
 
-```ini
-; platformio.ini - inject without committing the secret
--D OPENHALDEX_AP_PASSWORD='"${sysenv.OPENHALDEX_AP_PASSWORD}"'
-```
+Until you set it, flashing and all state-changing calls are **refused** (HTTP 503) - the device never runs with an empty or default credential.
 
-```sh
-export OPENHALDEX_AP_PASSWORD='your-ap-secret'   # then: pio run -e esp32c6
-```
+**Changing it later.** Once set, rotate the password with an authenticated `POST /ota/credential`. The setup page does not reopen.
 
-### OTA update credential
-
-Over-the-air firmware updates and the state-changing API endpoints are gated by a credential that is **never committed to source**. There are two ways to provision one:
-
-**Option A - first-run web setup (recommended)**
-
-On a fresh device, connecting to the AP and opening `192.168.1.1` redirects to `/setup`, a minimal form that asks for a password and a confirmation. The password must be 8-63 characters. Submitting it writes the credential to NVS and permanently closes the `/setup` routes; subsequent visits redirect to `/`. There is no default password.
-
-**Option B - build-time injection**
-
-Pass the credential as a build flag injected from the environment. It is compiled in as a fallback, so the device already counts as provisioned and the `/setup` routes are skipped (they redirect to `/`). A credential later provisioned at runtime in NVS takes precedence over the build-time value:
-
-```ini
-; platformio.ini
-build_flags =
-  -D OPENHALDEX_OTA_PASSWORD='"${sysenv.OPENHALDEX_OTA_PASSWORD}"'
-```
-
-```sh
-export OPENHALDEX_OTA_PASSWORD='your-ota-secret'
-pio run -e esp32c6 --target upload
-```
-
-**Rotating the credential**
-
-Once provisioned, rotate via an authenticated `POST /ota/credential` request. The `/setup` route is permanently closed after first provisioning and cannot be used for rotation.
-
-**Fail-closed behaviour**
-
-When no credential is provisioned, flashing and all state-changing API calls are **refused** (HTTP 503). The device never accepts a default or empty password.
+**The WiFi access point is open by default** so you can reach the setup page on first connection. Removing the committed password and requiring a login for every control action are what keep the CAN bus safe on an open AP - passive sniffing is harmless, and nothing can change the car's behaviour without the password.
 
 ---
 
