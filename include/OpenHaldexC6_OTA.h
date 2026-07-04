@@ -9,6 +9,12 @@ void setupOTA();
 bool requireOtaAuth(AsyncWebServerRequest *request);
 bool isOtaCredentialProvisioned(); // true once a password is set (NVS or build-time)
 
+// Fail-closed analyzer-injection gate. True only when an OTA credential is
+// provisioned, evaluated once per analyzer TCP connection. Resolves the
+// credential in task-local storage so it never touches requireOtaAuth's shared
+// static; only the boolean crosses into the analyzer task.
+bool analyzerInjectionPermitted();
+
 bool isSystemSafeForOTA();
 void confirmFirmwareValidity();
 bool needsFirmwareConfirmation();

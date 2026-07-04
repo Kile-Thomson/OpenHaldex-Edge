@@ -90,6 +90,30 @@ bool isOtaCredentialProvisioned() {
 }
 
 // ============================================================================
+// SAFETY-CRITICAL: Fail-closed analyzer-injection gate
+// ============================================================================
+// Returns true only when an OTA credential is provisioned. Composes the
+// host-characterized analyzer_injection_allowed() predicate over the resolved
+// credential so the fail-closed policy stays a single reviewable source of
+// truth. The credential value never leaves this TU - only the boolean result is
+// exposed to the analyzer task.
+bool analyzerInjectionPermitted() {
+  // Resolve the credential into a local buffer instead of calling
+  // resolveOtaCredential(), which writes into a shared static that requireOtaAuth()
+  // also writes concurrently from the web task. Same logic, task-local storage.
+  char local[OTA_PASSWORD_MAX_LEN + 1];
+  Preferences otaPref;
+  String nvsValue = "";
+  if (otaPref.begin("otaCred", /*readOnly=*/true)) {
+    nvsValue = otaPref.getString("otaPass", "");
+    otaPref.end();
+  }
+  const char *eff = select_ota_password(nvsValue.c_str(), OPENHALDEX_OTA_PASSWORD);
+  strlcpy(local, eff, sizeof(local));
+  return analyzer_injection_allowed(local);
+}
+
+// ============================================================================
 // SAFETY-CRITICAL: Check if system is in safe state for OTA update
 // ============================================================================
 // Behavior:

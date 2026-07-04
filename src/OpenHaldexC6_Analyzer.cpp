@@ -1,5 +1,6 @@
 #include <OpenHaldexC6_Analyzer.h>
 #include <OpenHaldexC6_defs.h>
+#include <OpenHaldexC6_OTA.h> // analyzerInjectionPermitted() - fail-closed injection gate
 
 // Analyzer mode: pure CAN pass-through plus a TCP interface for external tools.
 // - GVRET binary protocol for SavvyCAN
@@ -50,6 +51,13 @@ static WiFiServer analyzerServer(kAnalyzerPort);
 static WiFiClient analyzerClient;
 static uint8_t analyzerActiveProtocol = ANALYZER_PROTOCOL_GVRET;
 static bool analyzerServerStarted = false;
+
+// SAFETY-CRITICAL: host->device CAN injection is refused unless an OTA
+// credential is provisioned. The decision is evaluated ONCE per client
+// connection (never per frame - calling into NVS per frame would race the
+// writeEEP task). Passive sniffing/streaming is never gated by this.
+static bool analyzerClientInjectionAllowed = false;
+static uint32_t analyzerInjectionRefused = 0;
 
 // Allow a little more time after TCP connect so control replies aren't dropped.
 static const uint32_t kGvretControlWriteTimeoutMs = 250;
@@ -205,6 +213,17 @@ static void gvretSendFrame(const AnalyzerFrame &entry) {
 
 static void gvretTransmitFrameFromHost() {
   if (gvretIndex < 7) {
+    return;
+  }
+
+  // Fail-closed injection gate: refuse host->device CAN unless a credential was
+  // provisioned at connect time. Count the dropped frame so it is visible, not
+  // silently lost; passive streaming continues regardless.
+  if (!analyzerClientInjectionAllowed) {
+    analyzerInjectionRefused++;
+    if ((analyzerInjectionRefused % 100) == 0) {
+      DEBUG("[Analyzer] Injection refused (unprovisioned): %lu", analyzerInjectionRefused);
+    }
     return;
   }
 
@@ -449,6 +468,18 @@ static void slcanHandleLine() {
     }
   }
 
+  // Fail-closed injection gate: refuse host->device CAN unless a credential was
+  // provisioned at connect time. Still ACK so the host tool completes its line
+  // handshake; count the drop for visibility. Passive sniffing is unaffected.
+  if (!analyzerClientInjectionAllowed) {
+    analyzerInjectionRefused++;
+    if ((analyzerInjectionRefused % 100) == 0) {
+      DEBUG("[Analyzer] Injection refused (unprovisioned): %lu", analyzerInjectionRefused);
+    }
+    slcanSendAck();
+    return;
+  }
+
   twai_transmit_v2(twai_bus_0, &msg, (5 / portTICK_PERIOD_MS));
   slcanSendAck();
 }
@@ -593,7 +624,12 @@ static void analyzerTask(void *arg) {
         // Give TCP a moment to finish setup so control replies can flush.
         vTaskDelay(10 / portTICK_PERIOD_MS);
         resetAnalyzerClientState();
-        DEBUG("[Analyzer] Client connected");
+        // Evaluate the injection gate once, at connect time (never per frame -
+        // per-frame NVS reads would race the writeEEP task). Only this boolean
+        // crosses into the analyzer task; the credential value never does.
+        analyzerClientInjectionAllowed = analyzerInjectionPermitted();
+        DEBUG("[Analyzer] Client connected (injection %s)",
+              analyzerClientInjectionAllowed ? "permitted" : "refused: unprovisioned");
       } else {
         vTaskDelay(kAnalyzerPollDelayMs / portTICK_PERIOD_MS);
         continue;
