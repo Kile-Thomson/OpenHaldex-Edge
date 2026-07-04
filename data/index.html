@@ -583,10 +583,10 @@
                 </div>
 
                 <div class="chart-toggle" role="tablist" aria-label="Lock map chart view">
-                    <button class="chart-toggle-btn active" id="chartViewSpeed" role="tab" aria-selected="true">Lock vs Speed</button>
-                    <button class="chart-toggle-btn" id="chartViewThrottle" role="tab" aria-selected="false">Lock vs Throttle</button>
+                    <button class="chart-toggle-btn active" id="chartViewSpeed" role="tab" aria-selected="true" aria-controls="tuneChartPanel">Lock vs Speed</button>
+                    <button class="chart-toggle-btn" id="chartViewThrottle" role="tab" aria-selected="false" aria-controls="tuneChartPanel">Lock vs Throttle</button>
                 </div>
-                <div class="tune-chart">
+                <div class="tune-chart" id="tuneChartPanel" role="tabpanel">
                     <svg id="tuneChartSvg" viewBox="0 0 320 200" role="img" aria-label="Lock map curves"></svg>
                 </div>
                 <div class="chart-legend">

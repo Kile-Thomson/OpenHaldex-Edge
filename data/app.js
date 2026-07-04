@@ -1166,7 +1166,10 @@ function renderTuneChart() {
 
   const xMin = xHeader[0];
   const xSpan = (xHeader[nPoints - 1] - xMin) || 1;
-  const xPix = (v) => padL + ((v - xMin) / xSpan) * plotW;
+  // Clamp X into the plot box like yPix clamps lock. The firmware rejects a
+  // non-ascending tune on upload, but the chart redraws live while a tuner is
+  // mid-edit, so an out-of-order axis value must not draw outside the viewBox.
+  const xPix = (v) => Math.max(padL, Math.min(W - padR, padL + ((v - xMin) / xSpan) * plotW));
   const yPix = (lock) => padT + (1 - Math.max(0, Math.min(100, Number(lock) || 0)) / 100) * plotH;
 
   const GRID = "#404040";   // --border, literal so it renders inside SVG on all browsers
@@ -1181,10 +1184,12 @@ function renderTuneChart() {
     out += `<text x="${padL - 4}" y="${(y + 3).toFixed(1)}" fill="${LABEL}" font-size="8" text-anchor="end">${g}</text>`;
   }
 
-  // X-axis value labels
+  // X-axis value labels. Coerce the axis value to a number before it goes into
+  // the string-built SVG so a non-numeric can never inject markup (the values are
+  // numeric today; this is defence-in-depth for the innerHTML assignment below).
   for (let p = 0; p < nPoints; p++) {
     const x = xPix(xHeader[p]);
-    out += `<text x="${x.toFixed(1)}" y="${H - padB + 12}" fill="${LABEL}" font-size="8" text-anchor="middle">${xHeader[p]}</text>`;
+    out += `<text x="${x.toFixed(1)}" y="${H - padB + 12}" fill="${LABEL}" font-size="8" text-anchor="middle">${Number(xHeader[p])}</text>`;
   }
 
   // one polyline per series band
@@ -1214,7 +1219,8 @@ function renderTuneChart() {
     legendBar.style.background = `linear-gradient(90deg, ${stops.join(", ")})`;
   }
   if (legendScale) {
-    legendScale.innerHTML = seriesHeader.map((v) => `<span>${v}</span>`).join("");
+    // Number() coercion for the same defence-in-depth reason as the axis labels.
+    legendScale.innerHTML = seriesHeader.map((v) => `<span>${Number(v)}</span>`).join("");
   }
 }
 

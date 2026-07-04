@@ -115,6 +115,13 @@ analyzeSvg(svg.innerHTML, 7, 7, "throttle-view"); // 7 speed bands, 7 throttle p
 check(getNode("chartLegendCaption").textContent === "Speed (km/h)", "throttle-view: legend caption = Speed (km/h)");
 check(getNode("chartViewThrottle").getAttribute("aria-selected") === "true", "throttle-view: aria-selected updated");
 
+// non-ascending axis: a mid-edit out-of-order value must still render fully
+// in-bounds (the firmware rejects such a tune on upload, but the chart redraws
+// live while editing). 7 points so line/point counts are unchanged.
+ctx.speedHeader = [0, 90, 30, 120, 60, 180, 160];
+getNode("chartViewSpeed")._fire("click");
+analyzeSvg(svg.innerHTML, 7, 7, "non-ascending speed axis");
+
 // degenerate guard: a single-column axis must not throw and must clear the svg
 ctx.speedHeader = [0];
 getNode("chartViewSpeed")._fire("click");
