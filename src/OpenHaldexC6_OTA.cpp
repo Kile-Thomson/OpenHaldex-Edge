@@ -7,13 +7,6 @@
 // SAFETY-CRITICAL: Configuration
 // ============================================================================
 
-// Optional build-time OTA password (-D OPENHALDEX_OTA_PASSWORD="..."). Defaults
-// to empty so no credential ever ships in the source - the device fails closed
-// until one is set via /setup or at build time.
-#ifndef OPENHALDEX_OTA_PASSWORD
-#define OPENHALDEX_OTA_PASSWORD ""
-#endif
-
 // OTA partition labels (must match partition table)
 #define OTA_PARTITION_LABEL_0 "ota_0"
 #define OTA_PARTITION_LABEL_1 "ota_1"
@@ -41,9 +34,9 @@ static bool firmwareConfirmed = false;
 // ============================================================================
 // SAFETY-CRITICAL: Resolve the effective OTA credential
 // ============================================================================
-// An NVS-provisioned password (otaCred/otaPass) wins over the build-time
-// default; empty means unset. Uses its own Preferences handle - the shared
-// global `pref` is held open on another namespace by the writeEEP task.
+// The credential comes only from NVS (otaCred/otaPass); empty means unset.
+// Uses its own Preferences handle - the shared global `pref` is held open on
+// another namespace by the writeEEP task.
 static const char *resolveOtaCredential() {
   static char effective[OTA_PASSWORD_MAX_LEN + 1];
 
@@ -54,9 +47,9 @@ static const char *resolveOtaCredential() {
     otaPref.end();
   }
 
-  // Copy out while nvsValue is still alive. select_ota_password applies the
-  // NVS-over-build-default-over-empty precedence in one host-tested place.
-  const char *eff = select_ota_password(nvsValue.c_str(), OPENHALDEX_OTA_PASSWORD);
+  // Copy out while nvsValue is still alive. select_ota_password normalises an
+  // empty/absent value to the "" fail-closed sentinel in one host-tested place.
+  const char *eff = select_ota_password(nvsValue.c_str());
   strlcpy(effective, eff, sizeof(effective));
   return effective;
 }
@@ -83,8 +76,8 @@ bool requireOtaAuth(AsyncWebServerRequest *request) {
   return true;
 }
 
-// True when a password is set (NVS or build-time). Gates the first-run /setup
-// page, which closes permanently once a credential exists.
+// True when a password is set in NVS. Gates the first-run /setup page, which
+// closes permanently once a credential exists.
 bool isOtaCredentialProvisioned() {
   return ota_credential_configured(resolveOtaCredential());
 }
@@ -108,7 +101,7 @@ bool analyzerInjectionPermitted() {
     nvsValue = otaPref.getString("otaPass", "");
     otaPref.end();
   }
-  const char *eff = select_ota_password(nvsValue.c_str(), OPENHALDEX_OTA_PASSWORD);
+  const char *eff = select_ota_password(nvsValue.c_str());
   strlcpy(local, eff, sizeof(local));
   return analyzer_injection_allowed(local);
 }

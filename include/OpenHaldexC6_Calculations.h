@@ -21,12 +21,12 @@ void startHaldexLearn();
 // OTA credential policy. Pure pointer logic, no Arduino/NVS symbols, so the
 // flash-authorization decision is a single host-testable definition.
 //
-// select_ota_password: resolves the effective OTA password in precedence order -
-// a runtime NVS-provisioned value wins over the build-time default; an empty ("")
-// or NULL value at either source is treated as "unset". Returns "" when neither
-// source supplies a non-empty credential, so the caller fails closed rather than
-// falling back to a hardcoded literal.
-const char* select_ota_password(const char* nvs_pw, const char* build_default);
+// select_ota_password: resolves the effective OTA password from the runtime
+// NVS-provisioned value; an empty ("") or NULL value is treated as "unset".
+// Returns "" when no non-empty credential is stored, so the caller fails closed
+// rather than falling back to a hardcoded literal. There is no build-time
+// default - a credential is only ever set at runtime via /setup.
+const char* select_ota_password(const char* nvs_pw);
 
 // ota_credential_configured: true only when the effective password is non-NULL
 // and non-empty. The flash surface must refuse (HTTP 503, fail-closed) whenever

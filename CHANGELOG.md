@@ -19,7 +19,8 @@ limiting - are Forbes's own work and are not repeated here.
   fails closed (HTTP 503) until a credential is provisioned - on first power-up
   the device redirects to a `/setup` page where you set your own password, which
   is stored to NVS. Credentials are rotatable via the authenticated
-  `POST /ota/credential`.
+  `POST /ota/credential`. There is no build-time or compiled-in credential path:
+  the only way to set a password is at runtime, so no build step is required.
 - **State-changing endpoints require authentication.** In V8.00.2 the mode,
   settings, tune and learn endpoints (and host-to-device CAN injection on the
   analyzer port) accept commands from any client on the AP. They now require the

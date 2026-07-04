@@ -1366,18 +1366,14 @@ EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data)
 // OTA credential policy. Pure pointer logic, no Arduino/NVS symbols,
 // so it compiles under env:native and the flash-authorization decision lives in
 // one reviewable, host-tested place. See include/OpenHaldexC6_Calculations.h.
-const char* select_ota_password(const char* nvs_pw, const char* build_default)
+const char* select_ota_password(const char* nvs_pw)
 {
-  // Runtime-provisioned NVS value wins over the build-time default; an empty
-  // string at either source counts as "unset". Never returns NULL - a missing
-  // credential yields "" so the caller fails closed instead of using a literal.
+  // The runtime-provisioned NVS value is the only credential source; an empty
+  // string or NULL counts as "unset". Never returns NULL - a missing credential
+  // yields "" so the caller fails closed instead of using a literal.
   if (nvs_pw != nullptr && nvs_pw[0] != '\0')
   {
     return nvs_pw;
-  }
-  if (build_default != nullptr && build_default[0] != '\0')
-  {
-    return build_default;
   }
   return "";
 }

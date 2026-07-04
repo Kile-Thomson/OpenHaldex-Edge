@@ -16,7 +16,7 @@
 //   NULL                               -> false (fail-closed: no credential)
 //   ""                                 -> false (empty == unset == unprovisioned)
 //   "nvssecret"                        -> true  (a real credential authorizes)
-//   select_ota_password(NULL, NULL)    -> false (sentinel "" from the OTA policy)
+//   select_ota_password(NULL)          -> false (sentinel "" from the OTA policy)
 //
 // A red assertion here means the fail-closed injection policy drifted; do NOT
 // edit a golden to make a refactor pass.
@@ -31,7 +31,7 @@
 
 // Real functions under test (src/OpenHaldexC6_Calculations.cpp).
 extern bool analyzer_injection_allowed(const char* effective_pw);
-extern const char* select_ota_password(const char* nvs_pw, const char* build_default);
+extern const char* select_ota_password(const char* nvs_pw);
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -64,10 +64,10 @@ void test_injection_allowed_for_real_credential(void)
 void test_injection_refused_for_unprovisioned_select_output(void)
 {
   // (d) Integration: the "" sentinel returned by select_ota_password when no
-  // source is provisioned must read as injection-refused, closing the loop
+  // credential is provisioned must read as injection-refused, closing the loop
   // between the OTA credential policy and the analyzer injection gate.
-  TEST_ASSERT_FALSE_MESSAGE(analyzer_injection_allowed(select_ota_password(nullptr, nullptr)),
-                            "analyzer_injection_allowed(select_ota_password(NULL,NULL)) must be false");
+  TEST_ASSERT_FALSE_MESSAGE(analyzer_injection_allowed(select_ota_password(nullptr)),
+                            "analyzer_injection_allowed(select_ota_password(NULL)) must be false");
 }
 
 // ===========================================================================
