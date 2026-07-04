@@ -16,5 +16,6 @@ __pycache__/
 src.zip
 EDGE-AUDIT.md
 
-# Local UI dev helper (not firmware)
-tools/mock_ui_server.py
+# Local UI dev helpers (not firmware): mock server, CDP render/verify scripts,
+# and generated screenshots.
+tools/
