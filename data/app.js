@@ -109,15 +109,15 @@ async function initStoredSettings() {
     document.getElementById("ledBrightnessRange").value = ledBrightPct;
     document.getElementById("ledBrightnessValue").textContent = ledBrightPct;
 
-    const lockRateRange = document.getElementById("lockReleaseRateRange");
-    const lockRateVal   = document.getElementById("lockReleaseRateValue");
+    const lockRateRange = document.getElementById("lockReleaseRampRange");
+    const lockRateVal   = document.getElementById("lockReleaseRampValue");
     if (lockRateRange && data.lockReleaseRampMs !== undefined) {
       lockRateRange.value = data.lockReleaseRampMs;
       if (lockRateVal) lockRateVal.textContent = data.lockReleaseRampMs;
     }
 
-    const lockEngageRange = document.getElementById("lockEngageRateRange");
-    const lockEngageVal   = document.getElementById("lockEngageRateValue");
+    const lockEngageRange = document.getElementById("lockEngageRampRange");
+    const lockEngageVal   = document.getElementById("lockEngageRampValue");
     if (lockEngageRange && data.lockEngageRampMs !== undefined) {
       lockEngageRange.value = data.lockEngageRampMs;
       if (lockEngageVal) lockEngageVal.textContent = data.lockEngageRampMs;
@@ -127,7 +127,7 @@ async function initStoredSettings() {
     if (lockReleaseEnabledElem) {
       lockReleaseEnabledElem.checked = data.lockReleaseEnabled !== undefined ? data.lockReleaseEnabled : true;
       const en = lockReleaseEnabledElem.checked;
-      const containers = ["lockReleaseRateContainer", "lockEngageRateContainer"];
+      const containers = ["lockReleaseRampContainer", "lockEngageRampContainer"];
       containers.forEach((id) => {
         const container = document.getElementById(id);
         if (container) container.style.opacity = en ? "" : "0.4";
@@ -667,15 +667,15 @@ function initNavigation() {
   }
 
   // Lock response rate sliders (display update only — save handled in initSettings)
-  const lockRateRange = document.getElementById("lockReleaseRateRange");
-  const lockRateVal   = document.getElementById("lockReleaseRateValue");
+  const lockRateRange = document.getElementById("lockReleaseRampRange");
+  const lockRateVal   = document.getElementById("lockReleaseRampValue");
   if (lockRateRange) {
     lockRateRange.addEventListener("input", () => {
       if (lockRateVal) lockRateVal.textContent = lockRateRange.value;
     });
   }
-  const lockEngageRange = document.getElementById("lockEngageRateRange");
-  const lockEngageVal   = document.getElementById("lockEngageRateValue");
+  const lockEngageRange = document.getElementById("lockEngageRampRange");
+  const lockEngageVal   = document.getElementById("lockEngageRampValue");
   if (lockEngageRange) {
     lockEngageRange.addEventListener("input", () => {
       if (lockEngageVal) lockEngageVal.textContent = lockEngageRange.value;
@@ -781,8 +781,8 @@ function initSettings() {
     { element: "disengageUnderSpeedRange", key: "disengageUnderSpeed", parse: parseInt },
     { element: "disengageAboveSpeedRange", key: "disengageAboveSpeed", parse: parseInt },
     { element: "disableThrottleRange",     key: "disableThrottle",     parse: parseInt },
-    { element: "lockReleaseRateRange",     key: "lockReleaseRampMs",    parse: parseInt },
-    { element: "lockEngageRateRange",      key: "lockEngageRampMs",     parse: parseInt },
+    { element: "lockReleaseRampRange",     key: "lockReleaseRampMs",    parse: parseInt },
+    { element: "lockEngageRampRange",      key: "lockEngageRampMs",     parse: parseInt },
     { element: "steeringGainStartRange",   key: "steeringGainStartDeg",  parse: parseInt },
     { element: "steeringGainFullRange",    key: "steeringGainFullDeg",   parse: parseInt },
     { element: "steeringGainFloorRange",   key: "steeringGainFloor",     parse: parseInt },
@@ -856,10 +856,10 @@ function initSettings() {
 
   // Lock response: toggle slider enabled state and opacity when checkbox changes.
   const lockReleaseEnabledElem = document.getElementById("lockReleaseEnabled");
-  const lockReleaseRateElem    = document.getElementById("lockReleaseRateRange");
-  const lockReleaseContainer   = document.getElementById("lockReleaseRateContainer");
-  const lockEngageRateElem     = document.getElementById("lockEngageRateRange");
-  const lockEngageContainer    = document.getElementById("lockEngageRateContainer");
+  const lockReleaseRateElem    = document.getElementById("lockReleaseRampRange");
+  const lockReleaseContainer   = document.getElementById("lockReleaseRampContainer");
+  const lockEngageRateElem     = document.getElementById("lockEngageRampRange");
+  const lockEngageContainer    = document.getElementById("lockEngageRampContainer");
   if (lockReleaseEnabledElem) {
     lockReleaseEnabledElem.addEventListener("change", () => {
       const en = lockReleaseEnabledElem.checked;
