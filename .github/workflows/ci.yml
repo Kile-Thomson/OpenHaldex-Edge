@@ -2,7 +2,8 @@ name: CI
 
 on: [push, pull_request]
 
-# Least privilege: the build/test jobs only read the repo. No write scopes.
+# Least privilege at the workflow level: build/test jobs only read the repo.
+# The release job re-grants contents:write for itself only (see below).
 permissions:
   contents: read
 
@@ -29,14 +30,46 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pio-
 
-      - name: Install PlatformIO
-        run: pip install platformio
+      - name: Install PlatformIO and esptool
+        run: pip install platformio "esptool>=4.7,<5"
 
       - name: Build firmware
         run: pio run -e esp32c6
 
       - name: Build firmware (release profile)
         run: pio run -e esp32c6-release
+
+      - name: Build LittleFS web-UI image (release profile)
+        run: pio run -e esp32c6-release -t buildfs
+
+      - name: Merge into a single flashable binary
+        run: |
+          # boot_app0.bin seeds the otadata partition so a blank chip boots ota_0.
+          # The partition table is OTA-only (no factory slot), so this file is
+          # required for a bootable flash-from-scratch image, not optional. Fail
+          # hard if the framework did not provide it rather than silently emitting
+          # a merged image that may not boot on a blank device.
+          BOOT_APP0=$(ls ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin 2>/dev/null | head -n1)
+          if [ -z "$BOOT_APP0" ]; then
+            echo "error: boot_app0.bin not found under framework-arduinoespressif32; cannot build a bootable merged image" >&2
+            exit 1
+          fi
+          python scripts/merge_firmware.py \
+            --build-dir .pio/build/esp32c6-release \
+            --boot-app0 "$BOOT_APP0"
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhaldex-c6-firmware
+          if-no-files-found: error
+          path: |
+            .pio/build/esp32c6-release/firmware.bin
+            .pio/build/esp32c6-release/bootloader.bin
+            .pio/build/esp32c6-release/partitions.bin
+            .pio/build/esp32c6-release/littlefs.bin
+            .pio/build/esp32c6-release/firmware-merged.bin
+            .pio/build/esp32c6-release/SHA256SUMS.txt
 
   native-tests:
     name: Native tests
@@ -65,3 +98,50 @@ jobs:
 
       - name: Run native tests
         run: pio test -e native
+
+  release:
+    name: Publish release binaries
+    # Only on version tags, and only once build + tests are green.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [firmware-build, native-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: openhaldex-c6-firmware
+          path: dist
+
+      - name: Name the release assets after the tag
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          cp dist/firmware-merged.bin "dist/openhaldex-c6-${tag}-merged.bin"
+          cp dist/littlefs.bin        "dist/openhaldex-c6-${tag}-littlefs.bin"
+          cp dist/firmware.bin        "dist/openhaldex-c6-${tag}-app.bin"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --generate-notes \
+            --notes "Flash the merged image at offset 0x0:
+
+          \`\`\`sh
+          esptool.py --chip esp32c6 write_flash 0x0 openhaldex-c6-${tag}-merged.bin
+          \`\`\`
+
+          The merged image bundles the bootloader, partition table, firmware and the LittleFS web UI, so it is a complete flash-from-scratch build. \`SHA256SUMS.txt\` covers every asset. Individual \`app\`/\`littlefs\` binaries are attached for partial/OTA use.
+
+          This is a non-commercial modified fork of Forbes Automotive OpenHaldex-C6; the changes are listed in CHANGELOG.md. Distributed free of charge under the Forbes Automotive Source-Available License v1.0 (see LICENSE.md). Not affiliated with or endorsed by Forbes Automotive." \
+            "dist/openhaldex-c6-${tag}-merged.bin" \
+            "dist/openhaldex-c6-${tag}-littlefs.bin" \
+            "dist/openhaldex-c6-${tag}-app.bin" \
+            "dist/bootloader.bin" \
+            "dist/partitions.bin" \
+            "dist/SHA256SUMS.txt"

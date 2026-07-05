@@ -118,9 +118,20 @@ limiting - are Forbes's own work and are not repeated here.
 
 - **Host-runnable native test suite added.** A PlatformIO `[env:native]`
   environment with Unity characterization tests pins the pure-function core:
-  CRC8/AUTOSAR checksum, expert-map interpolation, lock-response rate limiting
-  and steering-gain reduction. Run with `pio test -e native`.
+  CRC8/AUTOSAR checksum, expert-map interpolation, lock-response rate limiting,
+  steering-gain reduction, and the low-power fps-threshold wake decision. The
+  wake decision was extracted into a pure `lpCanActive` seam so the firmware and
+  the native test share one source of truth. Run with `pio test -e native`.
 - **Release build profile added.** A separate `esp32c6-release` environment that
   forces all debug output off.
 - **Board definition added.** The `esp32-c6-mini-1-n4` board file the build
   requires, which the upstream source drop did not include.
+- **CI now packages a flashable binary.** The `firmware-build` job builds the
+  LittleFS web-UI image and merges the bootloader, partition table, firmware and
+  filesystem into one `firmware-merged.bin` (flash at `0x0`) via
+  `scripts/merge_firmware.py`, which resolves the flash offsets from the built
+  partition table. Every run uploads the individual binaries plus the merged
+  image and `SHA256SUMS.txt` as artifacts. A tag push (`v*`) publishes a merged
+  flash-from-scratch image and per-partition binaries to a GitHub Release. The
+  release job holds `contents: write` scoped to itself; the rest of CI stays
+  read-only.
