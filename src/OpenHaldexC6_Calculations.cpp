@@ -14,6 +14,58 @@ bool speed_disengage_ok(uint16_t speed, uint16_t disengage_under, uint16_t disen
   return above_lower && below_upper;
 }
 
+// Hysteretic speed-disengage gate. See include/OpenHaldexC6_Calculations.h for
+// the full rationale. Sharp entry, deadband exit; hysteresis 0 reduces exactly to
+// speed_disengage_ok. The `speed + hysteresis` form (rather than
+// `speed >= disengage_under - hysteresis`) keeps the arithmetic in unsigned range
+// so a small bound can never underflow, and the upper cast prevents u16 overflow.
+bool disengage_gate_hysteresis(uint16_t speed, uint16_t disengage_under, uint16_t disengage_above,
+                               uint16_t hysteresis, bool currently_enabled)
+{
+  // Not yet engaged: entry is sharp, exactly the nominal band.
+  if (!currently_enabled)
+  {
+    return speed_disengage_ok(speed, disengage_under, disengage_above);
+  }
+
+  // Already engaged: hold until speed moves `hysteresis` past a bound.
+  bool above_lower = (disengage_under == 0) ||
+                     ((uint32_t)speed + hysteresis >= disengage_under);
+  bool below_upper = (disengage_above == 0) ||
+                     (speed <= (uint32_t)disengage_above + hysteresis);
+  return above_lower && below_upper;
+}
+
+// Integrating debounce for a force-mode CAN flag. See
+// include/OpenHaldexC6_Calculations.h for the full rationale. A raw edge must
+// persist for `threshold` consecutive disagreeing frames before it is accepted;
+// any agreeing frame resets the counter, so a blip must be sustained. threshold
+// <= 1 accepts every edge immediately, reducing to today's undebounced bitRead.
+bool debounce_force_flag(bool raw, bool debounced, uint8_t &counter, uint8_t threshold)
+{
+  // Raw agrees with the accepted state: nothing pending, drop the counter.
+  if (raw == debounced)
+  {
+    counter = 0;
+    return debounced;
+  }
+
+  // Raw disagrees. threshold <= 1 accepts the edge on the first frame (no-op).
+  if (threshold <= 1)
+  {
+    counter = 0;
+    return raw;
+  }
+
+  // Count consecutive disagreeing frames; flip once the edge has held long enough.
+  if (++counter >= threshold)
+  {
+    counter = 0;
+    return raw;
+  }
+  return debounced;
+}
+
 // Strictly-ascending axis check for the expert-map interpolation.
 // See include/OpenHaldexC6_Calculations.h.
 bool is_strictly_ascending_u16(const uint16_t* arr, uint8_t count)
