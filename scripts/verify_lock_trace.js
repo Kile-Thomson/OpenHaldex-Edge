@@ -86,6 +86,14 @@ function vertices(ptsStr) {
 function count(tag) {
   return (svg.innerHTML.match(new RegExp(`<${tag}\\b`, "g")) || []).length;
 }
+// Dashed target polylines only (points= precedes stroke-dasharray in the markup).
+function dashedSegments() {
+  const re = /<polyline\b[^>]*\bpoints="([^"]*)"[^>]*stroke-dasharray/g;
+  const segs = [];
+  let m;
+  while ((m = re.exec(svg.innerHTML))) segs.push(vertices(m[1]));
+  return segs;
+}
 
 // 1) A run of samples with target present: actual polyline + a dashed target line.
 ctx.resetLockTrace();
@@ -108,14 +116,36 @@ check(Math.abs(actualPts[0][1] - yOf(0)) < 0.6,
 check(/stroke-dasharray/.test(svg.innerHTML), "target series drawn as a dashed line");
 check(count("polygon") === 1, "actual area fill drawn under the line");
 
-// 2) A missing actual reading is skipped, not plotted as a phantom zero.
+// 2) A missing actual reading is not plotted as a phantom zero: it breaks the
+//    actual line rather than dropping to the floor. Surrounding real readings on
+//    each side of the dropout draw as separate actual segments.
 ctx.resetLockTrace();
 clock += 500; ctx.pushLockSample(50, 50, clock);
+clock += 500; ctx.pushLockSample(50, 52, clock);
 clock += 500; ctx.pushLockSample(50, null, clock);   // dropped engagement
 clock += 500; ctx.pushLockSample(50, 55, clock);
+clock += 500; ctx.pushLockSample(50, 58, clock);
 ctx.renderLockTrace(clock);
-check(vertices(pointsOf("polyline", 0)).length === 2,
-  `null actual is not plotted (2 real points, got ${vertices(pointsOf("polyline", 0)).length})`);
+const actualVerts2 = [vertices(pointsOf("polyline", 0)), vertices(pointsOf("polyline", 1))];
+const totalActual = actualVerts2.reduce((n, v) => n + v.length, 0);
+check(totalActual === 4,
+  `null actual breaks the line, only the 4 real readings plot (got ${totalActual})`);
+check(!actualVerts2.flat().some(([, y]) => Math.abs(y - yOf(0)) < 0.6),
+  "no actual vertex dropped to the floor as a phantom zero");
+
+// 2b) An actual-only dropout must NOT break the target dashed line. The target
+//     is present across the whole span, so it stays one continuous segment even
+//     though the actual reading vanished for a frame (regression guard).
+ctx.resetLockTrace();
+clock += 500; ctx.pushLockSample(30, 10, clock);
+clock += 500; ctx.pushLockSample(30, null, clock);   // actual gone, target present
+clock += 500; ctx.pushLockSample(30, 20, clock);
+ctx.renderLockTrace(clock);
+const tSegs = dashedSegments();
+check(tSegs.length === 1,
+  `target stays one continuous dashed segment across an actual dropout (got ${tSegs.length})`);
+check(tSegs.length === 1 && tSegs[0].length === 3,
+  `target segment spans all 3 samples including the actual dropout (got ${tSegs[0] ? tSegs[0].length : 0})`);
 
 // 3) A gap in the target (no CAN) breaks the dashed line into separate segments
 //    rather than bridging the gap.

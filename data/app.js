@@ -627,14 +627,16 @@ function resetLockTrace() {
 }
 
 function pushLockSample(target, actual, now) {
-  // Only plot a real actual reading; a missing engagement value would otherwise
-  // draw a phantom drop to zero. Target may be absent (e.g. no CAN yet).
-  if (actual === undefined || actual === null) return;
-  // null/undefined target means "no CAN target right now" - keep it as null so the
-  // dashed line breaks rather than coercing to 0 (Number(null) === 0 would plot it).
+  // Target and actual drop out independently (CAN target absent vs. no engagement
+  // reading yet), so each is validated and stored on its own. A missing value is
+  // kept as null so the corresponding line *breaks* over that sample instead of
+  // coercing to a phantom 0 (Number(null) === 0 would plot it on the floor).
   const hasTarget = target !== undefined && target !== null && Number.isFinite(Number(target));
+  const hasActual = actual !== undefined && actual !== null && Number.isFinite(Number(actual));
+  // Nothing to record if both are absent - skip so no empty sample enters the ring.
+  if (!hasTarget && !hasActual) return;
   const t = hasTarget ? Math.max(0, Math.min(100, Number(target))) : null;
-  const a = Math.max(0, Math.min(100, Number(actual) || 0));
+  const a = hasActual ? Math.max(0, Math.min(100, Number(actual))) : null;
   lockTrace.push({ t: now, target: t, actual: a });
 
   // Drop points that have scrolled off the left edge, keeping one older sample
@@ -676,15 +678,28 @@ function renderLockTrace(now) {
   // clean left edge), so it plots directly; xPix clamps any off-screen point.
   const pts = lockTrace;
   if (pts.length >= 2) {
-    // Actual: filled area to the floor plus a bold line on top.
-    let line = "";
-    for (const p of pts) line += `${xPix(p.t).toFixed(1)},${yPix(p.actual).toFixed(1)} `;
-    const x0 = xPix(pts[0].t).toFixed(1);
-    const xN = xPix(pts[pts.length - 1].t).toFixed(1);
-    out += `<polygon points="${x0},${baseY.toFixed(1)} ${line.trim()} ${xN},${baseY.toFixed(1)}" fill="${ACTUAL}" fill-opacity="0.15" stroke="none"/>`;
-    out += `<polyline points="${line.trim()}" fill="none" stroke="${ACTUAL}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    // Actual: filled area to the floor plus a bold line on top, broken across any
+    // span where the engagement reading dropped out (p.actual === null) so a
+    // missing sample never bridges a false line through the gap.
+    let aSeg = [];
+    const flushActual = () => {
+      if (aSeg.length >= 2) {
+        const line = aSeg.map((p) => `${xPix(p.t).toFixed(1)},${yPix(p.actual).toFixed(1)}`).join(" ");
+        const x0 = xPix(aSeg[0].t).toFixed(1);
+        const xN = xPix(aSeg[aSeg.length - 1].t).toFixed(1);
+        out += `<polygon points="${x0},${baseY.toFixed(1)} ${line} ${xN},${baseY.toFixed(1)}" fill="${ACTUAL}" fill-opacity="0.15" stroke="none"/>`;
+        out += `<polyline points="${line}" fill="none" stroke="${ACTUAL}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+      }
+      aSeg = [];
+    };
+    for (const p of pts) {
+      if (p.actual === null) { flushActual(); continue; }
+      aSeg.push(p);
+    }
+    flushActual();
 
-    // Target: dashed line, only across the spans where a target was present.
+    // Target: dashed line, only across the spans where a target was present. Its
+    // gaps are driven solely by a missing target, independent of actual dropouts.
     let seg = "";
     for (const p of pts) {
       if (p.target === null) {
