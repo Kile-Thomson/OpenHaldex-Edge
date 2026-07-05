@@ -938,6 +938,62 @@ header h1 .accent {
     margin-top: 1rem;
 }
 
+/* Live lock-response strip chart: a rolling time-history of lock target vs
+   actual engagement, so the coupling's response and lag read at a glance while
+   tuning attack/release rates. Fixed aspect via the SVG viewBox. */
+.trace-window-label {
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+.lock-trace {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.5rem;
+}
+
+.lock-trace svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 320 / 160;
+}
+
+.trace-legend {
+    display: flex;
+    justify-content: center;
+    gap: 1.25rem;
+    margin-top: 0.6rem;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+
+.trace-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.trace-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 3px;
+    border-radius: 2px;
+}
+
+.trace-swatch-actual {
+    background: var(--primary-light);
+}
+
+.trace-swatch-target {
+    height: 0;
+    border-top: 2px dashed var(--text-dim);
+}
+
 .modal {
     display: none;
     position: fixed;
