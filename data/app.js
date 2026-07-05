@@ -111,16 +111,16 @@ async function initStoredSettings() {
 
     const lockRateRange = document.getElementById("lockReleaseRateRange");
     const lockRateVal   = document.getElementById("lockReleaseRateValue");
-    if (lockRateRange && data.lockReleaseRatePerSec !== undefined) {
-      lockRateRange.value = data.lockReleaseRatePerSec;
-      if (lockRateVal) lockRateVal.textContent = data.lockReleaseRatePerSec;
+    if (lockRateRange && data.lockReleaseRampMs !== undefined) {
+      lockRateRange.value = data.lockReleaseRampMs;
+      if (lockRateVal) lockRateVal.textContent = data.lockReleaseRampMs;
     }
 
     const lockEngageRange = document.getElementById("lockEngageRateRange");
     const lockEngageVal   = document.getElementById("lockEngageRateValue");
-    if (lockEngageRange && data.lockEngageRatePerSec !== undefined) {
-      lockEngageRange.value = data.lockEngageRatePerSec;
-      if (lockEngageVal) lockEngageVal.textContent = data.lockEngageRatePerSec;
+    if (lockEngageRange && data.lockEngageRampMs !== undefined) {
+      lockEngageRange.value = data.lockEngageRampMs;
+      if (lockEngageVal) lockEngageVal.textContent = data.lockEngageRampMs;
     }
 
     const lockReleaseEnabledElem = document.getElementById("lockReleaseEnabled");
@@ -781,8 +781,8 @@ function initSettings() {
     { element: "disengageUnderSpeedRange", key: "disengageUnderSpeed", parse: parseInt },
     { element: "disengageAboveSpeedRange", key: "disengageAboveSpeed", parse: parseInt },
     { element: "disableThrottleRange",     key: "disableThrottle",     parse: parseInt },
-    { element: "lockReleaseRateRange",     key: "lockReleaseRatePerSec", parse: parseFloat },
-    { element: "lockEngageRateRange",      key: "lockEngageRatePerSec",  parse: parseFloat },
+    { element: "lockReleaseRateRange",     key: "lockReleaseRampMs",    parse: parseInt },
+    { element: "lockEngageRateRange",      key: "lockEngageRampMs",     parse: parseInt },
     { element: "steeringGainStartRange",   key: "steeringGainStartDeg",  parse: parseInt },
     { element: "steeringGainFullRange",    key: "steeringGainFullDeg",   parse: parseInt },
     { element: "steeringGainFloorRange",   key: "steeringGainFloor",     parse: parseInt },
