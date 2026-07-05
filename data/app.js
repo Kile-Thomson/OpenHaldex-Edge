@@ -59,6 +59,7 @@ function initApp() {
   initModeButtons();
   initSettings();
   initExpertEditor();
+  initTuneChart();
   initLearn();
   initWifiSsid();
   initWifi();
@@ -1098,6 +1099,7 @@ function confirmEdit() {
 
   currentEditCell.textContent = value;
   cancelEdit();
+  renderTuneChart(); // keep the curve view in sync with the edited cell/axis
 }
 // end tune edit
 
@@ -1121,6 +1123,126 @@ function restoreDefaults() {
       i++;
     }
   }
+  renderTuneChart(); // redraw the curve view against the restored map
+}
+
+// ---- Expert tune-map visualization -----------------------------------------
+// Read-only line chart of the lock surface so the 7x7 grid of numbers reads as
+// curves. Two views: lock-vs-speed (one line per throttle band) and
+// lock-vs-throttle (one line per speed band). Redrawn whenever a cell or an axis
+// value changes, so a tuner sees the shape of the map while editing it.
+let tuneChartMode = "speed"; // "speed" = x-axis is speed, one line per throttle row
+
+// Series colour ramp: teal (cool, low band) -> red (hot, high band), so the
+// bands stay distinguishable and higher input reads as hotter.
+function seriesColor(i, n) {
+  const t = n <= 1 ? 0 : i / (n - 1);
+  const hue = 165 - 165 * t; // 165 (teal) down to 0 (red)
+  return `hsl(${hue.toFixed(0)}, 72%, 52%)`;
+}
+
+function renderTuneChart() {
+  const svg = document.getElementById("tuneChartSvg");
+  if (!svg) return;
+
+  const bySpeed = tuneChartMode === "speed";
+  const xHeader = bySpeed ? speedHeader : throttleHeader;
+  const seriesHeader = bySpeed ? throttleHeader : speedHeader;
+
+  if (!Array.isArray(xHeader) || !Array.isArray(seriesHeader) ||
+      xHeader.length < 2 || seriesHeader.length < 1 || !Array.isArray(currentLock)) {
+    svg.innerHTML = "";
+    return;
+  }
+
+  const nPoints = xHeader.length;
+  const nSeries = seriesHeader.length;
+
+  // geometry (viewBox 320x200)
+  const W = 320, H = 200;
+  const padL = 30, padR = 10, padT = 12, padB = 26;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const xMin = xHeader[0];
+  const xSpan = (xHeader[nPoints - 1] - xMin) || 1;
+  // Clamp X into the plot box like yPix clamps lock. The firmware rejects a
+  // non-ascending tune on upload, but the chart redraws live while a tuner is
+  // mid-edit, so an out-of-order axis value must not draw outside the viewBox.
+  const xPix = (v) => Math.max(padL, Math.min(W - padR, padL + ((v - xMin) / xSpan) * plotW));
+  const yPix = (lock) => padT + (1 - Math.max(0, Math.min(100, Number(lock) || 0)) / 100) * plotH;
+
+  const GRID = "#404040";   // --border, literal so it renders inside SVG on all browsers
+  const LABEL = "#9ca3af";  // --text-dim
+
+  let out = "";
+
+  // Y gridlines + labels (0/25/50/75/100 % lock)
+  for (let g = 0; g <= 100; g += 25) {
+    const y = yPix(g);
+    out += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="${GRID}" stroke-width="0.5"/>`;
+    out += `<text x="${padL - 4}" y="${(y + 3).toFixed(1)}" fill="${LABEL}" font-size="8" text-anchor="end">${g}</text>`;
+  }
+
+  // X-axis value labels. Coerce the axis value to a number before it goes into
+  // the string-built SVG so a non-numeric can never inject markup (the values are
+  // numeric today; this is defence-in-depth for the innerHTML assignment below).
+  for (let p = 0; p < nPoints; p++) {
+    const x = xPix(xHeader[p]);
+    out += `<text x="${x.toFixed(1)}" y="${H - padB + 12}" fill="${LABEL}" font-size="8" text-anchor="middle">${Number(xHeader[p])}</text>`;
+  }
+
+  // one polyline per series band
+  for (let s = 0; s < nSeries; s++) {
+    let pts = "";
+    for (let p = 0; p < nPoints; p++) {
+      const row = bySpeed ? currentLock[s] : currentLock[p];
+      const lock = row ? row[bySpeed ? p : s] : 0;
+      pts += `${xPix(xHeader[p]).toFixed(1)},${yPix(lock).toFixed(1)} `;
+    }
+    out += `<polyline points="${pts.trim()}" fill="none" stroke="${seriesColor(s, nSeries)}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
+
+  svg.innerHTML = out;
+
+  // legend: gradient strip across the ramp + the series values beneath it
+  const legendCaption = document.getElementById("chartLegendCaption");
+  const legendBar = document.getElementById("chartLegendBar");
+  const legendScale = document.getElementById("chartLegendScale");
+  if (legendCaption) legendCaption.textContent = bySpeed ? "Throttle %" : "Speed (km/h)";
+  if (legendBar) {
+    const stops = [];
+    for (let s = 0; s < nSeries; s++) {
+      const pct = (nSeries <= 1 ? 0 : (s / (nSeries - 1)) * 100).toFixed(0);
+      stops.push(`${seriesColor(s, nSeries)} ${pct}%`);
+    }
+    legendBar.style.background = `linear-gradient(90deg, ${stops.join(", ")})`;
+  }
+  if (legendScale) {
+    // Number() coercion for the same defence-in-depth reason as the axis labels.
+    legendScale.innerHTML = seriesHeader.map((v) => `<span>${Number(v)}</span>`).join("");
+  }
+}
+
+function initTuneChart() {
+  const btnSpeed = document.getElementById("chartViewSpeed");
+  const btnThrottle = document.getElementById("chartViewThrottle");
+  if (!btnSpeed || !btnThrottle) return;
+
+  function setMode(mode) {
+    tuneChartMode = mode;
+    const speedActive = mode === "speed";
+    btnSpeed.classList.toggle("active", speedActive);
+    btnThrottle.classList.toggle("active", !speedActive);
+    btnSpeed.setAttribute("aria-selected", String(speedActive));
+    btnThrottle.setAttribute("aria-selected", String(!speedActive));
+    renderTuneChart();
+  }
+
+  btnSpeed.addEventListener("click", () => setMode("speed"));
+  btnThrottle.addEventListener("click", () => setMode("throttle"));
+
+  renderTuneChart();
 }
 
 // initialise Learn Haldex UI

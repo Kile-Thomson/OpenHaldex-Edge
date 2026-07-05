@@ -113,6 +113,12 @@ limiting - are Forbes's own work and are not repeated here.
   hidden, and general touch and reduced-motion polish. Client-side hardening:
   overlapping status polls are guarded and time-bounded, missing DOM nodes are
   handled, and failed settings fetches no longer throw.
+- **Expert tune-map curve view.** The Expert editor now draws the lock surface
+  as a line chart below the grid, so the 7x7 table of numbers reads as curves
+  while you tune. Two views toggle between lock-vs-speed (one line per throttle
+  band) and lock-vs-throttle (one line per speed band), with a colour ramp and
+  legend for the bands. It is read-only and redraws as cells or axis values
+  change; it does not alter what is written to the Haldex.
 
 ### Build and test
 
