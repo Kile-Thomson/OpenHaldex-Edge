@@ -46,6 +46,24 @@ uint8_t lookup_learn_correction_factor(const uint8_t* table, uint8_t target);
 // symbols, host-testable.
 bool speed_disengage_ok(uint16_t speed, uint16_t disengage_under, uint16_t disengage_above);
 
+// Hysteretic (Schmitt-trigger) form of the speed-disengage gate. speed_disengage_ok
+// is a bare comparison with no memory, so a speed resting on disengage_under or
+// disengage_above and dithering by one unit flips the gate every frame - the lock
+// target then hunts 0 <-> target frame-to-frame (see getLockData). This adds a
+// deadband: entry is sharp (identical to speed_disengage_ok), but once enabled the
+// gate only drops out after speed moves `hysteresis` units PAST the bound
+// (speed < disengage_under - hysteresis, or speed > disengage_above + hysteresis).
+// Asymmetric on purpose: engage promptly, be reluctant to disengage, so sensor
+// noise at a steady cruise cannot chatter the clutch. hysteresis 0 reduces exactly
+// to speed_disengage_ok regardless of currently_enabled, so a zero band is a
+// behaviour-preserving no-op. currently_enabled is the gate's previous output.
+// A bound of 0 disables that side (no cut), matching speed_disengage_ok. The band
+// width is a bench-tuned calibration against real speed-signal noise, so this seam
+// is proven here but left unwired into getLockData until it can be tuned on the car.
+// Pure integer logic, no Arduino symbols, host-testable.
+bool disengage_gate_hysteresis(uint16_t speed, uint16_t disengage_under, uint16_t disengage_above,
+                               uint16_t hysteresis, bool currently_enabled);
+
 // True when arr[0..count-1] is strictly ascending (each element greater than the
 // previous). The expert 2D map (get_expert_lock_target) assumes ascending speed
 // and throttle axes; a non-monotonic axis makes the interpolation bracket search
