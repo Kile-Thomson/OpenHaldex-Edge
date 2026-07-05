@@ -370,28 +370,54 @@ uint8_t steering_gain_percent(uint16_t angle_tenths, uint16_t start_deg, uint16_
   return (uint8_t)(100 - reduction);
 }
 
-// Slew one step of the lock-target rate limiter. Rising transitions are capped
-// at engage_rate_per_sec %/s (0 = instantaneous, the historical behaviour);
-// falling transitions at release_rate_per_sec %/s.
-float lock_rate_limit_step(float current, float target, float engage_rate_per_sec, float release_rate_per_sec, float dt_s)
+// Slew one step of the lock-target rate limiter. Ramp times are milliseconds for
+// a full 0<->100 travel: rising transitions take engage_ms, falling transitions
+// take release_ms. 0 ms = instant in that direction - rising 0 is the historical
+// instant lock-up; falling 0 is an instant release (the old %/s scheme floored
+// release at a nonzero rate because rate 0 meant "never releases", a stuck-locked
+// footgun; in ms, 0 cleanly means "release immediately"). A ramp of N ms moves
+// 100000 * dt_s / N percent per step.
+float lock_rate_limit_step(float current, float target, uint16_t engage_ms, uint16_t release_ms, float dt_s)
 {
   if (target > current)
   {
-    if (engage_rate_per_sec <= 0.0f)
+    if (engage_ms == 0)
     {
       return target; // instant lock-up
     }
-    const float max_rise = engage_rate_per_sec * dt_s;
+    const float max_rise = 100000.0f * dt_s / (float)engage_ms;
     return (target < current + max_rise) ? target : current + max_rise;
   }
 
   if (target < current)
   {
-    const float max_drop = release_rate_per_sec * dt_s;
+    if (release_ms == 0)
+    {
+      return target; // instant release
+    }
+    const float max_drop = 100000.0f * dt_s / (float)release_ms;
     return (target > current - max_drop) ? target : current - max_drop;
   }
 
   return target;
+}
+
+// Convert a persisted lock-ramp rate (%/s) to the new full-travel time in ms.
+// Used once when migrating a device that stored the pre-ms unit: rate <= 0 is
+// instant (0 ms), otherwise ms = round(100000 / rate) clamped to the 1000 ms
+// slider ceiling so a very slow legacy rate lands on the 1 s maximum.
+uint16_t lock_ramp_ms_from_rate(float rate_per_sec)
+{
+  if (rate_per_sec <= 0.0f)
+  {
+    return 0; // instant
+  }
+  const float ms = 100000.0f / rate_per_sec;
+  if (ms >= 1000.0f)
+  {
+    return 1000; // clamp a slow legacy rate to the 1 s ceiling
+  }
+  return (uint16_t)(ms + 0.5f); // round to nearest ms
 }
 
 void startHaldexLearn()
@@ -421,9 +447,9 @@ void getLockData(twai_message_t &rx_message_chs)
 {
   // Calculate raw lock target then (optionally) apply rate-limited slewing.
   // When lockReleaseEnabled is false, all transitions to new lock % are instantaneous.
-  // When enabled, falling transitions are limited to `lockReleaseRatePerSec` %/s
-  // so the clutch releases gradually rather than snapping open, and rising
-  // transitions to `lockEngageRatePerSec` %/s (0 = instantaneous, the default).
+  // When enabled, falling transitions take `lockReleaseRampMs` ms for a full
+  // release so the clutch opens gradually rather than snapping, and rising
+  // transitions take `lockEngageRampMs` ms (0 = instantaneous, the default).
   static float smoothed_lock_target = 0.0f;
   static uint32_t last_lock_ms = 0;
 
@@ -459,7 +485,7 @@ void getLockData(twai_message_t &rx_message_chs)
     last_lock_ms = now_ms;
 
     smoothed_lock_target = lock_rate_limit_step(smoothed_lock_target, raw_target,
-                                                lockEngageRatePerSec, lockReleaseRatePerSec, dt_s);
+                                                lockEngageRampMs, lockReleaseRampMs, dt_s);
   }
   lock_target = smoothed_lock_target;
 

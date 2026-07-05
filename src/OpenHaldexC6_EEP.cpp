@@ -55,8 +55,18 @@ static void loadSettingsFrom(Preferences &src)
   }
   udsMQBEnabled = src.getBool("udsMQBEn", false);                   // load UDS MQB polling enable
   forceModesPriority = src.getUChar("forceModesPrio", 0);           // load force-modes priority (0=TC>Haz>Ext)
-  lockReleaseRatePerSec = src.getFloat("lockReleaseRate", 120.0f);  // load lock release rate (%/s)
-  lockEngageRatePerSec = src.getFloat("lockEngageRate", 0.0f);      // load lock engage rate (%/s, 0 = instant)
+  // Lock ramp times moved from %/s to ms-for-full-travel. Prefer the new key;
+  // if only the legacy %/s key is present (a device seeded on older firmware, or
+  // a legacy-namespace migration), convert it once via lock_ramp_ms_from_rate.
+  // The converted value is re-persisted on the next writeEEP under the ms key.
+  if (src.isKey("lockReleaseMs"))
+    lockReleaseRampMs = src.getUShort("lockReleaseMs", 500);        // load lock release ramp (ms)
+  else
+    lockReleaseRampMs = lock_ramp_ms_from_rate(src.getFloat("lockReleaseRate", 120.0f)); // migrate legacy %/s
+  if (src.isKey("lockEngageMs"))
+    lockEngageRampMs = src.getUShort("lockEngageMs", 0);            // load lock engage ramp (ms)
+  else
+    lockEngageRampMs = lock_ramp_ms_from_rate(src.getFloat("lockEngageRate", 0.0f));      // migrate legacy %/s
   lockReleaseEnabled = src.getBool("lockReleaseEn", true);          // load lock release enable
   steeringGainEnabled = src.getBool("steerGainEn", false);          // load steering-gain toggle
   steeringGainStartDeg = src.getUShort("steerGainStart", 45);       // load steering-gain start angle
@@ -111,8 +121,8 @@ static void persistSettingsToPref()
   pref.putString("wifiSsid", wifiSsid);                    // save WiFi SSID
   pref.putBool("udsMQBEn", udsMQBEnabled);                 // save UDS MQB polling enable
   pref.putUChar("forceModesPrio", forceModesPriority);     // save force-modes priority order
-  pref.putFloat("lockReleaseRate", lockReleaseRatePerSec); // save lock release rate (%/s)
-  pref.putFloat("lockEngageRate", lockEngageRatePerSec);   // save lock engage rate (%/s)
+  pref.putUShort("lockReleaseMs", lockReleaseRampMs); // save lock release ramp (ms)
+  pref.putUShort("lockEngageMs", lockEngageRampMs);   // save lock engage ramp (ms)
   pref.putBool("lockReleaseEn", lockReleaseEnabled);       // save lock release enable
   pref.putBool("steerGainEn", steeringGainEnabled);        // save steering-gain toggle
   pref.putUShort("steerGainStart", steeringGainStartDeg);  // save steering-gain start angle
@@ -307,8 +317,8 @@ void writeEEP(void *arg) // task function to periodically write preferences
     pref.putString("wifiPwd", wifiPassword); // write WiFi AP password
     pref.putBool("udsMQBEn", udsMQBEnabled); // write UDS MQB polling enable
     pref.putUChar("forceModesPrio", forceModesPriority);      // write force-modes priority order
-    pref.putFloat("lockReleaseRate", lockReleaseRatePerSec);  // write lock release rate (%/s)
-    pref.putFloat("lockEngageRate", lockEngageRatePerSec);    // write lock engage rate (%/s)
+    pref.putUShort("lockReleaseMs", lockReleaseRampMs);  // write lock release ramp (ms)
+    pref.putUShort("lockEngageMs", lockEngageRampMs);    // write lock engage ramp (ms)
     pref.putBool("lockReleaseEn", lockReleaseEnabled);        // write lock release enable
     pref.putBool("steerGainEn", steeringGainEnabled);         // write steering-gain toggle
     pref.putUShort("steerGainStart", steeringGainStartDeg);   // write steering-gain start angle

@@ -109,30 +109,30 @@ async function initStoredSettings() {
     document.getElementById("ledBrightnessRange").value = ledBrightPct;
     document.getElementById("ledBrightnessValue").textContent = ledBrightPct;
 
-    const lockRateRange = document.getElementById("lockReleaseRateRange");
-    const lockRateVal   = document.getElementById("lockReleaseRateValue");
-    if (lockRateRange && data.lockReleaseRatePerSec !== undefined) {
-      lockRateRange.value = data.lockReleaseRatePerSec;
-      if (lockRateVal) lockRateVal.textContent = data.lockReleaseRatePerSec;
+    const lockReleaseRange = document.getElementById("lockReleaseRampRange");
+    const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
+    if (lockReleaseRange && data.lockReleaseRampMs !== undefined) {
+      lockReleaseRange.value = data.lockReleaseRampMs;
+      if (lockReleaseVal) lockReleaseVal.textContent = data.lockReleaseRampMs;
     }
 
-    const lockEngageRange = document.getElementById("lockEngageRateRange");
-    const lockEngageVal   = document.getElementById("lockEngageRateValue");
-    if (lockEngageRange && data.lockEngageRatePerSec !== undefined) {
-      lockEngageRange.value = data.lockEngageRatePerSec;
-      if (lockEngageVal) lockEngageVal.textContent = data.lockEngageRatePerSec;
+    const lockEngageRange = document.getElementById("lockEngageRampRange");
+    const lockEngageVal   = document.getElementById("lockEngageRampValue");
+    if (lockEngageRange && data.lockEngageRampMs !== undefined) {
+      lockEngageRange.value = data.lockEngageRampMs;
+      if (lockEngageVal) lockEngageVal.textContent = data.lockEngageRampMs;
     }
 
     const lockReleaseEnabledElem = document.getElementById("lockReleaseEnabled");
     if (lockReleaseEnabledElem) {
       lockReleaseEnabledElem.checked = data.lockReleaseEnabled !== undefined ? data.lockReleaseEnabled : true;
       const en = lockReleaseEnabledElem.checked;
-      const containers = ["lockReleaseRateContainer", "lockEngageRateContainer"];
+      const containers = ["lockReleaseRampContainer", "lockEngageRampContainer"];
       containers.forEach((id) => {
         const container = document.getElementById(id);
         if (container) container.style.opacity = en ? "" : "0.4";
       });
-      if (lockRateRange) lockRateRange.disabled = !en;
+      if (lockReleaseRange) lockReleaseRange.disabled = !en;
       if (lockEngageRange) lockEngageRange.disabled = !en;
     }
 
@@ -580,7 +580,7 @@ async function saveSetting(key, value) {
 
 // Semi-circular engagement arc, radius 80 centred at (100,100): the fill sweeps
 // with the ACTUAL engagement, the tick marks the TARGET, so the lag between them
-// (lock response rates, coupling response) reads at a glance.
+// (lock response ramp, coupling response) reads at a glance.
 const GAUGE_ARC_LEN = Math.PI * 80; // length of the 180-degree track
 
 function updateEngagementGauge(target, actual) {
@@ -666,16 +666,16 @@ function initNavigation() {
     });
   }
 
-  // Lock response rate sliders (display update only — save handled in initSettings)
-  const lockRateRange = document.getElementById("lockReleaseRateRange");
-  const lockRateVal   = document.getElementById("lockReleaseRateValue");
-  if (lockRateRange) {
-    lockRateRange.addEventListener("input", () => {
-      if (lockRateVal) lockRateVal.textContent = lockRateRange.value;
+  // Lock response ramp sliders (display update only — save handled in initSettings)
+  const lockReleaseRange = document.getElementById("lockReleaseRampRange");
+  const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
+  if (lockReleaseRange) {
+    lockReleaseRange.addEventListener("input", () => {
+      if (lockReleaseVal) lockReleaseVal.textContent = lockReleaseRange.value;
     });
   }
-  const lockEngageRange = document.getElementById("lockEngageRateRange");
-  const lockEngageVal   = document.getElementById("lockEngageRateValue");
+  const lockEngageRange = document.getElementById("lockEngageRampRange");
+  const lockEngageVal   = document.getElementById("lockEngageRampValue");
   if (lockEngageRange) {
     lockEngageRange.addEventListener("input", () => {
       if (lockEngageVal) lockEngageVal.textContent = lockEngageRange.value;
@@ -781,8 +781,8 @@ function initSettings() {
     { element: "disengageUnderSpeedRange", key: "disengageUnderSpeed", parse: parseInt },
     { element: "disengageAboveSpeedRange", key: "disengageAboveSpeed", parse: parseInt },
     { element: "disableThrottleRange",     key: "disableThrottle",     parse: parseInt },
-    { element: "lockReleaseRateRange",     key: "lockReleaseRatePerSec", parse: parseFloat },
-    { element: "lockEngageRateRange",      key: "lockEngageRatePerSec",  parse: parseFloat },
+    { element: "lockReleaseRampRange",     key: "lockReleaseRampMs",    parse: parseInt },
+    { element: "lockEngageRampRange",      key: "lockEngageRampMs",     parse: parseInt },
     { element: "steeringGainStartRange",   key: "steeringGainStartDeg",  parse: parseInt },
     { element: "steeringGainFullRange",    key: "steeringGainFullDeg",   parse: parseInt },
     { element: "steeringGainFloorRange",   key: "steeringGainFloor",     parse: parseInt },
@@ -856,16 +856,16 @@ function initSettings() {
 
   // Lock response: toggle slider enabled state and opacity when checkbox changes.
   const lockReleaseEnabledElem = document.getElementById("lockReleaseEnabled");
-  const lockReleaseRateElem    = document.getElementById("lockReleaseRateRange");
-  const lockReleaseContainer   = document.getElementById("lockReleaseRateContainer");
-  const lockEngageRateElem     = document.getElementById("lockEngageRateRange");
-  const lockEngageContainer    = document.getElementById("lockEngageRateContainer");
+  const lockReleaseElem    = document.getElementById("lockReleaseRampRange");
+  const lockReleaseContainer   = document.getElementById("lockReleaseRampContainer");
+  const lockEngageElem     = document.getElementById("lockEngageRampRange");
+  const lockEngageContainer    = document.getElementById("lockEngageRampContainer");
   if (lockReleaseEnabledElem) {
     lockReleaseEnabledElem.addEventListener("change", () => {
       const en = lockReleaseEnabledElem.checked;
-      if (lockReleaseRateElem) lockReleaseRateElem.disabled = !en;
+      if (lockReleaseElem) lockReleaseElem.disabled = !en;
       if (lockReleaseContainer) lockReleaseContainer.style.opacity = en ? "" : "0.4";
-      if (lockEngageRateElem) lockEngageRateElem.disabled = !en;
+      if (lockEngageElem) lockEngageElem.disabled = !en;
       if (lockEngageContainer) lockEngageContainer.style.opacity = en ? "" : "0.4";
     });
   }

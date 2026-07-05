@@ -520,8 +520,8 @@
             </section>
 
             <section class="card">
-                <h2>Lock Response Rates (%/s)</h2>
-                <p class="hint">Controls how quickly the lock target ramps up (attack) and decays (release) on changes. Higher = faster. Attack 0 = instantaneous lock-up. Disable for instant transitions in both directions (legacy behaviour).</p>
+                <h2>Lock Response Times (ms)</h2>
+                <p class="hint">How long the lock target takes to ramp up (attack) and decay (release) on changes - time for a full 0-100% travel. Higher = slower. 0 = instant in that direction. Disable rate limiting for instant transitions both ways (legacy behaviour).</p>
 
                 <div class="toggle-group">
                     <label class="toggle">
@@ -531,14 +531,14 @@
                     </label>
                 </div>
                 <p class="hint">Attack (lock-up)</p>
-                <div class="slider-container" id="lockEngageRateContainer">
-                    <input type="range" id="lockEngageRateRange" min="0" max="500" step="5" value="0" class="slider">
-                    <div class="slider-value"><span id="lockEngageRateValue">0</span> %/s</div>
+                <div class="slider-container" id="lockEngageRampContainer">
+                    <input type="range" id="lockEngageRampRange" min="0" max="1000" step="10" value="0" class="slider">
+                    <div class="slider-value"><span id="lockEngageRampValue">0</span> ms</div>
                 </div>
                 <p class="hint">Release</p>
-                <div class="slider-container" id="lockReleaseRateContainer">
-                    <input type="range" id="lockReleaseRateRange" min="5" max="500" step="5" value="120" class="slider">
-                    <div class="slider-value"><span id="lockReleaseRateValue">120</span> %/s</div>
+                <div class="slider-container" id="lockReleaseRampContainer">
+                    <input type="range" id="lockReleaseRampRange" min="0" max="1000" step="10" value="500" class="slider">
+                    <div class="slider-value"><span id="lockReleaseRampValue">500</span> ms</div>
                 </div>
             </section>
 

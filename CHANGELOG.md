@@ -91,6 +91,20 @@ limiting - are Forbes's own work and are not repeated here.
   consolidated onto a single `openhaldex` namespace with a first-run seeded
   sentinel and a one-time migration from the prior de-facto namespace.
 
+### Changed
+
+- **Lock response tuning re-united from %/s to milliseconds.** The attack and
+  release sliders were percent-per-second, so a "5 second decay" was buried in an
+  awkward unit (5 %/s) and fine control was impossible - near the fast end even a
+  10 ms change needed thousands of %/s of slider resolution. They are now
+  milliseconds for a full 0-100% travel, `0-1000 ms` in clean 10 ms steps, and
+  `0 = instant` in each direction. Making release instant also removes a footgun:
+  under the old unit a release rate of 0 meant "never releases" (clutch stuck
+  locked), which is why release was floored at a nonzero rate; in milliseconds 0
+  cleanly means "snap open." Persisted `%/s` settings on existing devices are
+  migrated once to the equivalent time (old 120 %/s release default becomes
+  833 ms) and re-saved under the new keys.
+
 ### Added
 
 - **Steering-gain reduction (off by default).** Scales the lock target down as

@@ -304,8 +304,8 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["disengageAboveSpeed"] = disengageAboveSpeed;
     data["disableThrottle"] = disableThrottle;
     data["mode"] = lastMode;
-    data["lockReleaseRatePerSec"] = lockReleaseRatePerSec;
-    data["lockEngageRatePerSec"] = lockEngageRatePerSec;
+    data["lockReleaseRampMs"] = lockReleaseRampMs;
+    data["lockEngageRampMs"] = lockEngageRampMs;
     data["steeringGainStartDeg"] = steeringGainStartDeg;
     data["steeringGainFullDeg"] = steeringGainFullDeg;
     data["steeringGainFloor"] = steeringGainFloor;
@@ -439,22 +439,22 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         xSemaphoreGive(stateMutex);
     }
 
-    // Lock-response rates: the UI has always POSTed these on save, but nothing
-    // accepted them, so the sliders silently did nothing. Read on the hot path
-    // inside getLockData's critical section, so write under the same lock.
-    if (data["lockReleaseRatePerSec"].is<float>())
+    // Lock-response ramp times (ms for a full 0<->100 travel). Read on the hot
+    // path inside getLockData's critical section, so write under the same lock.
+    // 0 = instant in that direction; the 1000 ms ceiling matches the slider.
+    if (data["lockReleaseRampMs"].is<uint16_t>())
     {
-        float value = data["lockReleaseRatePerSec"];
+        uint16_t value = data["lockReleaseRampMs"];
         xSemaphoreTake(stateMutex, portMAX_DELAY);
-        lockReleaseRatePerSec = constrain(value, 5.0f, 500.0f); // 0 would leave the lock unable to release
+        lockReleaseRampMs = constrain(value, 0, 1000); // 0 = instant release
         xSemaphoreGive(stateMutex);
     }
 
-    if (data["lockEngageRatePerSec"].is<float>())
+    if (data["lockEngageRampMs"].is<uint16_t>())
     {
-        float value = data["lockEngageRatePerSec"];
+        uint16_t value = data["lockEngageRampMs"];
         xSemaphoreTake(stateMutex, portMAX_DELAY);
-        lockEngageRatePerSec = constrain(value, 0.0f, 500.0f); // 0 = instant lock-up
+        lockEngageRampMs = constrain(value, 0, 1000); // 0 = instant lock-up
         xSemaphoreGive(stateMutex);
     }
 

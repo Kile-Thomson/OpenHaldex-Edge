@@ -11,7 +11,20 @@ extern volatile uint8_t haldexLearnStep;
 extern volatile uint8_t haldexLearnCF;
 
 float get_lock_target_adjustment();
-float lock_rate_limit_step(float current, float target, float engage_rate_per_sec, float release_rate_per_sec, float dt_s);
+
+// Slew one step of the lock-target rate limiter. Ramp times are milliseconds for
+// a full 0<->100 travel: rising transitions take engage_ms, falling transitions
+// take release_ms. 0 ms = instant in that direction (rising 0 is the historical
+// instant lock-up; falling 0 is an instant release, replacing the old %/s scheme
+// where release rate 0 meant "never releases" - a stuck-locked footgun on a car).
+// A ramp of N ms moves 100000 * dt_s / N percent per step. Pure, host-testable.
+float lock_rate_limit_step(float current, float target, uint16_t engage_ms, uint16_t release_ms, float dt_s);
+
+// One-time migration of a persisted lock-ramp rate (%/s, the pre-ms unit) to the
+// new full-travel time in milliseconds. rate <= 0 maps to 0 ms (instant);
+// otherwise ms = round(100000 / rate), clamped to the 1000 ms slider ceiling
+// (so a very slow legacy rate becomes the 1 s maximum). Pure, host-testable.
+uint16_t lock_ramp_ms_from_rate(float rate_per_sec);
 uint8_t steering_gain_percent(uint16_t angle_tenths, uint16_t start_deg, uint16_t full_deg, uint8_t floor_percent);
 static float get_expert_lock_target();
 uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert);
