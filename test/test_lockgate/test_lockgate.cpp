@@ -109,6 +109,100 @@ void test_hysteresis_no_underflow_near_zero(void)
   TEST_ASSERT_TRUE_MESSAGE(en, "speed 0 within band, no underflow -> hold");
 }
 
+// ---- force-mode flag debounce ----------------------------------------------
+//
+// The TC/hazard/external force-mode flags are read with a bare bitRead every
+// chassis frame (OpenHaldexC6_can.cpp) with no memory, so a single-frame edge
+// flips force mode for exactly one cycle. debounce_force_flag() requires an edge
+// to hold `threshold` consecutive frames before accepting it; threshold <= 1 is
+// today's undebounced behaviour, so wiring it in at a default of 0 is a no-op.
+
+void test_no_debounce_passes_single_frame_blip(void)
+{
+  // The mechanism: threshold <= 1 (or the historical bitRead) lets a one-frame
+  // blip straight through. This is what a real debounce must suppress.
+  uint8_t counter = 0;
+  bool db = debounce_force_flag(true, false, counter, 1); // one-frame edge
+  TEST_ASSERT_TRUE_MESSAGE(db, "threshold 1: single blip flips output immediately");
+  db = debounce_force_flag(false, db, counter, 1); // bit gone next frame
+  TEST_ASSERT_FALSE_MESSAGE(db, "threshold 1: edge back off immediately");
+}
+
+void test_debounce_rejects_short_blip(void)
+{
+  // threshold 3: a 2-frame blip must never reach the output.
+  const uint8_t th = 3;
+  uint8_t counter = 0;
+  bool db = false;
+  db = debounce_force_flag(true, db, counter, th); // frame 1 of blip
+  TEST_ASSERT_FALSE_MESSAGE(db, "blip frame 1 -> still off");
+  db = debounce_force_flag(true, db, counter, th); // frame 2 of blip
+  TEST_ASSERT_FALSE_MESSAGE(db, "blip frame 2 -> still off");
+  db = debounce_force_flag(false, db, counter, th); // blip ends before frame 3
+  TEST_ASSERT_FALSE_MESSAGE(db, "blip ended -> never engaged");
+}
+
+void test_debounce_accepts_sustained_edge(void)
+{
+  // threshold 3: a genuine edge held for 3 frames flips on the 3rd.
+  const uint8_t th = 3;
+  uint8_t counter = 0;
+  bool db = false;
+  db = debounce_force_flag(true, db, counter, th);
+  TEST_ASSERT_FALSE_MESSAGE(db, "frame 1 -> pending");
+  db = debounce_force_flag(true, db, counter, th);
+  TEST_ASSERT_FALSE_MESSAGE(db, "frame 2 -> pending");
+  db = debounce_force_flag(true, db, counter, th);
+  TEST_ASSERT_TRUE_MESSAGE(db, "frame 3 -> accepted");
+}
+
+void test_debounce_symmetric_on_release(void)
+{
+  // Once engaged, a short off-blip is rejected; a sustained off is accepted.
+  const uint8_t th = 3;
+  uint8_t counter = 0;
+  bool db = true; // already engaged
+  db = debounce_force_flag(false, db, counter, th); // off frame 1
+  TEST_ASSERT_TRUE_MESSAGE(db, "off blip frame 1 -> hold engaged");
+  db = debounce_force_flag(true, db, counter, th);  // bit back on, blip over
+  TEST_ASSERT_TRUE_MESSAGE(db, "bit restored -> stays engaged");
+  // Now a real sustained release.
+  db = debounce_force_flag(false, db, counter, th);
+  db = debounce_force_flag(false, db, counter, th);
+  db = debounce_force_flag(false, db, counter, th);
+  TEST_ASSERT_FALSE_MESSAGE(db, "3 consecutive off frames -> released");
+}
+
+void test_debounce_counter_resets_on_agreement(void)
+{
+  // An agreeing frame in the middle of a blip resets the counter, so pending
+  // frames do not accumulate across a gap: 2 on, 1 off, 2 on must not flip.
+  const uint8_t th = 3;
+  uint8_t counter = 0;
+  bool db = false;
+  db = debounce_force_flag(true, db, counter, th);  // pending 1
+  db = debounce_force_flag(true, db, counter, th);  // pending 2
+  db = debounce_force_flag(false, db, counter, th); // agrees with off -> reset
+  TEST_ASSERT_FALSE_MESSAGE(db, "gap -> still off");
+  db = debounce_force_flag(true, db, counter, th);  // pending 1 again
+  db = debounce_force_flag(true, db, counter, th);  // pending 2 again
+  TEST_ASSERT_FALSE_MESSAGE(db, "counter reset by gap -> not yet accepted");
+}
+
+void test_debounce_threshold_zero_is_passthrough(void)
+{
+  // threshold 0 must equal the raw bit for any sequence, whatever the prior
+  // state - so a default threshold of 0 is a behaviour-preserving no-op.
+  const bool seq[] = {true, false, true, true, false, false, true};
+  uint8_t counter = 0;
+  bool db = false;
+  for (unsigned i = 0; i < sizeof(seq) / sizeof(seq[0]); i++)
+  {
+    db = debounce_force_flag(seq[i], db, counter, 0);
+    TEST_ASSERT_EQUAL_MESSAGE(seq[i], db, "threshold 0 -> output tracks raw exactly");
+  }
+}
+
 int main(int, char **)
 {
   UNITY_BEGIN();
@@ -118,5 +212,11 @@ int main(int, char **)
   RUN_TEST(test_hysteresis_holds_at_upper_bound);
   RUN_TEST(test_hysteresis_zero_is_the_sharp_gate);
   RUN_TEST(test_hysteresis_no_underflow_near_zero);
+  RUN_TEST(test_no_debounce_passes_single_frame_blip);
+  RUN_TEST(test_debounce_rejects_short_blip);
+  RUN_TEST(test_debounce_accepts_sustained_edge);
+  RUN_TEST(test_debounce_symmetric_on_release);
+  RUN_TEST(test_debounce_counter_resets_on_agreement);
+  RUN_TEST(test_debounce_threshold_zero_is_passthrough);
   return UNITY_END();
 }

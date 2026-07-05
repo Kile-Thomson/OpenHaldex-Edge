@@ -64,6 +64,25 @@ bool speed_disengage_ok(uint16_t speed, uint16_t disengage_under, uint16_t disen
 bool disengage_gate_hysteresis(uint16_t speed, uint16_t disengage_under, uint16_t disengage_above,
                                uint16_t hysteresis, bool currently_enabled);
 
+// Integrating debounce for a force-mode CAN flag (TC/ESP "passiv", hazard lights,
+// external button). Today these are read with a bare bitRead every chassis frame
+// (OpenHaldexC6_can.cpp:335/355/385/443) with no memory, so a single-frame edge -
+// a one-frame ESP "passiv" blip, a stray hazard bit - flips force mode for exactly
+// as long as the source bit is set, and (with the release ramp off, the default)
+// snaps the lock target for that cycle unfiltered. This requires a raw edge to
+// persist for `threshold` consecutive frames before it is accepted; a shorter blip
+// is rejected and the debounced state holds. `counter` is caller-owned scratch
+// state (one per flag) counting consecutive frames the raw bit has disagreed with
+// the debounced state; it is reset to 0 whenever raw agrees, so a blip must be
+// sustained, not merely cumulative. threshold <= 1 accepts every edge immediately,
+// reducing exactly to today's undebounced bitRead, so wiring this in with a default
+// threshold of 0 is a behaviour-preserving no-op. The frame count needed to reject
+// real-world bus noise without adding felt latency to a genuine ESP/hazard event is
+// a bench-tuned calibration, so this seam is proven here but left unwired until it
+// can be tuned on the car. Pure boolean/counter logic, no Arduino/TWAI symbols,
+// host-testable.
+bool debounce_force_flag(bool raw, bool debounced, uint8_t &counter, uint8_t threshold);
+
 // True when arr[0..count-1] is strictly ascending (each element greater than the
 // previous). The expert 2D map (get_expert_lock_target) assumes ascending speed
 // and throttle axes; a non-monotonic axis makes the interpolation bracket search
