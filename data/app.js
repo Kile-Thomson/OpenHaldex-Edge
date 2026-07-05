@@ -109,11 +109,11 @@ async function initStoredSettings() {
     document.getElementById("ledBrightnessRange").value = ledBrightPct;
     document.getElementById("ledBrightnessValue").textContent = ledBrightPct;
 
-    const lockRateRange = document.getElementById("lockReleaseRampRange");
-    const lockRateVal   = document.getElementById("lockReleaseRampValue");
-    if (lockRateRange && data.lockReleaseRampMs !== undefined) {
-      lockRateRange.value = data.lockReleaseRampMs;
-      if (lockRateVal) lockRateVal.textContent = data.lockReleaseRampMs;
+    const lockReleaseRange = document.getElementById("lockReleaseRampRange");
+    const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
+    if (lockReleaseRange && data.lockReleaseRampMs !== undefined) {
+      lockReleaseRange.value = data.lockReleaseRampMs;
+      if (lockReleaseVal) lockReleaseVal.textContent = data.lockReleaseRampMs;
     }
 
     const lockEngageRange = document.getElementById("lockEngageRampRange");
@@ -132,7 +132,7 @@ async function initStoredSettings() {
         const container = document.getElementById(id);
         if (container) container.style.opacity = en ? "" : "0.4";
       });
-      if (lockRateRange) lockRateRange.disabled = !en;
+      if (lockReleaseRange) lockReleaseRange.disabled = !en;
       if (lockEngageRange) lockEngageRange.disabled = !en;
     }
 
@@ -580,7 +580,7 @@ async function saveSetting(key, value) {
 
 // Semi-circular engagement arc, radius 80 centred at (100,100): the fill sweeps
 // with the ACTUAL engagement, the tick marks the TARGET, so the lag between them
-// (lock response rates, coupling response) reads at a glance.
+// (lock response ramp, coupling response) reads at a glance.
 const GAUGE_ARC_LEN = Math.PI * 80; // length of the 180-degree track
 
 function updateEngagementGauge(target, actual) {
@@ -666,12 +666,12 @@ function initNavigation() {
     });
   }
 
-  // Lock response rate sliders (display update only — save handled in initSettings)
-  const lockRateRange = document.getElementById("lockReleaseRampRange");
-  const lockRateVal   = document.getElementById("lockReleaseRampValue");
-  if (lockRateRange) {
-    lockRateRange.addEventListener("input", () => {
-      if (lockRateVal) lockRateVal.textContent = lockRateRange.value;
+  // Lock response ramp sliders (display update only — save handled in initSettings)
+  const lockReleaseRange = document.getElementById("lockReleaseRampRange");
+  const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
+  if (lockReleaseRange) {
+    lockReleaseRange.addEventListener("input", () => {
+      if (lockReleaseVal) lockReleaseVal.textContent = lockReleaseRange.value;
     });
   }
   const lockEngageRange = document.getElementById("lockEngageRampRange");
@@ -856,16 +856,16 @@ function initSettings() {
 
   // Lock response: toggle slider enabled state and opacity when checkbox changes.
   const lockReleaseEnabledElem = document.getElementById("lockReleaseEnabled");
-  const lockReleaseRateElem    = document.getElementById("lockReleaseRampRange");
+  const lockReleaseElem    = document.getElementById("lockReleaseRampRange");
   const lockReleaseContainer   = document.getElementById("lockReleaseRampContainer");
-  const lockEngageRateElem     = document.getElementById("lockEngageRampRange");
+  const lockEngageElem     = document.getElementById("lockEngageRampRange");
   const lockEngageContainer    = document.getElementById("lockEngageRampContainer");
   if (lockReleaseEnabledElem) {
     lockReleaseEnabledElem.addEventListener("change", () => {
       const en = lockReleaseEnabledElem.checked;
-      if (lockReleaseRateElem) lockReleaseRateElem.disabled = !en;
+      if (lockReleaseElem) lockReleaseElem.disabled = !en;
       if (lockReleaseContainer) lockReleaseContainer.style.opacity = en ? "" : "0.4";
-      if (lockEngageRateElem) lockEngageRateElem.disabled = !en;
+      if (lockEngageElem) lockEngageElem.disabled = !en;
       if (lockEngageContainer) lockEngageContainer.style.opacity = en ? "" : "0.4";
     });
   }
