@@ -117,8 +117,37 @@ limiting - are Forbes's own work and are not repeated here.
   cleanly means "snap open." Persisted `%/s` settings on existing devices are
   migrated once to the equivalent time (old 120 %/s release default becomes
   833 ms) and re-saved under the new keys.
+- **Dashboard layout consolidation.** The five tabs were 21 stacked single-topic
+  cards; related controls are now grouped into 13, cutting vertical scrolling
+  by roughly 40% with no signal removed. The Lock Response trace folds into the
+  Engagement hero card and the Haldex state readout into the glance card footer;
+  the three lock-disable cutoffs (under-speed, above-speed, min-throttle) become
+  one "Lock Disable Conditions" card with a per-row icon and a live hint that
+  warns when the two speed cutoffs overlap into a dead band; the CAN status,
+  signals and brake/handbrake cards merge into one "CAN" card; the two WiFi
+  cards into one "WiFi Access Point"; and the Settings tab folds the generation
+  selector into the Learn card and the output toggles into "Inputs & Triggers".
+  DOM ids are unchanged, so load/save and the API payloads are untouched.
+
+### Fixed
+
+- **Expert multi-select: first tap after a long-press is no longer eaten.** The
+  long-press that enters multi-select armed a "swallow the next click" guard to
+  absorb the ghost click a touch normally trails. But a long hold makes the
+  browser fire `contextmenu` instead of `click`, so the ghost never came and the
+  guard stayed armed, eating the user's next deliberate cell tap (the reported
+  "first box doesn't highlight" bug). The guard is now armed with a short expiry,
+  so a tap arriving after the ghost window registers normally.
 
 ### Added
+
+- **Learn Haldex calibration chart.** When a learned calibration table exists the
+  Learn section now plots it as a curve - commanded correction factor on X,
+  measured Haldex engagement on Y - against a dashed 1:1 reference, so where the
+  Haldex over- or under-responds reads at a glance. It renders on page load and
+  after a learn completes, and clears when the table is cleared. Render-only from
+  the table `/api/learn/status` already returns; no firmware change, no extra
+  device load.
 
 - **Steering-gain reduction (off by default).** Scales the lock target down as
   steering angle increases, so the rear axle is not fighting the front through

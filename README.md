@@ -139,7 +139,7 @@ Below the grid, a read-only curve view plots the same lock surface so the table 
 
 ## Haldex learning
 
-The controller can learn the actual engagement curve of your specific Haldex unit by cycling through all available lock percentages. Use the **Learn Haldex** option in the Settings page. Within one minute the controller will know exactly how to hit the lock percentage you request.
+The controller can learn the actual engagement curve of your specific Haldex unit by cycling through all available lock percentages. Use the **Learn Haldex** option in the Settings page. Within one minute the controller will know exactly how to hit the lock percentage you request. Once a table is learned it is plotted as a curve - commanded correction factor against measured engagement, with a 1:1 reference line - so you can see where your Haldex over- or under-responds.
 
 ### Gen5 'Fix hunting' (planned, not yet built)
 
