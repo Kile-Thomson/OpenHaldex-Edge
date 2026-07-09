@@ -24,3 +24,26 @@ static inline bool lpCanActive(bool isStandalone,
   return isStandalone ? (lpHaldexFps >= 50U)
                       : (lpChassisFps >= lpWakeThresholdFps);
 }
+
+// Pure, host-testable seams for the USB-host bench override.
+//
+// A USB host connected to the USB Serial/JTAG port means the box is sitting on
+// the bench plugged into a PC (SOF packets present). In that case keep the WiFi
+// AP up even with no CAN traffic and no WiFi clients, so the dashboard can be
+// reached without dragging the box back out to the car. In the car the box is
+// powered from the vehicle, not a USB host, so usbHostConnected is false and the
+// normal low-power logic is unchanged.
+
+// True when the box should drop into low-power WiFi shutdown: no WiFi clients,
+// CAN idle, AND no USB host connected. A USB host holds the AP up.
+static inline bool lpShouldSleep(bool noClients, bool canActive, bool usbHostConnected)
+{
+  return noClients && !canActive && !usbHostConnected;
+}
+
+// True when a sleeping box should wake and restore WiFi: CAN traffic returned,
+// or a USB host appeared (someone plugged it into a PC to test on the bench).
+static inline bool lpShouldWake(bool canActive, bool usbHostConnected)
+{
+  return canActive || usbHostConnected;
+}
