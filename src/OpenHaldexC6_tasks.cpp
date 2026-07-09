@@ -9,8 +9,18 @@
 
 void haldexLearnTask(void *arg)
 {
-  const uint32_t settleMs = 300;
-  uint8_t lastValid = 0;
+  // Let the clutch reach steady state, THEN sample engagement across a window
+  // instead of taking one raw read at the end. Near lock-up the Haldex ECU's own
+  // duty loop briefly overshoots to full PWM (audible pump oscillation above
+  // ~60% engagement), so a single frame can decode to a clean 100 and, written
+  // verbatim, poison the learn table. Median-of-window rejects that lone spike
+  // (and a lone CAN dropout); learn_reduce_samples then clamps monotonic against
+  // the previous CF so the calibration cannot collapse. Total per-CF dwell
+  // (settle + window) stays ~300 ms, so learn duration is unchanged.
+  const uint32_t settleMs    = 156; // reach steady state before sampling
+  const uint8_t  sampleCount = 8;   // samples spread across the window below
+  const uint32_t sampleGapMs = 18;  // 8 * 18 = 144 ms window -> ~300 ms/CF total
+  uint8_t prevRecorded = 0;
 
   for (uint16_t cf = 0; cf <= 100; cf++)
   {
@@ -24,18 +34,15 @@ void haldexLearnTask(void *arg)
 
     vTaskDelay(settleMs / portTICK_PERIOD_MS);
 
-    uint8_t eng = received_haldex_engagement;
-
-    if (eng == 0 && cf > 0)
+    uint8_t samples[sampleCount];
+    for (uint8_t s = 0; s < sampleCount; s++)
     {
-      eng = lastValid; // glaze over zero - keep previous valid reading
-    }
-    else
-    {
-      lastValid = eng;
+      vTaskDelay(sampleGapMs / portTICK_PERIOD_MS);
+      samples[s] = received_haldex_engagement;
     }
 
-    haldexLearnTable[cf] = eng;
+    prevRecorded = learn_reduce_samples(samples, sampleCount, prevRecorded);
+    haldexLearnTable[cf] = prevRecorded;
   }
 
   if (!haldexLearnCancel)

@@ -77,6 +77,19 @@ limiting - are Forbes's own work and are not repeated here.
   assumes strictly-ascending speed and throttle axes; an out-of-order axis
   silently mis-interpolated. The tune-upload handler now rejects a tune whose
   speed or throttle axis is not strictly ascending.
+- **No-learn-table fallback correction factor corrected.** Without a valid learn
+  table the Gen5 fallback scaled the requested lock with `(target / 2) + 20`,
+  which over-delivered (a 40% request produced a ~40% correction factor instead
+  of 30%). The formula now matches its own comment and the Gen4.1 branch,
+  `(target + 20) / 2`, so a device with no learn data tracks the request instead
+  of running high. Devices with a valid learn table were never on this path.
+- **Learn sampling hardened against duty-loop overshoot.** Near lock-up the
+  Haldex ECU briefly commands full PWM (an audible pump oscillation above ~60%
+  engagement), so a single engagement read at the end of a learn step could
+  decode to a clean 100 and, written verbatim, poison the learn table. Each
+  correction-factor step now samples engagement across a short window and takes a
+  median with a monotonic clamp against the previous step, rejecting a lone spike
+  or CAN dropout without changing total learn duration.
 
 ### Concurrency and persistence
 
@@ -149,6 +162,25 @@ limiting - are Forbes's own work and are not repeated here.
   line breaks only where no CAN target is present, and a missing engagement
   reading breaks the actual line rather than plotting a phantom drop to zero or
   taking the target's line down with it.
+
+- **On-device saved tune slots.** Five named map slots now persist in device
+  NVS with list/get/save/delete endpoints, so a tune saved from one phone is
+  visible from any phone. The slot library uses its own NVS namespace and never
+  touches the settings handle. Replaces the earlier phone-side file
+  export/import.
+- **Gen5 BPK full-lock torque is now a setting.** The "Fix Hunting" (BPK)
+  Motor_11 packing mapped 100% lock to a hardcoded 220 Nm of spoofed engine
+  torque, so a controller that never reached full engagement had no way to ask
+  for more. It is now an adjustable "Full-lock torque ceiling" on the Settings
+  page, 100-500 Nm (MQB signal max 509 Nm), default 220 so existing behaviour is
+  unchanged. The underlying packing math was widened from 8-bit (which silently
+  capped torque at 255 Nm) to the full signal range, and the standalone and
+  CAN-passthrough copies of the Motor_11 packing were de-duplicated into one
+  host-tested function so the two paths can no longer drift.
+- **Dashboard wakes for a USB host on the bench.** A USB host on the USB
+  Serial/JTAG port now keeps the AP up and wakes a sleeping device, so the
+  dashboard is reachable on the bench without a CAN source. Vehicle-powered
+  operation has no USB host, so in-car low-power behaviour is unchanged.
 
 ### Build and test
 

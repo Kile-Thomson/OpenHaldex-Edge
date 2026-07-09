@@ -325,7 +325,7 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert)
   else
   {
     // VAG Haldex default — linear fit: engagement = 2 * CF - 20  →  CF = (target + 20) / 2
-    correction_factor = (uint8_t)constrain(((float)lock_target / 2) + 20, 0, 100);
+    correction_factor = (uint8_t)constrain(((float)lock_target + 20.0f) / 2.0f, 0, 100);
   }
 
   uint8_t corrected_value = (uint16_t)value * correction_factor / 100;
@@ -1005,7 +1005,10 @@ void getLockData(twai_message_t &rx_message_chs)
       //   fixHunting == false : V3 packing - works on 554C/D/H and 554K @ 100% lock.
       //   fixHunting == true  : DBC-correct BPK packing - needed on 554K at partial
       //                         lock (60/40, 70/30) where V3 packing causes hunting.
-      if (!fixHunting)
+      // During a learn we force BPK regardless of the toggle: V3 pins the torque
+      // fields at full, so a learn on V3 records a flat ~100% table (the "sits at
+      // 100% regardless" symptom). See motor11_use_bpk_packing.
+      if (!motor11_use_bpk_packing(fixHunting, haldexLearnActive))
       {
         rx_message_chs.data[0] = 0x00;                                        // checksum placeholder
         rx_message_chs.data[1] = MOTOR_11_counter;                            // rolling - 0x40>0x4F
@@ -1019,47 +1022,12 @@ void getLockData(twai_message_t &rx_message_chs)
       else
       {
         // ---- BPK packing (Fix Hunting on; needed for 554K @ partial lock) ----
-        const uint8_t BPK_CEIL = 220;     // Nm at 100% lock
-        const uint8_t BPK_SLEW_IST = 8;   // Nm/cycle, MO_Mom_Ist_Summe ramp
-        const uint8_t BPK_SLEW_SOLF = 32; // Nm/cycle, MO_Mom_Soll_gefiltert ramp
-        const uint8_t BPK_FLOOR = 10;
-
-        uint8_t torqueNm = get_lock_target_adjusted_value(0xFE, false);
-        torqueNm = (uint8_t)(BPK_FLOOR +
-                             ((uint16_t)torqueNm * (BPK_CEIL - BPK_FLOOR)) / 0xFE);
-
-        static uint8_t prevIstNm = 0, prevSolfNm = 0;
-        auto slew = [](uint8_t cur, uint8_t target, uint8_t step) -> uint8_t
-        {
-          if (target > cur)
-            return ((uint16_t)cur + step >= target) ? target : (uint8_t)(cur + step);
-          if (target < cur)
-            return (cur <= step || cur - step <= target) ? target : (uint8_t)(cur - step);
-          return cur;
-        };
-        uint8_t istNm = slew(prevIstNm, torqueNm, BPK_SLEW_IST);
-        uint8_t solfNm = slew(prevSolfNm, torqueNm, BPK_SLEW_SOLF);
-        prevIstNm = istNm;
-        prevSolfNm = solfNm;
-
-        uint16_t rawSollRoh = (uint16_t)(torqueNm + 509) & 0x3FF;
-        uint16_t rawIst = (uint16_t)(istNm + 509) & 0x3FF;
-        uint16_t rawSolf = (uint16_t)(solfNm + 509) & 0x3FF;
-
-        const uint8_t TRAEG_LO = 0xFD;
-        const uint8_t TRAEG_HI = 0x01;
-        const uint8_t SCHUB_LO = 0x07;
-        const uint8_t SCHUB_HI = 0x1E;
-        const uint8_t STATUS_FL = 0x20; // Normalbetrieb=1, QBit=valid
-
-        rx_message_chs.data[0] = 0x00; // CRC placeholder
-        rx_message_chs.data[1] = (MOTOR_11_counter & 0x0F) | ((rawSollRoh & 0x000F) << 4);
-        rx_message_chs.data[2] = ((rawSollRoh >> 4) & 0x3F) | ((rawIst & 0x0003) << 6);
-        rx_message_chs.data[3] = (rawIst >> 2) & 0xFF;
-        rx_message_chs.data[4] = TRAEG_LO;
-        rx_message_chs.data[5] = (TRAEG_HI & 0x03) | ((rawSolf & 0x3F) << 2);
-        rx_message_chs.data[6] = ((rawSolf >> 6) & 0x0F) | ((SCHUB_LO & 0x0F) << 4);
-        rx_message_chs.data[7] = (SCHUB_HI & 0x1F) | STATUS_FL;
+        // Shared DBC-correct packer; bpkCeilingNm is the user-tunable full-lock
+        // torque. Slew state is owned here so it persists across cycles.
+        static uint16_t prevIstNm = 0, prevSolfNm = 0;
+        uint8_t command = get_lock_target_adjusted_value(0xFE, false);
+        bpk_pack_motor11(rx_message_chs.data, command, MOTOR_11_counter,
+                         bpkCeilingNm, &prevIstNm, &prevSolfNm);
       }
 
       rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_0A7); // for 0x0A7
@@ -1479,6 +1447,137 @@ uint8_t lookup_learn_correction_factor(const uint8_t* table, uint8_t target)
   return 100;
 }
 
+// See OpenHaldexC6_Calculations.h for the rationale. Median-of-window + monotonic
+// clamp so a lone pump-overshoot or dropout frame cannot poison the learn table.
+uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_recorded)
+{
+  if (n == 0 || samples == nullptr)
+  {
+    return prev_recorded; // nothing sampled - hold the previous value
+  }
+
+  // Insertion sort a bounded local copy (learn windows are small, <= 32 samples).
+  // No dynamic allocation, no Arduino symbols, so this stays host-testable.
+  if (n > 32)
+  {
+    n = 32; // defensive cap - callers use ~8; never truncates a real learn window
+  }
+  uint8_t sorted[32];
+  for (uint8_t i = 0; i < n; i++)
+  {
+    uint8_t v = samples[i];
+    int8_t j = (int8_t)i - 1;
+    while (j >= 0 && sorted[j] > v)
+    {
+      sorted[j + 1] = sorted[j];
+      j--;
+    }
+    sorted[j + 1] = v;
+  }
+
+  // Lower median: for an even count this picks the lower of the two middles, so a
+  // clean 50/50 split between a spike cluster and the true value still rejects the
+  // spike (only a strict majority of spiked frames - i.e. sustained, real - wins).
+  const uint8_t median = sorted[(n - 1) / 2];
+
+  // Engagement can only rise with CF, so never record below the previous CF. This
+  // keeps lookup_learn_correction_factor coherent and glazes an all-zero (dropout)
+  // window back to the last good reading in one place.
+  return (median < prev_recorded) ? prev_recorded : median;
+}
+
+// Decide whether the MQB Motor_11 (0x0A7) frame should use the DBC-correct BPK
+// packing instead of the empirical V3 packing. See the header for the full
+// rationale: V3 packing pins three torque fields at full (0xFA) regardless of
+// the learn correction factor, so a learn scan run with Fix Hunting off records
+// a flat ~100% table (the observed "sits at 100% regardless" symptom). BPK
+// derives every field from the modulated torque, so the learn sweep is actually
+// visible to the Haldex. During a learn we therefore force BPK regardless of the
+// user toggle; outside a learn the user's fixHunting setting is honoured exactly
+// as before. Pure boolean logic, no Arduino symbols, host-testable.
+bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active)
+{
+  return fix_hunting || learn_active;
+}
+
+// Slew one BPK torque field one cycle toward `target`, moving at most `step` Nm.
+// uint16 so it works across the full 0..509 Nm signal range (the old uint8 lambda
+// silently capped at 255). File-local; exercised through bpk_pack_motor11.
+static uint16_t bpk_slew(uint16_t cur, uint16_t target, uint16_t step)
+{
+  if (target > cur)
+  {
+    return ((uint32_t)cur + step >= target) ? target : (uint16_t)(cur + step);
+  }
+  if (target < cur)
+  {
+    return (cur <= step || cur - step <= target) ? target : (uint16_t)(cur - step);
+  }
+  return cur;
+}
+
+// See OpenHaldexC6_Calculations.h for the full rationale and the DBC citation.
+// Single shared implementation of the BPK Motor_11 packing so the standalone
+// frame generator (OpenHaldexC6_StandaloneCAN.cpp) and the CAN-passthrough edit
+// path (getLockData below) can never drift apart - previously the same 40 lines
+// were copy-pasted in both, the exact hazard that lets standalone and CAN modes
+// behave differently. All Nm math is uint16 so a raised ceiling above 255 Nm
+// actually reaches the wire (the previous uint8 arithmetic truncated it).
+void bpk_pack_motor11(uint8_t out[8], uint8_t command, uint8_t counter,
+                      uint16_t ceil_nm, uint16_t *ist_nm, uint16_t *solf_nm)
+{
+  const uint16_t BPK_FLOOR     = 10; // Nm claimed at zero command
+  const uint16_t BPK_SLEW_IST  = 8;  // Nm/cycle, MO_Mom_Ist_Summe ramp
+  const uint16_t BPK_SLEW_SOLF = 32; // Nm/cycle, MO_Mom_Soll_gefiltert ramp
+
+  // The 10-bit field with offset -509 encodes at most +514 Nm; clamp to the
+  // documented 509 Nm signal maximum so the value can never wrap the 0x3FF mask.
+  if (ceil_nm > 509)
+  {
+    ceil_nm = 509;
+  }
+  const uint16_t ceil = (ceil_nm < BPK_FLOOR) ? BPK_FLOOR : ceil_nm;
+
+  // Remap the 0..0xFE command byte onto [BPK_FLOOR .. ceil] Nm. uint32 product
+  // (max 254 * 499 = 126746) keeps the intermediate clear of overflow.
+  const uint16_t torqueNm = (uint16_t)(BPK_FLOOR +
+                            ((uint32_t)command * (ceil - BPK_FLOOR)) / 0xFE);
+
+  // Slew-limit Ist and Soll_gefiltert against the caller-owned previous values.
+  const uint16_t prevIst  = ist_nm ? *ist_nm : 0;
+  const uint16_t prevSolf = solf_nm ? *solf_nm : 0;
+  const uint16_t istNm  = bpk_slew(prevIst, torqueNm, BPK_SLEW_IST);
+  const uint16_t solfNm = bpk_slew(prevSolf, torqueNm, BPK_SLEW_SOLF);
+  if (ist_nm)
+  {
+    *ist_nm = istNm;
+  }
+  if (solf_nm)
+  {
+    *solf_nm = solfNm;
+  }
+
+  const uint16_t rawSollRoh = (uint16_t)(torqueNm + 509) & 0x3FF;
+  const uint16_t rawIst     = (uint16_t)(istNm + 509) & 0x3FF;
+  const uint16_t rawSolf    = (uint16_t)(solfNm + 509) & 0x3FF;
+
+  // Idle baselines for the non-driven signals (unchanged from the inherited code).
+  const uint8_t TRAEG_LO  = 0xFD;
+  const uint8_t TRAEG_HI  = 0x01;
+  const uint8_t SCHUB_LO  = 0x07;
+  const uint8_t SCHUB_HI  = 0x1E;
+  const uint8_t STATUS_FL = 0x20; // Normalbetrieb=1, QBit=valid
+
+  out[0] = 0x00; // CRC placeholder - caller computes the E2E checksum
+  out[1] = (uint8_t)((counter & 0x0F) | ((rawSollRoh & 0x000F) << 4));
+  out[2] = (uint8_t)(((rawSollRoh >> 4) & 0x3F) | ((rawIst & 0x0003) << 6));
+  out[3] = (uint8_t)((rawIst >> 2) & 0xFF);
+  out[4] = TRAEG_LO;
+  out[5] = (uint8_t)((TRAEG_HI & 0x03) | ((rawSolf & 0x3F) << 2));
+  out[6] = (uint8_t)(((rawSolf >> 6) & 0x0F) | ((SCHUB_LO & 0x0F) << 4));
+  out[7] = (uint8_t)((SCHUB_HI & 0x1F) | STATUS_FL);
+}
+
 // Scale a received Haldex engagement byte into a 0..100 percentage.
 // Pure integer math, no Arduino symbols, so it compiles and tests on host and
 // the wire result for valid in-window frames is byte-identical to the previous
@@ -1523,34 +1622,29 @@ uint8_t scale_haldex_engagement(uint8_t raw, uint8_t in_min, uint8_t in_max)
   return (uint8_t)scaled;
 }
 
-// OTA credential policy. Pure pointer logic, no Arduino/NVS symbols,
-// so it compiles under env:native and the flash-authorization decision lives in
-// one reviewable, host-tested place. See include/OpenHaldexC6_Calculations.h.
-const char* select_ota_password(const char* nvs_pw)
+// Auth policy. The WiFi AP password is the single auth boundary. Pure pointer
+// logic, no Arduino/NVS symbols, so it compiles under env:native and the
+// provisioning/injection decision lives in one reviewable, host-tested place.
+// See include/OpenHaldexC6_Calculations.h.
+bool wifi_password_provisioned(const char* ap_pw)
 {
-  // The runtime-provisioned NVS value is the only credential source; an empty
-  // string or NULL counts as "unset". Never returns NULL - a missing credential
-  // yields "" so the caller fails closed instead of using a literal.
-  if (nvs_pw != nullptr && nvs_pw[0] != '\0')
+  // A WPA2 AP password must be >= 8 chars. Anything shorter (including "" / NULL)
+  // leaves the AP open, so the device is treated as unprovisioned and the
+  // dashboard forces the first-run password page. Count without <cstring> so the
+  // predicate stays dependency-free under env:native.
+  if (ap_pw == nullptr)
   {
-    return nvs_pw;
+    return false;
   }
-  return "";
-}
-
-bool ota_credential_configured(const char* effective_pw)
-{
-  return effective_pw != nullptr && effective_pw[0] != '\0';
-}
-
-// Analyzer injection authorization. Composition over ota_credential_configured
-// so the fail-closed injection policy has one source of truth: host->device CAN
-// transmit on the analyzer port is allowed only when a credential is configured.
-// References no Arduino/NVS/TWAI symbols, so it stays host-compilable under
-// env:native. See include/OpenHaldexC6_Calculations.h.
-bool analyzer_injection_allowed(const char* effective_pw)
-{
-  return ota_credential_configured(effective_pw);
+  size_t n = 0;
+  while (ap_pw[n] != '\0')
+  {
+    if (++n >= 8)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Pure bus-health predicate: any failure bit set means a fault.

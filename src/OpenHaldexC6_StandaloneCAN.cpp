@@ -1883,51 +1883,14 @@ void Gen5_0CQ_frames10()
   else
   {
     // ---- BPK packing (Fix Hunting toggle on; needed for 554K @ partial lock) ----
-    // DBC-correct bit-packed Soll_Roh/Ist/Solf with fixed defaults and slew limits.
-    const uint8_t BPK_CEIL = 220;     // Nm at 100% lock
-    const uint8_t BPK_SLEW_IST = 8;   // Nm/cycle, MO_Mom_Ist_Summe ramp
-    const uint8_t BPK_SLEW_SOLF = 32; // Nm/cycle, MO_Mom_Soll_gefiltert ramp
-    const uint8_t BPK_FLOOR = 10;
-
-    uint8_t torqueNm = get_lock_target_adjusted_value(0xFE, false);
-    appliedTorque = torqueNm;
-    torqueNm = (uint8_t)(BPK_FLOOR +
-                         ((uint16_t)torqueNm * (BPK_CEIL - BPK_FLOOR)) / 0xFE);
-
-    // Slew limits on Ist and Soll_gefiltert.
-    static uint8_t prevIstNm = 0, prevSolfNm = 0;
-    auto slew = [](uint8_t cur, uint8_t target, uint8_t step) -> uint8_t
-    {
-      if (target > cur)
-        return ((uint16_t)cur + step >= target) ? target : (uint8_t)(cur + step);
-      if (target < cur)
-        return (cur <= step || cur - step <= target) ? target : (uint8_t)(cur - step);
-      return cur;
-    };
-    uint8_t istNm = slew(prevIstNm, torqueNm, BPK_SLEW_IST);
-    uint8_t solfNm = slew(prevSolfNm, torqueNm, BPK_SLEW_SOLF);
-    prevIstNm = istNm;
-    prevSolfNm = solfNm;
-
-    uint16_t rawSollRoh = (uint16_t)(torqueNm + 509) & 0x3FF;
-    uint16_t rawIst = (uint16_t)(istNm + 509) & 0x3FF;
-    uint16_t rawSolf = (uint16_t)(solfNm + 509) & 0x3FF;
-
-    // Idle baselines for non-driven signals.
-    const uint8_t TRAEG_LO = 0xFD;
-    const uint8_t TRAEG_HI = 0x01;
-    const uint8_t SCHUB_LO = 0x07;
-    const uint8_t SCHUB_HI = 0x1E;
-    const uint8_t STATUS_FL = 0x20; // Normalbetrieb=1, QBit=valid
-
-    frame.data[0] = 0x00; // CRC placeholder
-    frame.data[1] = (MOTOR_11_counter & 0x0F) | ((rawSollRoh & 0x000F) << 4);
-    frame.data[2] = ((rawSollRoh >> 4) & 0x3F) | ((rawIst & 0x0003) << 6);
-    frame.data[3] = (rawIst >> 2) & 0xFF;
-    frame.data[4] = TRAEG_LO;
-    frame.data[5] = (TRAEG_HI & 0x03) | ((rawSolf & 0x3F) << 2);
-    frame.data[6] = ((rawSolf >> 6) & 0x0F) | ((SCHUB_LO & 0x0F) << 4);
-    frame.data[7] = (SCHUB_HI & 0x1F) | STATUS_FL;
+    // Shared DBC-correct packer (see bpk_pack_motor11); bpkCeilingNm is the
+    // user-tunable full-lock torque. Slew state is owned here so it persists
+    // across cycles. appliedTorque mirrors the pre-remap command byte as before.
+    static uint16_t prevIstNm = 0, prevSolfNm = 0;
+    uint8_t command = get_lock_target_adjusted_value(0xFE, false);
+    appliedTorque = command;
+    bpk_pack_motor11(frame.data, command, MOTOR_11_counter,
+                     bpkCeilingNm, &prevIstNm, &prevSolfNm);
   }
 
   frame.data[0] = calcChecksum(frame.data, ID_SEQ_0A7); // for 0x0A7

@@ -308,6 +308,7 @@ extern bool disableOnboardButton;
 extern bool disableExternalButton;
 
 extern bool fixHunting; // Motor_11: false=V3 packing, true=BPK packing
+extern uint16_t bpkCeilingNm; // BPK full-lock torque ceiling (Nm) claimed at 100% command
 
 extern bool canSleepEnabled;    // runtime toggle for CAN-wake light sleep (UI/EEP)
 extern bool canSleepAggressive; // aggressive add-on: transceiver standby + DFS 10MHz + low WiFi TX power
@@ -440,6 +441,12 @@ extern uint8_t steeringGainFloor;     // minimum gain percent (never taper to fu
 extern uint16_t speedArray[speedArrayCount];
 extern uint8_t throttleArray[throttleArrayCount];
 extern uint8_t lockArray[throttleArrayCount][speedArrayCount];
+
+// On-device saved map library: a small fixed set of named slots persisted in
+// NVS (separate namespace from settings), so tunes are stored on the ESP itself
+// instead of the phone's browser. A slot is free when its stored name is empty.
+#define MAP_SLOT_COUNT 5  // number of on-device save slots
+#define MAP_NAME_MAX 24   // max stored slot name length, including NUL terminator
 
 // for running through vars to see effects
 extern uint8_t tempCounter;

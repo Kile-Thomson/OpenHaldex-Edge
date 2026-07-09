@@ -2,7 +2,7 @@
 #include <OpenHaldexC6_defs.h>
 
 // Current firmware version
-#define FW_VERSION "8.00.2" // update this with every firmware release AND change .html version query param to force cache refresh of web UI
+#define FW_VERSION "8.00.14" // update this with every firmware release AND change .html version query param to force cache refresh of web UI
 
 /*
 Version Control:
@@ -53,6 +53,18 @@ V8.00.0 - added support for Ford (based on example CAN data, totally untested!)
 V8.00.1 - added fix for password and SSID change
 
 V8.00.2 - added fix for TC/hazards not re-enabling stock mode
+V8.00.3 - single auth boundary: WiFi AP password (forced on first boot) replaces the separate HTTP login; cache-bust style.css
+V8.00.4 - port dashboard UI from OpenHaldex: drive-mode drawer, pseudo-3D expert tune surface, compact glance dashboard (stat tiles + status chips + collapsible UDS)
+V8.00.5 - single-line status header, OpenHaldex Edge title with themed version pill, expert-editor drag-select block edit + Smooth + selection dots on the 3D surface
+V8.00.6 - phone tune multi-select behind a Select-cells toggle (tap toggles, drag paints; page no longer scroll-fights); dashboard reworked so target duty is the hero headline and clutch/module/fin temps sit permanently at the top of the glance grid; full single-row header
+V8.00.7 - expert map library (built-in presets, browser-saved slots, file import/export) and user-selectable dashboard glance tiles; all client-side, no new device endpoints
+V8.00.8 - expert multi-select now works on touch (tap-to-select rebuilt on plain click events; drag kept as an enhancement); removed the redundant mode badge from the header (the hero mode pill is the single source of truth and now carries the force-mode annotation)
+V8.00.9 - saved map slots now live on the device instead of the phone: 5 named slots in device NVS, new /api/maps endpoints (list/get/save/delete), Save As/Load/Delete act on those slots so a tune saved from one phone is visible from any phone; removed the phone-side file Export/Import (device is now the single source of truth)
+V8.00.10 - removed the firmware version pill from the header (frees space on narrow phone screens; version still shown on the Diagnostics page); shrank the Haldex Engagement gauge card so it takes less vertical room on mobile
+V8.00.11 - re-added a compact current-mode badge to the header status bar (now that the version pill is gone there is room); shows the live base mode from any tab, force-trigger annotation still rides the hero pill
+V8.00.12 - expert map library: removed the built-in preset templates (kept only real on-device saved slots); moved the tune-commit button directly below the 3D surface and renamed it Apply; press-and-hold a cell now enters multi-select without the toolbar button
+V8.00.13 - expert page: Restore Defaults now sits beside Apply below the 3D surface; corrected the "Restore Defaults" lock table to match the firmware's actual shipped default (it was applying a different table); dropped the redundant "Saved on device" heading from the Maps dropdown; collapsed the verbose expert instructions into a one-line lead plus an expandable so the grid sits higher on a phone
+V8.00.14 - Gen5 BPK (Fix Hunting) full-lock torque is now a user setting instead of a hardcoded 220 Nm: adjustable 100-500 Nm on the Settings page so a controller that never reaches full engagement can be dialled in (MQB signal max 509 Nm). Fixed the underlying uint8 math that capped BPK torque at 255 Nm regardless, and de-duplicated the standalone and CAN-passthrough Motor_11 packing into one host-tested function so the two modes can no longer drift. Also corrected the VAG no-learn-table fallback correction-factor formula (was over-delivering ~20% engagement)
 */
 
 
