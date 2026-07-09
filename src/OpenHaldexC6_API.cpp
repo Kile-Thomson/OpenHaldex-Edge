@@ -605,7 +605,9 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
     if (data["bpkCeilingNm"].is<uint16_t>())
     {
         uint16_t value = data["bpkCeilingNm"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
         bpkCeilingNm = constrain(value, 10, 509); // floor..509 Nm signal max
+        xSemaphoreGive(stateMutex);
     }
 
     if (data["canSleepEnabled"].is<bool>())
