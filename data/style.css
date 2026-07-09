@@ -1798,3 +1798,95 @@ button,
     gap: 0.75rem;
     margin-top: 0.25rem;
 }
+
+/* ---------------------------------------------------------------------------
+   Dashboard consolidation: grouped cards from the layout pass. Icon rows for
+   the merged lock-disable card, the learn calibration chart surface, and the
+   trace + state readouts folded into the hero and glance cards.
+   --------------------------------------------------------------------------- */
+
+/* Basic page: consolidated lock-disable conditions - one icon + slider per row */
+.disable-cond-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin-top: 0.9rem;
+}
+
+.disable-cond-icon {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    color: var(--primary-light);
+    margin-top: 0.3rem;
+}
+
+.disable-cond-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.disable-cond-label {
+    color: var(--text);
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 0.35rem;
+}
+
+.hint-inline {
+    color: var(--text-dim);
+    font-weight: 400;
+    font-size: 0.85em;
+}
+
+/* Learn calibration chart surface (mirrors .lock-trace) */
+.learn-chart {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.learn-chart svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 320 / 200;
+}
+
+/* Lock-response trace as its own card below the glance tiles, so the useful
+   at-a-glance signals stay at the top of the dashboard on a phone. */
+.lock-trace-card .subsection-title {
+    margin-top: 0;
+}
+
+/* Haldex state readout folded into the glance card footer: label + value on one
+   compact row, legend table beneath it. */
+.glance-state-footer {
+    margin-top: 1rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--border);
+}
+
+.glance-state-gauge {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    text-align: left;
+    padding: 0;
+    background: none;
+    border: none;
+}
+
+.glance-state-gauge .gauge-label {
+    margin-bottom: 0;
+}
+
+.glance-state-gauge .gauge-value {
+    font-size: 1.2rem;
+}
+
+.glance-state-gauge .gauge-unit {
+    margin-top: 0;
+}

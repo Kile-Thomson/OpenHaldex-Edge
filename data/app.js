@@ -13,7 +13,13 @@ let _haldexGeneration = 1;
 let _isStandalone = false;
 let _useCANifAvailable = false;
 let _disableController = false;
-const setIntervalDuration = 500; // set refresh duration (for quickly to poll ESP for data)
+// Floor gap between the end of one dashboard poll and the start of the next.
+// The poll loop is self-scheduling (see initDashboard): it fires the next
+// request as soon as the previous one settles, so the live rate tracks the
+// device's real response latency instead of being quantised to a fixed tick.
+// A small floor keeps a fast device from being hammered while still letting the
+// UI run several Hz when the ESP answers quickly.
+const POLL_MIN_GAP_MS = 150;
 
 var speedHeader = [0, 30, 60, 90, 120, 160, 180]; // default speed header (for x-axis)
 var throttleHeader = [0, 15, 30, 45, 60, 75, 90]; // default throttle header (for y-axis)
@@ -756,6 +762,94 @@ function renderLockTrace(now) {
   svg.innerHTML = out;
 }
 
+// ---- Learn Haldex calibration chart ----------------------------------------
+// Plots the learned calibration table: X = commanded correction factor (0..100%),
+// Y = measured Haldex engagement (0..100%). A dashed 1:1 reference diagonal shows
+// where commanded equals measured, so the tuner can see at a glance where the
+// Haldex over- or under-responds. Render-only from the table the firmware already
+// returns on /api/learn/status when tableValid; no extra device load. Plain SVG,
+// no libraries - the page ships from the ESP32's flash.
+function renderLearnChart(table) {
+  const wrap = document.getElementById("learnChartWrap");
+  const svg = document.getElementById("learnChartSvg");
+  if (!svg || !wrap) return;
+  // A valid table is 101 points (CF 0..100 -> engagement 0..100). Anything shorter
+  // (no data yet, or malformed) hides the chart rather than drawing a broken axis.
+  if (!Array.isArray(table) || table.length < 2) {
+    wrap.style.display = "none";
+    svg.innerHTML = "";
+    return;
+  }
+  wrap.style.display = "";
+
+  const W = 320, H = 200;
+  const padL = 26, padR = 8, padT = 8, padB = 20;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const n = table.length;
+  const xOf = (cf) => padL + (Math.max(0, Math.min(100, cf)) / 100) * plotW;
+  const yOf = (eng) => padT + (1 - Math.max(0, Math.min(100, eng)) / 100) * plotH;
+
+  // Literal hex (not var()) so the colours render inside string-built SVG on all
+  // browsers, matching renderLockTrace. CURVE = --primary-light, REF/grid dim.
+  const GRID = "#404040", LABEL = "#9ca3af", REF = "#6b7280", CURVE = "#ef4444";
+
+  let out = "";
+  for (let g = 0; g <= 100; g += 25) {
+    const y = yOf(g);
+    out += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${(W - padR).toFixed(1)}" y2="${y.toFixed(1)}" stroke="${GRID}" stroke-width="0.5"/>`;
+    out += `<text x="${(padL - 4).toFixed(1)}" y="${(y + 3).toFixed(1)}" fill="${LABEL}" font-size="8" text-anchor="end">${g}</text>`;
+    const x = xOf(g);
+    out += `<text x="${x.toFixed(1)}" y="${H - 6}" fill="${LABEL}" font-size="8" text-anchor="middle">${g}</text>`;
+  }
+
+  // 1:1 reference diagonal (commanded == measured).
+  out += `<line x1="${xOf(0).toFixed(1)}" y1="${yOf(0).toFixed(1)}" x2="${xOf(100).toFixed(1)}" y2="${yOf(100).toFixed(1)}" stroke="${REF}" stroke-width="1" stroke-dasharray="4 3"/>`;
+
+  // Learned curve: one vertex per table entry, index -> commanded CF %.
+  let line = "";
+  for (let i = 0; i < n; i++) {
+    const cf = (i / (n - 1)) * 100;
+    const eng = Number(table[i]) || 0;
+    line += `${xOf(cf).toFixed(1)},${yOf(eng).toFixed(1)} `;
+  }
+  out += `<polyline points="${line.trim()}" fill="none" stroke="${CURVE}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+  svg.innerHTML = out;
+}
+
+// The two speed cutoffs bracket the band where lock is allowed: lock is disabled
+// below the under-speed and above the above-speed, so it only engages between the
+// two. A bound of 0 means "no cut" on that side (matches speed_disengage_ok in
+// the firmware). If the under-speed meets or passes a non-zero above-speed the
+// allowed band collapses and lock silently never engages - surface that rather
+// than leave it a foot-gun (the shipped 120/120 default leaves a one-speed sliver).
+function updateDisableWindowHint() {
+  const hint = document.getElementById("disableWindowHint");
+  if (!hint) return;
+  const underEl = document.getElementById("disengageUnderSpeedRange");
+  const aboveEl = document.getElementById("disengageAboveSpeedRange");
+  if (!underEl || !aboveEl) return;
+  const under = parseInt(underEl.value, 10) || 0;
+  const above = parseInt(aboveEl.value, 10) || 0;
+  hint.style.display = "";
+  if (above > 0 && under >= above) {
+    hint.textContent = under === above
+      ? `Both cutoffs are ${under} km/h, so lock only engages at exactly ${under} km/h - widen the gap to give it a usable band.`
+      : `Under-speed (${under}) sits above the above-speed cutoff (${above}), so lock never engages. Lower the under-speed or raise the above-speed.`;
+    hint.style.color = "var(--warning)";
+  } else if (above > 0) {
+    hint.textContent = `Lock engages between ${under} and ${above} km/h.`;
+    hint.style.color = "";
+  } else if (under > 0) {
+    hint.textContent = `Lock disabled below ${under} km/h; no upper speed cutoff.`;
+    hint.style.color = "";
+  } else {
+    hint.textContent = "No speed cutoffs - lock allowed at any speed.";
+    hint.style.color = "";
+  }
+}
+
 // initialise navigation:
 function initNavigation() {
   // setup tabs
@@ -785,6 +879,7 @@ function initNavigation() {
   const disengageUnderSpeed = document.getElementById("disengageUnderSpeed");
   disengageUnderSpeedRange.addEventListener("input", () => {
     disengageUnderSpeed.textContent = disengageUnderSpeedRange.value;
+    updateDisableWindowHint();
   });
 
   const disengageAboveSpeedRange = document.getElementById(
@@ -793,7 +888,9 @@ function initNavigation() {
   const disengageAboveSpeed = document.getElementById("disengageAboveSpeed");
   disengageAboveSpeedRange.addEventListener("input", () => {
     disengageAboveSpeed.textContent = disengageAboveSpeedRange.value;
+    updateDisableWindowHint();
   });
+  updateDisableWindowHint(); // reflect the loaded values on first paint
   const disableThrottleRange = document.getElementById("disableThrottleRange");
   const disableThrottle = document.getElementById("disableThrottle");
   disableThrottleRange.addEventListener("input", () => {
@@ -868,18 +965,38 @@ function initNavigation() {
 // initialise dashboard:
 function initDashboard() {
   renderLockTrace(Date.now()); // draw the empty grid before the first poll lands
-  refreshStatus(); //
-  let pollTimer = setInterval(refreshStatus, setIntervalDuration); // request for new data every xms
+
+  // Self-scheduling poll loop. The old design used a fixed 500ms setInterval with
+  // a one-in-flight guard: whenever a response landed just after a tick had
+  // already fired-and-bailed (previous poll still in flight), the next tick was a
+  // full interval away, collapsing a nominal 2Hz to ~1Hz and wasting the gap
+  // between "reply arrived" and "next tick". Here the next poll is scheduled only
+  // once the previous one has fully settled, plus a small floor, so the live rate
+  // follows the device's real latency instead of being quantised to a tick.
+  //
+  // A generation token gates the loop: bumping it stops the current loop (its
+  // post-await check fails) so visibility changes can't leave two loops running.
+  let pollGeneration = 0;
+
+  async function pollLoop(myGen) {
+    while (myGen === pollGeneration && !document.hidden) {
+      const started = Date.now();
+      await refreshStatus(); // resolves when the poll settles (success, miss, or timeout)
+      if (myGen !== pollGeneration || document.hidden) return; // superseded or backgrounded
+      const gap = POLL_MIN_GAP_MS - (Date.now() - started);
+      if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap));
+    }
+  }
+
+  pollLoop(++pollGeneration);
 
   // Stop polling while the page is hidden (phone locked or app backgrounded) so
   // we don't keep waking the ESP's web server; resume with a fresh read on return.
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    } else if (pollTimer === null) {
-      refreshStatus();
-      pollTimer = setInterval(refreshStatus, setIntervalDuration);
+      pollGeneration++; // running loop exits at its next generation check
+    } else {
+      pollLoop(++pollGeneration); // fresh loop; any stale one exits on the token
     }
   });
 }
@@ -1269,7 +1386,17 @@ let editMultiMode = false; // confirmEdit applies to the whole selection when tr
 // tap-to-edit. When on: the grid stops scrolling, a tap toggles one cell, and a
 // drag paints a rectangular block.
 let selectMode = false;
-let suppressClick = false; // swallow the click that trails a real drag gesture
+// Swallow the ghost click that trails a drag or long-press. A long-press (>450ms)
+// often makes the browser fire `contextmenu` instead of `click`, so the trailing
+// click never arrives - a naked boolean would then stay armed forever and eat the
+// user's *next* deliberate tap (the reported "first box doesn't highlight" bug).
+// Arming with an expiry timestamp fixes that: if no ghost click lands inside the
+// window, the guard has simply lapsed by the time the next real tap comes.
+let suppressClickUntil = 0; // ms timestamp; a click before this is treated as the ghost
+const SUPPRESS_CLICK_MS = 400; // ghost click follows its gesture within a few frames
+function armSuppressClick() {
+  suppressClickUntil = Date.now() + SUPPRESS_CLICK_MS;
+}
 
 function cellKey(r, c) {
   return r + "," + c;
@@ -1380,11 +1507,14 @@ function initTuneSelection() {
   // taps on touch (the reported bug). In select mode a click toggles the cell
   // in/out of the selection; otherwise it opens the single-cell editor.
   grid.addEventListener("click", (e) => {
-    if (suppressClick) {
-      // This click trails a drag gesture that already painted the selection -
-      // ignore it so the last cell isn't immediately toggled back off.
-      suppressClick = false;
-      return;
+    if (suppressClickUntil) {
+      // A gesture (drag or long-press) armed the ghost-click guard. Clear it
+      // unconditionally so it can never leak into a later tap; only swallow THIS
+      // click if it landed inside the ghost window - a click arriving after the
+      // window has lapsed is a genuine tap and must fall through and register.
+      const within = Date.now() < suppressClickUntil;
+      suppressClickUntil = 0;
+      if (within) return;
     }
     const rc = getCellRC(e.target);
     if (!rc) return; // axis-header cells keep their own click handler
@@ -1422,7 +1552,7 @@ function initTuneSelection() {
     // Only a real drag (pointer left the anchor cell) owns the outcome; a tap
     // that never moved falls through to the click handler above. Suppress the
     // click that the browser fires after a drag so it can't undo the paint.
-    if (selMoved) suppressClick = true;
+    if (selMoved) armSuppressClick();
   };
 
   const onCancel = () => teardown();
@@ -1463,7 +1593,7 @@ function initTuneSelection() {
         cancelLongPress();
         setSelectMode(true);
         toggleCell(rc); // seed the selection with the held cell
-        suppressClick = true; // swallow the click that trails this press
+        armSuppressClick(); // swallow the click that trails this press, if one comes
       }, 450);
       document.addEventListener("pointermove", onLongPressMove);
       document.addEventListener("pointerup", onLongPressEnd);
@@ -2299,6 +2429,7 @@ function initLearn() {
         } else if (data.tableValid) {
           statusText.textContent = "Learn complete \u2713 - calibration table active";
           statusText.style.color = "var(--success)";
+          renderLearnChart(data.table); // draw the freshly-learned curve
         } else {
           statusText.textContent = "Learn cancelled or failed";
           statusText.style.color = "var(--warning)";
@@ -2333,6 +2464,7 @@ function initLearn() {
     await fetchJson("/api/learn/clear", { method: "POST" });
     statusText.textContent = "Learn data cleared - static factor active";
     statusText.style.color = "var(--text-dim)";
+    renderLearnChart([]); // table gone - hide the chart
   });
 
   // check initial state on page load
@@ -2345,6 +2477,7 @@ function initLearn() {
     } else if (data.tableValid) {
       statusText.textContent = "Learn complete \u2713 - calibration table active";
       statusText.style.color = "var(--success)";
+      renderLearnChart(data.table); // show the stored curve on page load
     } else {
       statusText.textContent = "No learn data - static factor active";
       statusText.style.color = "var(--text-dim)";

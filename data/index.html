@@ -75,7 +75,7 @@
                             transform="rotate(0 100 100)" visibility="hidden" />
                     </svg>
                     <div class="gauge-hero-center">
-                        <div class="gauge-hero-label">Target duty</div>
+                        <div class="gauge-hero-label">Target lock</div>
                         <div class="gauge-hero-value"><span id="lockTarget">--</span><span
                                 class="gauge-hero-unit">%</span></div>
                         <div class="gauge-hero-sub">Now <span id="lockActual">--</span>%</div>
@@ -174,10 +174,19 @@
                         </div>
                     </div>
                 </details>
+
+                <div class="glance-state-footer">
+                    <div class="gauge glance-state-gauge">
+                        <div class="gauge-label">Haldex State</div>
+                        <div class="gauge-value" id="haldexState">--</div>
+                        <div class="gauge-unit"> bits</div>
+                    </div>
+                    <div id="haldexStateLegend" class="state-legend"></div>
+                </div>
             </section>
 
-            <section class="card" id="lockTraceCard">
-                <h2>Lock Response <span class="trace-window-label">last 15s</span></h2>
+            <section class="card lock-trace-card" id="lockTraceCard">
+                <h3 class="subsection-title">Lock Response <span class="trace-window-label">last 15s</span></h3>
                 <div class="lock-trace">
                     <svg id="lockTraceSvg" viewBox="0 0 320 160" preserveAspectRatio="none" role="img"
                         aria-label="Lock target versus actual engagement over time"></svg>
@@ -216,20 +225,13 @@
                 </div>
             </section>
 
-            <section class="card">
-                <div class="gauge">
-                    <div class="gauge-label">Haldex State</div>
-                    <div class="gauge-value" id="haldexState">--</div>
-                    <div class="gauge-unit"> bits</div>
-                </div>
-                <div id="haldexStateLegend" class="state-legend"></div>
-            </section>
-
         </div>
 
         <div class="page" id="settings-page">
-            <section class="card">
-                <h2>Haldex Generation</h2>
+            <section class="card" id="learnSection">
+                <h2>Haldex Calibration</h2>
+
+                <h3 class="subsection-title">Generation</h3>
                 <select id="haldexGeneration" class="input-select">
                     <option value="1">Generation 1</option>
                     <option value="2">Generation 2</option>
@@ -239,10 +241,8 @@
                     <option value="51">Generation 5 (0AY)</option>
                     <option value="41">Generation 4 - GM/SAAB</option>
                 </select>
-            </section>
 
-            <section class="card" id="learnSection">
-                <h2>Learn Haldex</h2>
+                <h3 class="subsection-title">Learn Haldex</h3>
                 <p class="hint">Sweeps correction factors 0–100% and records actual Haldex engagement at each step,
                     building a calibration table that replaces the formula. Car must be running with Haldex CAN active.
                 </p>
@@ -273,6 +273,13 @@
                         </div>
                     </div>
                 </div>
+                <div class="learn-chart-wrap" id="learnChartWrap" style="display:none;">
+                    <p class="hint">Learned calibration: commanded correction factor (X) vs measured Haldex engagement (Y). The dashed line is a 1:1 reference - points above it mean the Haldex over-responds, below means it under-responds.</p>
+                    <div class="learn-chart">
+                        <svg id="learnChartSvg" viewBox="0 0 320 200" preserveAspectRatio="none" role="img"
+                            aria-label="Learned Haldex calibration: commanded correction factor versus measured engagement"></svg>
+                    </div>
+                </div>
                 <div class="learn-controls">
                     <button class="btn-secondary" id="learnStart">Learn Haldex</button>
                     <button class="btn-secondary" id="learnCancel" style="display:none;">Cancel</button>
@@ -295,8 +302,9 @@
             </section>
 
             <section class="card">
-                <h2>Mode Options</h2>
+                <h2>Inputs &amp; Triggers</h2>
                 <div class="toggle-group">
+                    <h3 class="subsection-title">Force-Mode Triggers</h3>
                     <label class="toggle">
                         <input type="checkbox" id="tcForceMode">
                         <span class="toggle-slider"></span>
@@ -358,12 +366,8 @@
                         </select>
                     </div>
                     <p class="hint">When multiple triggers are active simultaneously, the highest-priority one wins.</p>
-                </div>
-            </section>
 
-            <section class="card">
-                <h2>Output Options</h2>
-                <div class="toggle-group">
+                    <h3 class="subsection-title">Brake / Handbrake Outputs</h3>
                     <label class="toggle">
                         <input type="checkbox" id="followBrake">
                         <span class="toggle-slider"></span>
@@ -390,6 +394,7 @@
             <section class="card">
                 <h2>Controller Options</h2>
                 <div class="toggle-group">
+                    <h3 class="subsection-title">Controller &amp; Connectivity</h3>
                     <label class="toggle">
                         <input type="checkbox" id="disableController">
                         <span class="toggle-slider"></span>
@@ -420,6 +425,7 @@
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">SavvyCAN via. Serial</span>
                     </label>
+                    <h3 class="subsection-title">Diagnostics (UDS)</h3>
                     <label class="toggle">
                         <input type="checkbox" id="udsMQBEnabled">
                         <span class="toggle-slider"></span>
@@ -427,6 +433,7 @@
                     </label>
                     <p class="hint">Gen 5 (MQB) only. Polls the Haldex ECU directly for live diagnostic data. Requires Haldex CAN healthy.</p>
                     <p class="hint">Note: Will Disable Diag. Comms, Disable if Diag Req.</p>
+                    <h3 class="subsection-title">Buttons</h3>
                     <label class="toggle">
                         <input type="checkbox" id="disableOnboardButton">
                         <span class="toggle-slider"></span>
@@ -437,6 +444,7 @@
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Disable External Button</span>
                     </label>
+                    <h3 class="subsection-title">Low-Power Sleep</h3>
                     <label class="toggle">
                         <input type="checkbox" id="canSleepEnabled">
                         <span class="toggle-slider"></span>
@@ -465,6 +473,7 @@
                             <span>Haldex: <span id="lpHaldexFrameRate">--</span> fps</span>
                         </div>
                     </div>
+                    <h3 class="subsection-title">Display</h3>
                     <div class="brightness-row">
                         <span class="toggle-label">LED Brightness</span>
                         <div class="brightness-controls">
@@ -478,33 +487,43 @@
 
         <div class="page" id="basic-page">
             <section class="card">
-                <h2>Disengage Under Speed (km/h)</h2>
-                <p class="hint">Use this to disable ANY lock BELOW a certain speed (for car parks etc)</p>
+                <h2>Lock Disable Conditions</h2>
+                <p class="hint">Suppress ANY lock when these conditions are met - handy for car parks and cruising.</p>
 
-                <div class="slider-container">
-                    <input type="range" id="disengageUnderSpeedRange" min="0" max="300" value="120" class="slider">
-                    <div class="slider-value"><span id="disengageUnderSpeed">120</span> km/h</div>
+                <div class="disable-cond-row">
+                    <svg class="disable-cond-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/></svg>
+                    <div class="disable-cond-body">
+                        <p class="disable-cond-label">Disable under speed <span class="hint-inline">(car parks)</span></p>
+                        <div class="slider-container">
+                            <input type="range" id="disengageUnderSpeedRange" min="0" max="300" value="120" class="slider">
+                            <div class="slider-value"><span id="disengageUnderSpeed">120</span> km/h</div>
+                        </div>
+                    </div>
                 </div>
-            </section>
 
-            <section class="card">
-                <h2>Disengage Above Speed (km/h)</h2>
-                <p class="hint">Use this to disable ANY lock ABOVE a certain speed (for highways etc)</p>
-
-                <div class="slider-container">
-                    <input type="range" id="disengageAboveSpeedRange" min="0" max="300" value="120" class="slider">
-                    <div class="slider-value"><span id="disengageAboveSpeed">120</span> km/h</div>
+                <div class="disable-cond-row">
+                    <svg class="disable-cond-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 19 22 12 13 5 13 19"/><polygon points="2 19 11 12 2 5 2 19"/></svg>
+                    <div class="disable-cond-body">
+                        <p class="disable-cond-label">Disable above speed <span class="hint-inline">(highways)</span></p>
+                        <div class="slider-container">
+                            <input type="range" id="disengageAboveSpeedRange" min="0" max="300" value="120" class="slider">
+                            <div class="slider-value"><span id="disengageAboveSpeed">120</span> km/h</div>
+                        </div>
+                    </div>
                 </div>
-            </section>
 
-            <section class="card">
-                <h2>Minimum Throttle Before Lock (%)</h2>
-                <p class="hint">Use this to disable ANY lock BELOW a certain throttle (for car parks etc)</p>
-
-                <div class="slider-container">
-                    <input type="range" id="disableThrottleRange" min="0" max="100" value="15" class="slider">
-                    <div class="slider-value"><span id="disableThrottle">15</span> %</div>
+                <div class="disable-cond-row">
+                    <svg class="disable-cond-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.6 2.7a10 10 0 1 0 5.7 5.7"/><circle cx="12" cy="12" r="2"/><path d="M13.4 10.6 19 5"/></svg>
+                    <div class="disable-cond-body">
+                        <p class="disable-cond-label">Disable under throttle <span class="hint-inline">(coasting)</span></p>
+                        <div class="slider-container">
+                            <input type="range" id="disableThrottleRange" min="0" max="100" value="15" class="slider">
+                            <div class="slider-value"><span id="disableThrottle">15</span> %</div>
+                        </div>
+                    </div>
                 </div>
+
+                <p class="hint" id="disableWindowHint"></p>
             </section>
 
             <section class="card">
@@ -628,7 +647,9 @@
 
         <div class="page" id="diagnostics-page">
             <section class="card">
-                <h2>CAN Status</h2>
+                <h2>CAN</h2>
+
+                <h3 class="subsection-title">Bus Health</h3>
                 <div class="diag-grid">
                     <div class="diag-item">
                         <span class="diag-label">Chassis CAN:</span>
@@ -639,10 +660,8 @@
                         <span class="diag-value" id="diagHaldexCAN">--</span>
                     </div>
                 </div>
-            </section>
 
-            <section class="card">
-                <h2>CAN Information</h2>
+                <h3 class="subsection-title">Live Signals</h3>
                 <div class="diag-grid">
                     <div class="diag-item">
                         <span class="diag-label">Throttle:</span>
@@ -665,10 +684,8 @@
                         <span class="diag-value" id="diagHazardActive">--</span>
                     </div>
                 </div>
-            </section>
 
-            <section class="card">
-                <h2>Brake / Handbrake Signals</h2>
+                <h3 class="subsection-title">Brake / Handbrake</h3>
                 <div class="diag-grid">
                     <div class="diag-item">
                         <span class="diag-label">Brake In:</span>
@@ -699,7 +716,9 @@
             </section>
 
             <section class="card">
-                <h2>WiFi Name (SSID)</h2>
+                <h2>WiFi Access Point</h2>
+
+                <h3 class="subsection-title">Name (SSID)</h3>
                 <p class="hint">Change the access-point name broadcast by the controller. 1&ndash;32 printable ASCII characters. Saving restarts the AP &mdash; you will need to reconnect.</p>
                 <p class="hint" id="wifiSsidStatus">--</p>
                 <div class="wifi-password-row">
@@ -709,10 +728,8 @@
                     <button class="btn-secondary" id="wifiSsidSave">Save &amp; Apply</button>
                     <button class="btn-secondary" id="wifiSsidReset">Reset to Default</button>
                 </div>
-            </section>
 
-            <section class="card">
-                <h2>WiFi Password</h2>
+                <h3 class="subsection-title">Password</h3>
                 <p class="hint">Set a WPA2 password (min. 8 characters) to secure the access point. Leave blank to keep an open network. Long-pressing the mode button always resets back to open.</p>
                 <p class="hint" id="wifiPasswordStatus">--</p>
                 <div class="wifi-password-row">
