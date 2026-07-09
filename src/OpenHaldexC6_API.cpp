@@ -2,7 +2,8 @@
 #include <OpenHaldexC6_UDS.h>
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_WiFi.h>
-#include <OpenHaldexC6_OTA.h> // requireOtaAuth
+#include <OpenHaldexC6_OTA.h> // isDeviceProvisioned
+#include <OpenHaldexC6_EEP.h> // on-device map slot library
 
 #include <cstring>
 
@@ -324,6 +325,7 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["disableOnboardButton"] = disableOnboardButton;
     data["disableExternalButton"] = disableExternalButton;
     data["fixHunting"] = fixHunting;
+    data["bpkCeilingNm"] = bpkCeilingNm;
     data["canSleepEnabled"] = canSleepEnabled;
     data["canSleepAggressive"] = canSleepAggressive;
     data["lpWakeThresholdFps"] = lpWakeThresholdFps;
@@ -600,6 +602,14 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         fixHunting = data["fixHunting"];
     }
 
+    if (data["bpkCeilingNm"].is<uint16_t>())
+    {
+        uint16_t value = data["bpkCeilingNm"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        bpkCeilingNm = constrain(value, 10, 509); // floor..509 Nm signal max
+        xSemaphoreGive(stateMutex);
+    }
+
     if (data["canSleepEnabled"].is<bool>())
     {
         canSleepEnabled = data["canSleepEnabled"];
@@ -764,6 +774,120 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
     sendJSON(request, 200, resp);
 }
 
+// POST /api/maps/save - store the editor's tune into an on-device slot.
+// Body: {index, name, speedArray, throttleArray, lockArray}. Validated the same
+// way as /api/tune (correct lengths, strictly-ascending axes) so a saved slot
+// can never mis-interpolate when later loaded.
+static void mapsSaveIncoming(AsyncWebServerRequest *request, const String &body)
+{
+    JsonDocument data;
+    if (deserializeJson(data, body) != DeserializationError::Ok)
+    {
+        JsonDocument resp; resp["ok"] = false; resp["error"] = "Invalid JSON";
+        sendJSON(request, 400, resp);
+        return;
+    }
+
+    if (!data["index"].is<int>())
+    {
+        JsonDocument resp; resp["ok"] = false; resp["error"] = "Missing 'index'";
+        sendJSON(request, 400, resp);
+        return;
+    }
+    int idx = data["index"].as<int>();
+    if (idx < 0 || idx >= MAP_SLOT_COUNT)
+    {
+        JsonDocument resp; resp["ok"] = false; resp["error"] = "Slot index out of range";
+        sendJSON(request, 400, resp);
+        return;
+    }
+
+    const char *name = data["name"] | "";
+    if (name[0] == '\0')
+    {
+        JsonDocument resp; resp["ok"] = false; resp["error"] = "Missing 'name'";
+        sendJSON(request, 400, resp);
+        return;
+    }
+
+    JsonArray speedArrayJSON = data["speedArray"].as<JsonArray>();
+    JsonArray throttleArrayJSON = data["throttleArray"].as<JsonArray>();
+    JsonArray lockArrayJSON = data["lockArray"].as<JsonArray>();
+    if (speedArrayJSON.size() != speedArrayCount || throttleArrayJSON.size() != throttleArrayCount)
+    {
+        JsonDocument resp; resp["ok"] = false; resp["error"] = "Invalid array length";
+        sendJSON(request, 400, resp);
+        return;
+    }
+
+    uint8_t stagedThrottle[throttleArrayCount];
+    uint16_t stagedSpeed[speedArrayCount];
+    uint8_t stagedLock[throttleArrayCount][speedArrayCount];
+    for (uint8_t i = 0; i < throttleArrayCount; i++)
+        stagedThrottle[i] = (uint8_t)(throttleArrayJSON[i] | 0);
+    for (uint8_t i = 0; i < speedArrayCount; i++)
+        stagedSpeed[i] = (uint16_t)(speedArrayJSON[i] | 0);
+
+    uint16_t throttleAxis[throttleArrayCount];
+    for (uint8_t i = 0; i < throttleArrayCount; i++)
+        throttleAxis[i] = stagedThrottle[i];
+    if (!is_strictly_ascending_u16(throttleAxis, throttleArrayCount) ||
+        !is_strictly_ascending_u16(stagedSpeed, speedArrayCount))
+    {
+        JsonDocument resp; resp["ok"] = false; resp["error"] = "Non-ascending axis";
+        sendJSON(request, 400, resp);
+        return;
+    }
+
+    for (uint8_t throttle = 0; throttle < throttleArrayCount; throttle++)
+    {
+        JsonArray throttleRow = lockArrayJSON[throttle].as<JsonArray>();
+        if (throttleRow.size() != speedArrayCount)
+        {
+            JsonDocument resp; resp["ok"] = false; resp["error"] = "Invalid lock array";
+            sendJSON(request, 400, resp);
+            return;
+        }
+        for (uint8_t speed = 0; speed < speedArrayCount; speed++)
+            stagedLock[throttle][speed] = (uint8_t)throttleRow[speed];
+    }
+
+    if (!mapSlotSave((uint8_t)idx, name, stagedSpeed, stagedThrottle, stagedLock))
+    {
+        JsonDocument resp; resp["ok"] = false; resp["error"] = "Storage write failed";
+        sendJSON(request, 500, resp);
+        return;
+    }
+
+    JsonDocument resp;
+    resp["ok"] = true;
+    resp["index"] = idx;
+    sendJSON(request, 200, resp);
+}
+
+// POST /api/maps/delete - clear an on-device slot. Body: {index}.
+static void mapsDeleteIncoming(AsyncWebServerRequest *request, const String &body)
+{
+    JsonDocument data;
+    if (deserializeJson(data, body) != DeserializationError::Ok || !data["index"].is<int>())
+    {
+        JsonDocument resp; resp["ok"] = false; resp["error"] = "Missing 'index'";
+        sendJSON(request, 400, resp);
+        return;
+    }
+    int idx = data["index"].as<int>();
+    if (idx < 0 || idx >= MAP_SLOT_COUNT)
+    {
+        JsonDocument resp; resp["ok"] = false; resp["error"] = "Slot index out of range";
+        sendJSON(request, 400, resp);
+        return;
+    }
+    mapSlotDelete((uint8_t)idx);
+    JsonDocument resp;
+    resp["ok"] = true;
+    sendJSON(request, 200, resp);
+}
+
 // setup webserver function
 void setupWebServer()
 {
@@ -775,11 +899,12 @@ void setupWebServer()
     }
     DEBUG("LittleFS mounted successfully");
 
-    // When "/" or "/index.html" is requested and no credential is provisioned yet,
-    // redirect to the first-run setup page. Both routes need the same guard because
-    // serveStatic("/", ...) serves /index.html directly, bypassing the "/" handler.
+    // When "/" or "/index.html" is requested and the AP is still open (no WiFi
+    // password set), redirect to the first-run setup page. Both routes need the
+    // same guard because serveStatic("/", ...) serves /index.html directly,
+    // bypassing the "/" handler.
     auto rootHandler = [](AsyncWebServerRequest *request) {
-        if (!isOtaCredentialProvisioned()) {
+        if (!isDeviceProvisioned()) {
             request->redirect("/setup");
             return;
         }
@@ -793,7 +918,7 @@ void setupWebServer()
     webServer.serveStatic("/", LittleFS, "/")
         .setDefaultFile("index.html")
         .setFilter([](AsyncWebServerRequest *request) -> bool {
-            return isOtaCredentialProvisioned();
+            return isDeviceProvisioned();
         });
 
     webServer.begin(); // begin the webServer
@@ -822,8 +947,6 @@ void setupAPI()
     // GET /api/uds/read - UDS read-by-identifier helper
     webServer.on("/api/uds/read", HTTP_GET, [](AsyncWebServerRequest *request)
                  {
-                     if (!requireOtaAuth(request)) return; // injects a UDS request frame onto CAN
-
                      auto reqP = request->getParam("req", false);
                      auto resP = request->getParam("res", false);
                      auto didP = request->getParam("did", false);
@@ -891,18 +1014,8 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
-            // The auth gate must live HERE in the body handler, not in onRequest:
-            // ESPAsyncWebServer delivers the body first, so gating onRequest is too
-            // late to stop the mutation. On refusal _tempObject stays null and the
-            // trailing chunks of the rejected body no-op. Same pattern below.
-            if (index == 0)
-            {
-                if (!requireOtaAuth(request)) return;
-            }
-            else if (request->_tempObject == nullptr)
-            {
-                return;
-            }
+            // No HTTP auth: network access is gated by the WiFi AP password (the
+            // single auth boundary). parseJSON owns the _tempObject body buffer.
             parseJSON(request, data, len, index, total, settingsIncoming);
         });
 
@@ -912,14 +1025,6 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
-            if (index == 0) // auth in the body handler - see /api/settings above
-            {
-                if (!requireOtaAuth(request)) return;
-            }
-            else if (request->_tempObject == nullptr)
-            {
-                return;
-            }
             parseJSON(request, data, len, index, total, modeIncoming);
         });
 
@@ -929,22 +1034,83 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
-            if (index == 0) // auth in the body handler - see /api/settings above
-            {
-                if (!requireOtaAuth(request)) return;
-            }
-            else if (request->_tempObject == nullptr)
-            {
-                return;
-            }
             parseJSON(request, data, len, index, total, tuneIncoming);
+        });
+
+    // GET /api/maps - list the on-device save slots (names only, empty = free)
+    webServer.on("/api/maps", HTTP_GET, [](AsyncWebServerRequest *request)
+                 {
+        char names[MAP_SLOT_COUNT][MAP_NAME_MAX];
+        mapSlotNames(names);
+        JsonDocument resp;
+        resp["count"] = MAP_SLOT_COUNT;
+        resp["nameMax"] = MAP_NAME_MAX - 1; // usable chars (excludes NUL)
+        JsonArray slots = resp["slots"].to<JsonArray>();
+        for (uint8_t i = 0; i < MAP_SLOT_COUNT; i++)
+        {
+            JsonObject s = slots.add<JsonObject>();
+            s["index"] = i;
+            s["name"] = names[i];
+            s["used"] = names[i][0] != '\0';
+        }
+        sendJSON(request, 200, resp); });
+
+    // GET /api/maps/get?index=N - load one slot's tune into the same shape the
+    // editor's /api/tune save uses, so the browser can drop it straight in.
+    webServer.on("/api/maps/get", HTTP_GET, [](AsyncWebServerRequest *request)
+                 {
+        if (!request->hasParam("index"))
+        {
+            JsonDocument resp; resp["ok"] = false; resp["error"] = "Missing 'index'";
+            sendJSON(request, 400, resp); return;
+        }
+        int idx = request->getParam("index")->value().toInt();
+        uint16_t s[speedArrayCount];
+        uint8_t t[throttleArrayCount];
+        uint8_t l[throttleArrayCount][speedArrayCount];
+        char name[MAP_NAME_MAX];
+        if (idx < 0 || idx >= MAP_SLOT_COUNT || !mapSlotLoad((uint8_t)idx, s, t, l, name))
+        {
+            JsonDocument resp; resp["ok"] = false; resp["error"] = "Empty or invalid slot";
+            sendJSON(request, 404, resp); return;
+        }
+        JsonDocument resp;
+        resp["ok"] = true;
+        resp["index"] = idx;
+        resp["name"] = name;
+        JsonArray sa = resp["speedArray"].to<JsonArray>();
+        for (uint8_t i = 0; i < speedArrayCount; i++) sa.add(s[i]);
+        JsonArray ta = resp["throttleArray"].to<JsonArray>();
+        for (uint8_t i = 0; i < throttleArrayCount; i++) ta.add(t[i]);
+        JsonArray la = resp["lockArray"].to<JsonArray>();
+        for (uint8_t r = 0; r < throttleArrayCount; r++)
+        {
+            JsonArray row = la.add<JsonArray>();
+            for (uint8_t c = 0; c < speedArrayCount; c++) row.add(l[r][c]);
+        }
+        sendJSON(request, 200, resp); });
+
+    // POST /api/maps/save - store the editor's tune into a slot
+    webServer.on(
+        "/api/maps/save", HTTP_POST, [](AsyncWebServerRequest *request)
+        { (void)request; }, nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+        {
+            parseJSON(request, data, len, index, total, mapsSaveIncoming);
+        });
+
+    // POST /api/maps/delete - clear a slot
+    webServer.on(
+        "/api/maps/delete", HTTP_POST, [](AsyncWebServerRequest *request)
+        { (void)request; }, nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+        {
+            parseJSON(request, data, len, index, total, mapsDeleteIncoming);
         });
 
     // POST /api/learn/start - begin the learn sweep
     webServer.on("/api/learn/start", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
-                     if (!requireOtaAuth(request)) return; // the sweep drives live lock on the car
-
                      if (!hasCANHaldex)
                      {
                          JsonDocument resp;
@@ -961,7 +1127,6 @@ void setupAPI()
     // POST /api/learn/cancel - abort an in-progress learn sweep
     webServer.on("/api/learn/cancel", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
-                     if (!requireOtaAuth(request)) return;
                      haldexLearnCancel = true;
                      JsonDocument resp;
                      resp["ok"] = true;
@@ -970,7 +1135,6 @@ void setupAPI()
     // POST /api/learn/clear - discard the stored learn table and revert to formula
     webServer.on("/api/learn/clear", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
-                     if (!requireOtaAuth(request)) return;
                      xSemaphoreTake(stateMutex, portMAX_DELAY);
                      haldexLearnTableValid = false;
                      memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
@@ -988,7 +1152,6 @@ void setupAPI()
     // POST /api/wifi/ssid/reset - restore factory SSID and restart AP
     webServer.on("/api/wifi/ssid/reset", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
-                     if (!requireOtaAuth(request)) return;
                      resetWifiSsid();
                      JsonDocument resp;
                      resp["ok"] = true;
@@ -1009,14 +1172,6 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
-            if (index == 0) // auth in the body handler - see /api/settings above
-            {
-                if (!requireOtaAuth(request)) return;
-            }
-            else if (request->_tempObject == nullptr)
-            {
-                return;
-            }
             parseJSON(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
                       {
                 JsonDocument d;
@@ -1064,7 +1219,6 @@ void setupAPI()
     // POST /api/wifi/reset - clear password and restart AP as open network
     webServer.on("/api/wifi/reset", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
-                     if (!requireOtaAuth(request)) return; // clears the AP password, reopens the network
                      resetWifiPassword();
                      JsonDocument resp;
                      resp["ok"] = true;
@@ -1083,14 +1237,6 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
-            if (index == 0) // auth in the body handler - see /api/settings above
-            {
-                if (!requireOtaAuth(request)) return;
-            }
-            else if (request->_tempObject == nullptr)
-            {
-                return;
-            }
             parseJSON(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
                       {
                 JsonDocument d;
@@ -1125,10 +1271,11 @@ void setupAPI()
                 sendJSON(req, 200, resp); });
         });
 
-    // While unprovisioned, every unmatched URL (including static assets blocked by
-    // the serveStatic filter) redirects to the first-run setup page.
+    // While the AP is still open (no WiFi password set), every unmatched URL
+    // (including static assets blocked by the serveStatic filter) redirects to the
+    // first-run setup page.
     webServer.onNotFound([](AsyncWebServerRequest *request) {
-        if (!isOtaCredentialProvisioned()) {
+        if (!isDeviceProvisioned()) {
             request->redirect("/setup");
             return;
         }

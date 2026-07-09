@@ -46,6 +46,56 @@ uint8_t scale_haldex_engagement(uint8_t raw, uint8_t in_min, uint8_t in_max);
 // exactly when maximum lock is wanted). Pure array math, host-testable.
 uint8_t lookup_learn_correction_factor(const uint8_t* table, uint8_t target);
 
+// Reduce one CF settle window's burst of engagement samples into the value
+// recorded in the learn table. Robust against the two artifacts seen on a live
+// car during a learn scan:
+//   * pump overshoot - near lock-up the Haldex ECU's own duty loop briefly
+//     drives full PWM, so a single feedback frame decodes to ~100 before it
+//     backs off (audible pump oscillation above ~60% engagement);
+//   * CAN dropout - a momentary 0 frame.
+// The old loop took ONE raw sample at the end of the settle and only glazed a 0,
+// so a lone overshoot frame was written verbatim; scale_haldex_engagement clamps
+// anything at/above the window top to a clean 100, and lookup_learn_correction_factor
+// (smallest CF whose learned engagement meets target) then collapses the whole
+// upper map onto that CF - one spike poisons the calibration.
+// This takes the median of the window so a lone spike or dropout cannot move the
+// recorded value, then clamps monotonic non-decreasing against prev_recorded:
+// learned engagement can only rise with CF, so this both keeps the lookup
+// coherent and subsumes the dropout-glaze (an all-zero window can't pull the
+// recorded value below the previous CF's). n == 0 returns prev_recorded. Uses a
+// lower median so an even spike/clean split still rejects the spike. Pure,
+// host-testable (no Arduino/TWAI symbols).
+uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_recorded);
+
+// MQB Motor_11 (0x0A7) packing selector. Returns true when the frame must use
+// the DBC-correct BPK packing rather than the empirical V3 packing. V3 pins the
+// primary torque fields (MO_Mom_Soll_Roh/Ist/gefiltert) at full 0xFA regardless
+// of the applied lock, so a learn scan run with Fix Hunting OFF never modulates
+// the dominant torque demand and the Haldex just locks fully the whole sweep -
+// the "sits at 100% regardless" symptom, and a garbage flat learn table. BPK
+// derives every field from the modulated torque, so the sweep is visible. The
+// rule: BPK whenever the user enabled Fix Hunting OR a learn is active, so a
+// learn can never silently record a flat 100% table. Outside a learn the user's
+// toggle is honoured unchanged. Pure boolean logic, no Arduino symbols,
+// host-testable.
+bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active);
+
+// MQB Motor_11 (0x0A7) BPK torque-spoof packer. Fills out[0..7] with the
+// DBC-correct bit-packed engine-torque frame that provokes the Haldex to close
+// the clutch: MO_Mom_Soll_Roh / MO_Mom_Ist_Summe / MO_Mom_Soll_gefiltert are
+// 10-bit little-endian fields at 1 Nm/LSB with offset -509, verified against the
+// opendbc MQB K-matrix (see vault "OpenHaldex - MQB Motor_11 Torque Spoof
+// Verified Against opendbc"). `command` is the lock-modulated demand byte
+// (get_lock_target_adjusted_value(0xFE,false)); it is remapped onto
+// [BPK_FLOOR .. ceil_nm] Nm. `ceil_nm` is the tunable full-lock torque the frame
+// claims at full command (higher = more aggressive lock), clamped to the 509 Nm
+// signal maximum. `ist_nm`/`solf_nm` carry the slew-limited previous values in
+// and the new values out, so the CALLER owns the ramp state across cycles (kept
+// out of the function so it stays pure and host-testable). out[0] is left 0 for
+// the caller to fill with the E2E CRC. No Arduino/TWAI symbols.
+void bpk_pack_motor11(uint8_t out[8], uint8_t command, uint8_t counter,
+                      uint16_t ceil_nm, uint16_t *ist_nm, uint16_t *solf_nm);
+
 // Speed-disengage gate. Returns true when lock is permitted at the
 // given speed: the vehicle must be at or ABOVE disengage_under AND at or BELOW
 // disengage_above. A bound of 0 disables that side (0 = "no lower/upper cut").
@@ -103,27 +153,17 @@ bool debounce_force_flag(bool raw, bool debounced, uint8_t &counter, uint8_t thr
 // whose axes fail this. count 0 or 1 is vacuously ascending. Pure, host-testable.
 bool is_strictly_ascending_u16(const uint16_t* arr, uint8_t count);
 
-// OTA credential policy. Pure pointer logic, no Arduino/NVS symbols, so the
-// flash-authorization decision is a single host-testable definition.
+// Auth policy. The WiFi AP password is the single auth boundary: anyone who can
+// reach the web server or analyzer port has already joined the WPA2-protected AP.
 //
-// select_ota_password: resolves the effective OTA password from the runtime
-// NVS-provisioned value; an empty ("") or NULL value is treated as "unset".
-// Returns "" when no non-empty credential is stored, so the caller fails closed
-// rather than falling back to a hardcoded literal. There is no build-time
-// default - a credential is only ever set at runtime via /setup.
-const char* select_ota_password(const char* nvs_pw);
-
-// ota_credential_configured: true only when the effective password is non-NULL
-// and non-empty. The flash surface must refuse (HTTP 503, fail-closed) whenever
-// this is false.
-bool ota_credential_configured(const char* effective_pw);
-
-// analyzer_injection_allowed: single host-testable decision for the fail-closed
-// analyzer-injection policy, delegating to ota_credential_configured. host->device
-// CAN transmit on the analyzer port is authorized only when a credential is set;
-// the analyzer transmit paths MUST drop the frame otherwise (passive sniffing is
-// unaffected). Pure pointer logic, no Arduino/NVS/TWAI symbols.
-bool analyzer_injection_allowed(const char* effective_pw);
+// wifi_password_provisioned: true only when a WPA2-length AP password (>= 8
+// chars) is set. Until then the AP runs open and the dashboard forces the
+// first-run password page. This same predicate gates the fail-closed
+// analyzer-injection policy: host->device CAN transmit on the analyzer port is
+// authorized only when the AP is protected; passive sniffing is unaffected.
+// Pure pointer logic, no Arduino/NVS/TWAI symbols, so the decision lives in one
+// host-tested place.
+bool wifi_password_provisioned(const char* ap_pw);
 
 // Pure CAN bus-health predicates. Plain arithmetic ((alerts & mask) != 0), no
 // TWAI driver symbols, so the always-on failure/recovery decision that drives

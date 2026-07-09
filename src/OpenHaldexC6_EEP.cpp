@@ -23,6 +23,7 @@ static void loadSettingsFrom(Preferences &src)
   disableOnboardButton = src.getBool("dsbOnboardBtn", false);            // load disable onboard button
   disableExternalButton = src.getBool("dsbExtBtn", false);               // load disable external button
   fixHunting = src.getBool("fixHunting", false);                         // load Motor_11 BPK-mode toggle
+  bpkCeilingNm = src.getUShort("bpkCeilNm", 220);                        // load BPK full-lock torque ceiling (Nm)
   canSleepEnabled = src.getBool("canSleepEn", true);                     // load CAN-wake light sleep enable
   canSleepAggressive = src.getBool("canSleepAggr", false);               // load aggressive CAN sleep enable
   lpWakeThresholdFps = src.getUShort("lpWakeFps", 1100);                 // load LP wake threshold (fps)
@@ -95,6 +96,7 @@ static void persistSettingsToPref()
   pref.putBool("dsbOnboardBtn", disableOnboardButton);       // save disable onboard button
   pref.putBool("dsbExtBtn", disableExternalButton);          // save disable external button
   pref.putBool("fixHunting", fixHunting);                    // save Motor_11 BPK-mode toggle
+  pref.putUShort("bpkCeilNm", bpkCeilingNm);                 // save BPK full-lock torque ceiling (Nm)
   pref.putBool("canSleepEn", canSleepEnabled);               // save CAN-wake light sleep enable
   pref.putBool("canSleepAggr", canSleepAggressive);          // save aggressive CAN sleep enable
   pref.putUShort("lpWakeFps", lpWakeThresholdFps);           // save LP wake threshold (fps)
@@ -292,6 +294,7 @@ void writeEEP(void *arg) // task function to periodically write preferences
     pref.putBool("dsbOnboardBtn", disableOnboardButton);       // write disable onboard button
     pref.putBool("dsbExtBtn", disableExternalButton);          // write disable external button
     pref.putBool("fixHunting", fixHunting);                    // write Motor_11 BPK-mode toggle
+    pref.putUShort("bpkCeilNm", bpkCeilingNm);                 // write BPK full-lock torque ceiling (Nm)
     pref.putBool("canSleepEn", canSleepEnabled);               // write CAN-wake light sleep enable
     pref.putBool("canSleepAggr", canSleepAggressive);          // write aggressive CAN sleep enable
     pref.putUShort("lpWakeFps", lpWakeThresholdFps);           // write LP wake threshold (fps)
@@ -346,3 +349,131 @@ void writeEEP(void *arg) // task function to periodically write preferences
     vTaskDelay(eepRefresh / portTICK_PERIOD_MS); // wait before next write
   } // end while
 } // end writeEEP
+
+// ---- On-device map slot library --------------------------------------------
+// Slots persist in the "ohmaps" NVS namespace, one blob + one name string per
+// slot (keys "b0".."b4" / "n0".."n4"). A slot is free when its name key is
+// absent or empty. Each op opens its own short-lived handle so this code never
+// shares the settings `pref` handle used by writeEEP.
+
+#define MAP_NS "ohmaps"
+
+// One slot's tune, packed for a single NVS blob write/read.
+struct MapSlotBlob
+{
+  uint16_t speed[speedArrayCount];
+  uint8_t throttle[throttleArrayCount];
+  uint8_t lock[throttleArrayCount][speedArrayCount];
+};
+
+static void mapSlotKeys(uint8_t idx, char blobKey[4], char nameKey[4])
+{
+  snprintf(blobKey, 4, "b%u", (unsigned)idx);
+  snprintf(nameKey, 4, "n%u", (unsigned)idx);
+}
+
+void mapSlotNames(char names[MAP_SLOT_COUNT][MAP_NAME_MAX])
+{
+  for (uint8_t i = 0; i < MAP_SLOT_COUNT; i++)
+    names[i][0] = '\0';
+
+  Preferences mp;
+  if (!mp.begin(MAP_NS, true)) // read-only; absent namespace = all slots free
+    return;
+
+  for (uint8_t i = 0; i < MAP_SLOT_COUNT; i++)
+  {
+    char blobKey[4], nameKey[4];
+    mapSlotKeys(i, blobKey, nameKey);
+    // A name is only real if a matching blob was actually stored.
+    if (mp.isKey(blobKey) && mp.isKey(nameKey))
+    {
+      String n = mp.getString(nameKey, "");
+      strncpy(names[i], n.c_str(), MAP_NAME_MAX - 1);
+      names[i][MAP_NAME_MAX - 1] = '\0';
+    }
+  }
+  mp.end();
+}
+
+bool mapSlotLoad(uint8_t idx,
+                 uint16_t outSpeed[speedArrayCount],
+                 uint8_t outThrottle[throttleArrayCount],
+                 uint8_t outLock[throttleArrayCount][speedArrayCount],
+                 char outName[MAP_NAME_MAX])
+{
+  if (idx >= MAP_SLOT_COUNT)
+    return false;
+
+  Preferences mp;
+  if (!mp.begin(MAP_NS, true))
+    return false;
+
+  char blobKey[4], nameKey[4];
+  mapSlotKeys(idx, blobKey, nameKey);
+
+  MapSlotBlob blob;
+  bool ok = false;
+  if (mp.isKey(blobKey) && mp.getBytes(blobKey, &blob, sizeof(blob)) == sizeof(blob))
+  {
+    memcpy(outSpeed, blob.speed, sizeof(blob.speed));
+    memcpy(outThrottle, blob.throttle, sizeof(blob.throttle));
+    memcpy(outLock, blob.lock, sizeof(blob.lock));
+    String n = mp.getString(nameKey, "");
+    strncpy(outName, n.c_str(), MAP_NAME_MAX - 1);
+    outName[MAP_NAME_MAX - 1] = '\0';
+    ok = outName[0] != '\0'; // an empty name means the slot was deleted
+  }
+  mp.end();
+  return ok;
+}
+
+bool mapSlotSave(uint8_t idx, const char *name,
+                 const uint16_t inSpeed[speedArrayCount],
+                 const uint8_t inThrottle[throttleArrayCount],
+                 const uint8_t inLock[throttleArrayCount][speedArrayCount])
+{
+  if (idx >= MAP_SLOT_COUNT || name == nullptr || name[0] == '\0')
+    return false;
+
+  MapSlotBlob blob;
+  memcpy(blob.speed, inSpeed, sizeof(blob.speed));
+  memcpy(blob.throttle, inThrottle, sizeof(blob.throttle));
+  memcpy(blob.lock, inLock, sizeof(blob.lock));
+
+  Preferences mp;
+  if (!mp.begin(MAP_NS, false)) // read/write
+    return false;
+
+  char blobKey[4], nameKey[4];
+  mapSlotKeys(idx, blobKey, nameKey);
+
+  char safeName[MAP_NAME_MAX];
+  strncpy(safeName, name, MAP_NAME_MAX - 1);
+  safeName[MAP_NAME_MAX - 1] = '\0';
+
+  bool ok = mp.putBytes(blobKey, &blob, sizeof(blob)) == sizeof(blob);
+  if (ok)
+    ok = mp.putString(nameKey, safeName) > 0;
+  mp.end();
+  return ok;
+}
+
+bool mapSlotDelete(uint8_t idx)
+{
+  if (idx >= MAP_SLOT_COUNT)
+    return false;
+
+  Preferences mp;
+  if (!mp.begin(MAP_NS, false))
+    return true; // namespace never existed - nothing to delete
+
+  char blobKey[4], nameKey[4];
+  mapSlotKeys(idx, blobKey, nameKey);
+  if (mp.isKey(blobKey))
+    mp.remove(blobKey);
+  if (mp.isKey(nameKey))
+    mp.remove(nameKey);
+  mp.end();
+  return true;
+}

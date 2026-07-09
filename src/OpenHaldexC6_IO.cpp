@@ -2,6 +2,7 @@
 #include <OpenHaldexC6_can.h>
 #include <OpenHaldexC6_WiFi.h>
 #include <OpenHaldexC6_lowpower.h>
+#include "driver/usb_serial_jtag.h" // usb_serial_jtag_is_connected() - bench USB-host detection
 
 // Low-power state machine: WATCHING = WiFi up, normal IO; SLEEPING = WiFi
 // down, LED off, and (if canSleepAggressive) CAN transceivers in standby
@@ -320,11 +321,16 @@ void updateTriggers(void *arg)
       // Decision lives in the pure lpCanActive() seam (include/OpenHaldexC6_lowpower.h)
       // so the shipped logic is pinned by the native Unity test.
       const bool canActive = lpCanActive(isStandalone, lpHaldexFps, lpChassisFps, lpWakeThresholdFps);
+      // Bench override: a USB host on the USB Serial/JTAG port (plugged into a
+      // PC) keeps the AP up and wakes a sleeping box, so the dashboard is
+      // reachable without a CAN source. False in the car (vehicle-powered, no
+      // USB host), so normal low-power behaviour is unchanged there.
+      const bool usbHostConnected = usb_serial_jtag_is_connected();
 
       switch (lpState)
       {
       case LP_WATCHING:
-        if (noClients && !canActive)
+        if (lpShouldSleep(noClients, canActive, usbHostConnected))
         {
           if (lpNoClientsSince == 0)
             lpNoClientsSince = now;
@@ -376,7 +382,7 @@ void updateTriggers(void *arg)
           lpResumeBackgroundTasks();
         }
 
-        if (canActive)
+        if (lpShouldWake(canActive, usbHostConnected))
         {
           // Ensure transceivers are back to normal before we re-enable WiFi/IO.
           lpSetTransceiverStandby(false);
@@ -384,9 +390,9 @@ void updateTriggers(void *arg)
           lowPowerMode = false;
           lpNoClientsSince = 0;
           lpState = LP_WATCHING;
-          DEBUG("Low power: CAN active (%lu fps, threshold %u) - restoring WiFi",
-                (unsigned long)(isStandalone ? lpHaldexFps : lpChassisFps),
-                (unsigned)lpWakeThresholdFps);
+          DEBUG("Low power: waking (%s) - restoring WiFi",
+                usbHostConnected ? "USB host connected"
+                                 : "CAN active");
           rebootWiFi = true;
         }
         // CPU auto-sleeps via esp_pm_configure(light_sleep_enable=true) in main.cpp.

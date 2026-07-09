@@ -50,41 +50,63 @@ header {
     background: linear-gradient(180deg, #242424, var(--background));
     /* Notch-safe: viewport-fit=cover lets content run under the cutout, so pad
        the sticky header by the top/side insets (landscape Dynamic Island). */
-    padding: calc(1rem + env(safe-area-inset-top, 0px)) calc(1rem + env(safe-area-inset-right, 0px)) 1rem calc(1rem + env(safe-area-inset-left, 0px));
+    padding: calc(0.6rem + env(safe-area-inset-top, 0px)) calc(1rem + env(safe-area-inset-right, 0px)) 0.6rem calc(1rem + env(safe-area-inset-left, 0px));
     border-bottom: 2px solid var(--primary);
     position: sticky;
     top: 0;
     z-index: 100;
+    /* Single row: title on the left, status badges on the right of the same
+       line. The badge row absorbs the remaining width and scrolls if tight. */
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
 }
 
 header h1 {
-    font-size: 1.5rem;
+    font-size: 1.1rem;
     font-weight: 700;
-    letter-spacing: 0.02em;
-    margin-bottom: 0.5rem;
+    letter-spacing: 0.01em;
+    margin-bottom: 0;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 header h1 .accent {
     color: var(--primary-light);
 }
 
+/* Single-line status row: badges stay on one line and the row scrolls
+   horizontally (scrollbar hidden) instead of wrapping to a second line. */
 .status-bar {
     display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
+    gap: 0.4rem;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-end;
+}
+
+.status-bar::-webkit-scrollbar {
+    display: none;
 }
 
 .status-badge {
     display: inline-block;
-    padding: 0.25rem 0.75rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+    padding: 0.22rem 0.6rem;
     background: var(--surface);
     border-radius: var(--radius-sm);
-    font-size: 0.8rem;
+    font-size: 0.72rem;
     font-weight: 600;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.02em;
     border: 1px solid var(--border);
     color: var(--text-dim);
 }
+
 
 .status-badge.connected {
     background: rgba(16, 185, 129, 0.15);
@@ -248,6 +270,7 @@ header h1 .accent {
     font-weight: 700;
     margin-bottom: 0.6rem;
     color: var(--text);
+    text-wrap: balance;
 }
 
 .card h2:not(:first-child) {
@@ -258,6 +281,7 @@ header h1 .accent {
     color: var(--text-dim);
     font-size: 0.875rem;
     margin-bottom: 0.6rem;
+    text-wrap: pretty;
 }
 
 .mode-grid {
@@ -291,11 +315,147 @@ header h1 .accent {
     box-shadow: 0 4px 16px rgba(220, 38, 38, 0.4);
 }
 
+/* Dashboard hero: title on the left, live mode pill on the right so the whole
+   mode picker can move off the glance view into a drawer. */
+.hero-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+}
+
+.mode-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.55rem 0.4rem 0.85rem;
+    background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+    border: 1px solid var(--primary);
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(220, 38, 38, 0.35);
+    transition: transform 0.15s, box-shadow 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+.mode-pill:hover {
+    box-shadow: 0 2px 16px rgba(220, 38, 38, 0.55);
+}
+
+.mode-pill:active {
+    transform: scale(0.96);
+}
+
+.mode-pill:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.mode-pill-chevron {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    opacity: 0.9;
+}
+
+/* Drive-mode drawer: off-canvas panel from the right, dimmed backdrop over the
+   dashboard. Transform-based so it animates cheaply. */
+.drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 290;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.25s ease, visibility 0.25s ease;
+}
+
+.drawer-backdrop.open {
+    opacity: 1;
+    visibility: visible;
+}
+
+.mode-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 300;
+    width: min(320px, 82vw);
+    padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px));
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    box-shadow: -10px 0 40px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    overflow-y: auto;
+}
+
+.mode-drawer.open {
+    transform: translateX(0);
+}
+
+.mode-drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.drawer-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    background: var(--surface-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+.drawer-close svg {
+    width: 20px;
+    height: 20px;
+}
+
+.drawer-close:hover {
+    color: var(--text);
+    border-color: var(--primary);
+}
+
+.drawer-close:active {
+    transform: scale(0.94);
+}
+
+.mode-drawer-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+}
+
+.mode-drawer-grid .mode-btn {
+    min-height: 64px;
+}
+
 /* Engagement hero gauge: semi-circular arc, actual engagement sweeps the fill,
    the white tick marks the target so response lag reads at a glance. */
 .gauge-hero {
     position: relative;
-    max-width: 340px;
+    max-width: 240px;
     margin: 0.25rem auto 0;
 }
 
@@ -340,11 +500,21 @@ header h1 .accent {
     pointer-events: none;
 }
 
+.gauge-hero-label {
+    color: var(--text-dim);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.15rem;
+}
+
 .gauge-hero-value {
     font-size: 3rem;
     font-weight: 800;
     line-height: 1;
     font-variant-numeric: tabular-nums;
+    color: var(--primary-light);
 }
 
 .gauge-hero-unit {
@@ -373,11 +543,47 @@ header h1 .accent {
     gap: 0.75rem;
 }
 
+/* Condensed glance grid: three tight tiles per row so speed, throttle, RPM,
+   boost, reported lock and the headline UDS values all sit above the fold on a
+   phone. */
+.stat-grid-dense {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+}
+
+.stat-grid-dense .stat-tile {
+    padding: 0.6rem 0.65rem;
+}
+
+.stat-grid-dense .stat-value {
+    font-size: 1.35rem;
+}
+
+.stat-grid-dense .stat-bar {
+    margin-top: 0.45rem;
+}
+
+.uds-more-grid {
+    margin-top: 0.75rem;
+}
+
 .stat-tile {
     padding: 0.9rem 1rem;
     background: var(--surface-light);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
+}
+
+/* Temperature tiles lead the glance grid and stay visible even when the UDS
+   poller is off (showing "--"), so the tuner always sees clutch/module/fin
+   temps at a glance. A warm tint sets them apart from the live-signal tiles. */
+.stat-tile-temp {
+    background: rgba(245, 158, 11, 0.1);
+    border-color: rgba(245, 158, 11, 0.4);
+}
+
+.stat-tile-temp .stat-value {
+    color: var(--warning);
 }
 
 .stat-label {
@@ -633,6 +839,21 @@ header h1 .accent {
     line-height: 1.5;
 }
 
+/* Expert page: keep the core gesture on one always-visible line and tuck the
+   fuller multi-select explanation into a collapsible so the grid sits higher on
+   a phone. No heavy top border here since it follows the lead line, not a card
+   edge. */
+.expert-lead {
+    margin-bottom: 0.35rem;
+}
+
+.expert-help {
+    margin-top: 0;
+    border-top: none;
+    padding-top: 0;
+    margin-bottom: 0.4rem;
+}
+
 .toggle-group {
     display: flex;
     flex-direction: column;
@@ -795,7 +1016,35 @@ header h1 .accent {
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     cursor: pointer;
+    /* Default: allow the page to scroll under a touch that starts on a cell.
+       Selection (which blocks scroll) is opt-in via the Select-cells toggle. */
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
     transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+/* Select mode: the grid stops scrolling so a drag paints a block of cells and
+   a tap toggles a single cell. A dashed ring signals the mode is live. */
+.map-grid.select-mode {
+    outline: 2px dashed var(--primary-light);
+    outline-offset: 5px;
+    border-radius: 4px;
+}
+
+.map-grid.select-mode .map-cell {
+    touch-action: none;
+}
+
+/* Bar holding the Select-cells toggle above the grid. */
+.map-select-bar {
+    margin: 0.25rem 0 0.75rem;
+}
+
+.sel-mode-btn.active {
+    background: var(--primary);
+    border-color: var(--primary-light);
+    color: #fff;
 }
 
 .map-cellHeader {
@@ -845,6 +1094,127 @@ header h1 .accent {
     border-color: var(--primary-light);
     color: #fff;
     box-shadow: 0 0 10px rgba(220, 38, 38, 0.8);
+}
+
+/* Drag-selected cell: cyan ring that matches the selection dots on the surface.
+   inset shadow keeps the heat fill readable underneath the highlight. */
+.map-cell.selected {
+    border-color: #38bdf8;
+    box-shadow: 0 0 0 2px #38bdf8, inset 0 0 0 1px rgba(56, 189, 248, 0.4);
+    z-index: 1;
+}
+
+/* Selection toolbar under the editor grid (block set-value + smooth). */
+.sel-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
+    padding: 0.6rem 0.75rem;
+    background: var(--surface-light);
+    border: 1px solid #38bdf8;
+    border-radius: var(--radius-md);
+}
+
+.sel-toolbar .sel-count {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #38bdf8;
+    margin-right: auto;
+    white-space: nowrap;
+}
+
+.sel-toolbar .btn-secondary {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 0.4rem 0.9rem;
+    margin: 0;
+}
+
+/* Map library: preset/saved-slot dropdown + import/export actions. */
+.map-library {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    background: var(--surface-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+
+.map-library-label {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin-bottom: 0.4rem;
+}
+
+.map-library-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+}
+
+.map-library-actions .btn-secondary {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 4.5rem;
+    padding: 0.45rem 0.6rem;
+    margin: 0;
+}
+
+.map-library .hint {
+    margin-top: 0.6rem;
+    margin-bottom: 0;
+}
+
+/* Dashboard glance-tile customizer (which signals show at a glance). */
+.tile-customizer {
+    margin-bottom: 0.9rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--surface-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+
+.tile-customizer summary {
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.tile-customizer[open] summary {
+    color: var(--text);
+    margin-bottom: 0.5rem;
+}
+
+.tile-options {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.35rem 0.75rem;
+    margin-top: 0.4rem;
+}
+
+.tile-opt {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.8rem;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.tile-opt input {
+    width: 1.05rem;
+    height: 1.05rem;
+    accent-color: var(--primary);
+    flex-shrink: 0;
 }
 
 /* Tune map curve chart */

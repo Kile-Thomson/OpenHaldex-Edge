@@ -77,6 +77,43 @@ void test_oem_zero_threshold_always_active(void)
                            "OEM: chassis 5 >= threshold 0 -> active");
 }
 
+// ---- USB-host bench override: lpShouldSleep --------------------------------
+// A USB host holds the AP up (blocks the low-power WiFi shutdown) even with no
+// clients and CAN idle. Without a USB host, the historical noClients && !canActive
+// gate is preserved exactly.
+void test_should_sleep_without_usb_matches_legacy_gate(void)
+{
+  // No USB host: sleep exactly when there are no clients AND CAN is idle.
+  TEST_ASSERT_TRUE_MESSAGE(lpShouldSleep(true, false, false),
+                           "no clients + CAN idle + no USB -> sleep");
+  TEST_ASSERT_FALSE_MESSAGE(lpShouldSleep(false, false, false),
+                            "clients present -> stay awake");
+  TEST_ASSERT_FALSE_MESSAGE(lpShouldSleep(true, true, false),
+                            "CAN active -> stay awake");
+}
+
+void test_should_sleep_blocked_by_usb_host(void)
+{
+  // USB host connected: never sleep, whatever the clients/CAN state.
+  TEST_ASSERT_FALSE_MESSAGE(lpShouldSleep(true, false, true),
+                            "USB host present overrides no-clients + CAN idle -> stay awake");
+  TEST_ASSERT_FALSE_MESSAGE(lpShouldSleep(false, true, true),
+                            "USB host present, clients + CAN active -> stay awake");
+}
+
+// ---- USB-host bench override: lpShouldWake ---------------------------------
+void test_should_wake_on_can_or_usb(void)
+{
+  TEST_ASSERT_FALSE_MESSAGE(lpShouldWake(false, false),
+                            "CAN idle + no USB host -> stay asleep");
+  TEST_ASSERT_TRUE_MESSAGE(lpShouldWake(true, false),
+                           "CAN active -> wake");
+  TEST_ASSERT_TRUE_MESSAGE(lpShouldWake(false, true),
+                           "USB host appeared -> wake (bench)");
+  TEST_ASSERT_TRUE_MESSAGE(lpShouldWake(true, true),
+                           "CAN active + USB host -> wake");
+}
+
 int main(int, char **)
 {
   UNITY_BEGIN();
@@ -85,5 +122,8 @@ int main(int, char **)
   RUN_TEST(test_oem_default_threshold_boundary);
   RUN_TEST(test_oem_custom_threshold_boundary);
   RUN_TEST(test_oem_zero_threshold_always_active);
+  RUN_TEST(test_should_sleep_without_usb_matches_legacy_gate);
+  RUN_TEST(test_should_sleep_blocked_by_usb_host);
+  RUN_TEST(test_should_wake_on_can_or_usb);
   return UNITY_END();
 }
