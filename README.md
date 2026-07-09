@@ -60,7 +60,14 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 ### Added driving features
 
 - **Optional steering-gain reduction.** Off by default. Winds lock back as steering angle increases, so the rear axle isn't fighting the front through tight corners and car parks. The angle is decoded from the MQB LWI_01 (0x086) frame; you choose where the reduction starts, where it bottoms out, and the minimum it can drop to. If the steering signal goes stale or is flagged faulty the reduction switches itself off and behaviour returns to normal. The live angle and applied gain show on the Diagnostics page so you can confirm the reading on your car before turning it on.
-- **Working lock-rate sliders, plus an engage rate.** The base firmware's lock-release rate slider and enable toggle were sent by the web UI but ignored by the firmware, so they did nothing. This fork makes them work and adds a separate engage rate, so both lock-up and release can be slewed instead of snapping on and off.
+- **Working lock-rate sliders, in real time units.** The base firmware's lock-release rate slider and enable toggle were sent by the web UI but ignored by the firmware, so they did nothing. This fork makes them work and adds a separate engage rate, so both lock-up and release can be slewed instead of snapping on and off. Both are now set in milliseconds for a full 0-100% sweep (0 = instant) rather than the awkward percent-per-second unit, so a rate reads as the time the change takes.
+
+### Web interface
+
+- **Restyled dashboard.** A dark dashboard with a semi-circular engagement gauge and a target tick, touch and reduced-motion polish, and polling that pauses while the page is hidden so it isn't hitting the device in your pocket.
+- **Live lock-response trace.** A rolling 15-second strip chart under the gauge plots what you asked the lock to do against what it actually did, so coupling lag and the effect of the rate limits read at a glance while tuning. It clears on a dropped link, so a reconnect never draws a line across the outage.
+- **Connection-status badge.** A live/reconnecting/offline badge in the header. A dropped access-point link used to leave the last gauge values frozen on screen looking current; the badge now flips to reconnecting after the first missed poll and offline after three, so stale numbers can't be mistaken for live data while driving.
+- **Expert map curve view.** The Expert editor draws the lock surface as curves below the 7x7 grid - lock against speed, or lock against throttle - so the table of numbers reads as shapes while you tune. It is read-only and doesn't change what's written to the Haldex.
 
 ### Built and tested
 

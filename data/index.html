@@ -10,17 +10,17 @@
     <meta http-equiv="Expires" content="0">
 
     <title>OpenHaldex-C6</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=8.00.14">
 </head>
 
 <body>
     <div class="container">
         <header>
-            <h1>OpenHaldex-C6</h1>
+            <h1>OpenHaldex <span class="accent">Edge</span></h1>
             <div class="status-bar">
                 <span class="status-badge" id="connStatus" role="status" aria-live="polite">Connecting...</span>
-                <span class="status-badge" id="modeStatus">Mode: --</span>
-                <span class="status-badge" id="canStatus">CAN: --</span>
+                <span class="status-badge" id="canStatus">CAN --</span>
+                <span class="status-badge" id="modeStatus">Mode --</span>
             </div>
         </header>
 
@@ -48,25 +48,18 @@
         </nav>
 
         <div class="page active" id="dashboard-page">
-            <section class="card">
-                <h2>Mode Selection</h2>
-                <div class="mode-grid">
-                    <button class="mode-btn" data-mode="0">Stock</button>
-                    <button class="mode-btn" data-mode="1">FWD</button>
-                    <button class="mode-btn" data-mode="2">50:50</button>
-                    <button class="mode-btn" data-mode="3">60:40</button>
-                    <button class="mode-btn" data-mode="4">75:25</button>
-                    <button class="mode-btn" data-mode="5">Expert</button>
-                </div>
-                <!--
-                <div class="current-mode">
-                    Current: <span id="currentMode">--</span>
-                </div>
-            -->
-            </section>
-
             <section class="card hero-card">
-                <h2>Haldex Engagement</h2>
+                <div class="hero-top">
+                    <h2>Haldex Engagement</h2>
+                    <button class="mode-pill" id="modePill" aria-haspopup="dialog" aria-expanded="false"
+                        aria-controls="modeDrawer">
+                        <span class="mode-pill-label" id="modePillLabel">--</span>
+                        <svg class="mode-pill-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="m9 18 6-6-6-6" />
+                        </svg>
+                    </button>
+                </div>
                 <div class="gauge-hero">
                     <svg class="gauge-arc" viewBox="0 0 200 118" role="img" aria-label="Haldex engagement gauge">
                         <defs>
@@ -82,11 +75,105 @@
                             transform="rotate(0 100 100)" visibility="hidden" />
                     </svg>
                     <div class="gauge-hero-center">
-                        <div class="gauge-hero-value"><span id="lockActual">--</span><span
+                        <div class="gauge-hero-label">Target duty</div>
+                        <div class="gauge-hero-value"><span id="lockTarget">--</span><span
                                 class="gauge-hero-unit">%</span></div>
-                        <div class="gauge-hero-sub">Target <span id="lockTarget">--</span>%</div>
+                        <div class="gauge-hero-sub">Now <span id="lockActual">--</span>%</div>
                     </div>
                 </div>
+            </section>
+
+            <section class="card glance-card">
+                <details class="tile-customizer" id="dashTileCustomizer">
+                    <summary>Customize tiles</summary>
+                    <p class="hint">Pick which signals show at a glance. Saved in this browser.</p>
+                    <div class="tile-options" id="dashTileOptions"></div>
+                </details>
+                <div class="stat-grid stat-grid-dense">
+                    <div class="stat-tile stat-tile-temp" data-signal="udsClutchTemp">
+                        <div class="stat-label">Clutch Temp</div>
+                        <div class="stat-value"><span id="udsClutchTemp">--</span><span class="stat-unit">C</span></div>
+                    </div>
+                    <div class="stat-tile stat-tile-temp" data-signal="udsModuleTemp">
+                        <div class="stat-label">Module Temp</div>
+                        <div class="stat-value"><span id="udsModuleTemp">--</span><span class="stat-unit">C</span></div>
+                    </div>
+                    <div class="stat-tile stat-tile-temp" data-signal="udsCoolingFinTemp">
+                        <div class="stat-label">Cooling Fin</div>
+                        <div class="stat-value"><span id="udsCoolingFinTemp">--</span><span class="stat-unit">C</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="speed">
+                        <div class="stat-label">Speed</div>
+                        <div class="stat-value"><span id="speed">--</span><span class="stat-unit">km/h</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="throttle">
+                        <div class="stat-label">Throttle</div>
+                        <div class="stat-value"><span id="throttle">--</span><span class="stat-unit">%</span></div>
+                        <div class="stat-bar">
+                            <div class="stat-bar-fill" id="throttleBar"></div>
+                        </div>
+                    </div>
+                    <div class="stat-tile" data-signal="rpm">
+                        <div class="stat-label">RPM</div>
+                        <div class="stat-value"><span id="rpm">--</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="boost">
+                        <div class="stat-label">Boost</div>
+                        <div class="stat-value"><span id="boost">--</span><span class="stat-unit">mbar</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="haldexEngagement">
+                        <div class="stat-label">Reported</div>
+                        <div class="stat-value"><span id="haldexEngagement">--</span><span class="stat-unit">%</span></div>
+                    </div>
+                    <div class="stat-tile stat-tile-uds" data-signal="udsClutchPWM">
+                        <div class="stat-label">Clutch PWM</div>
+                        <div class="stat-value"><span id="udsClutchPWM">--</span><span class="stat-unit">%</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="steeringAngle">
+                        <div class="stat-label">Steering</div>
+                        <div class="stat-value"><span id="steeringAngle">--</span><span class="stat-unit">deg</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="steeringGainNow">
+                        <div class="stat-label">Steer Gain</div>
+                        <div class="stat-value"><span id="steeringGainNow">--</span><span class="stat-unit">%</span></div>
+                    </div>
+                </div>
+
+                <div class="chip-row">
+                    <div class="status-chip" id="chipTempProtection"><span class="chip-dot"></span>Temp Protection</div>
+                    <div class="status-chip" id="chipCouplingOpen"><span class="chip-dot"></span>Coupling Open</div>
+                    <div class="status-chip" id="chipSpeedLimit"><span class="chip-dot"></span>Speed Limit</div>
+                    <div class="status-chip" id="chipClutch1"><span class="chip-dot"></span>Clutch 1: <span
+                            id="clutch1Report">--</span></div>
+                    <div class="status-chip" id="chipClutch2"><span class="chip-dot"></span>Clutch 2: <span
+                            id="clutch2Report">--</span></div>
+                </div>
+
+                <details class="more-info" id="udsDetails" style="display:none;">
+                    <summary>Full Haldex live data (UDS)</summary>
+                    <div class="stat-grid stat-grid-dense uds-more-grid">
+                        <div class="stat-tile">
+                            <div class="stat-label">Battery</div>
+                            <div class="stat-value"><span id="udsTerminalVoltage">--</span><span
+                                    class="stat-unit">V</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Pump Current</div>
+                            <div class="stat-value"><span id="udsClutchCurrent">--</span><span
+                                    class="stat-unit">A</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Pump Voltage</div>
+                            <div class="stat-value"><span id="udsClutchVoltage">--</span><span
+                                    class="stat-unit">V</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Blockage</div>
+                            <div class="stat-value"><span id="udsBlockagePct">--</span><span
+                                    class="stat-unit">%</span></div>
+                        </div>
+                    </div>
+                </details>
             </section>
 
             <section class="card" id="lockTraceCard">
@@ -98,78 +185,6 @@
                 <div class="trace-legend">
                     <span class="trace-legend-item"><span class="trace-swatch trace-swatch-actual"></span>Actual</span>
                     <span class="trace-legend-item"><span class="trace-swatch trace-swatch-target"></span>Target</span>
-                </div>
-            </section>
-
-            <section class="card">
-                <h2>Live Data</h2>
-                <div class="gauge-grid">
-                    <div class="gauge">
-                        <div class="gauge-label">Speed</div>
-                        <div class="gauge-value" id="speed">--</div>
-                        <div class="gauge-unit">km/h</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Throttle</div>
-                        <div class="gauge-value" id="throttle">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">RPM</div>
-                        <div class="gauge-value" id="rpm">--</div>
-                        <div class="gauge-unit">RPM</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Boost</div>
-                        <div class="gauge-value" id="boost">--</div>
-                        <div class="gauge-unit">mbar</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Steering</div>
-                        <div class="gauge-value" id="steeringAngle">--</div>
-                        <div class="gauge-unit">deg</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Steer Gain</div>
-                        <div class="gauge-value" id="steeringGainNow">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                </div>
-            </section>
-
-            <section class="card" id="haldexDataCard">
-                <h2>Haldex Data</h2>
-                <div class="gauge-grid">
-                    <div class="gauge">
-                        <div class="gauge-label">Engagement</div>
-                        <div class="gauge-value" id="haldexEngagement">--</div>
-                        <div class="gauge-unit"> %</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Clutch 1</div>
-                        <div class="gauge-value" id="clutch1Report">--</div>
-                        <div class="gauge-unit"> bit</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Clutch 2</div>
-                        <div class="gauge-value" id="clutch2Report">--</div>
-                        <div class="gauge-unit"> bit</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Temp Protection</div>
-                        <div class="gauge-value" id="tempProtection">--</div>
-                        <div class="gauge-unit"> bit</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Coupling Open</div>
-                        <div class="gauge-value" id="couplingOpen">--</div>
-                        <div class="gauge-unit"> bit</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Speed Limit</div>
-                        <div class="gauge-value" id="speedLimit">--</div>
-                        <div class="gauge-unit"> bit</div>
-                    </div>
                 </div>
             </section>
 
@@ -210,51 +225,6 @@
                 <div id="haldexStateLegend" class="state-legend"></div>
             </section>
 
-            <section class="card" id="udsDataCard" style="display:none;">
-                <h2>UDS Data (MQB)</h2>
-                <div class="gauge-grid">
-                    <div class="gauge">
-                        <div class="gauge-label">Terminal Volt.</div>
-                        <div class="gauge-value" id="udsTerminalVoltage">--</div>
-                        <div class="gauge-unit">V</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Module Temp</div>
-                        <div class="gauge-value" id="udsModuleTemp">--</div>
-                        <div class="gauge-unit">°C</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Clutch Temp</div>
-                        <div class="gauge-value" id="udsClutchTemp">--</div>
-                        <div class="gauge-unit">°C</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Fin Temp</div>
-                        <div class="gauge-value" id="udsCoolingFinTemp">--</div>
-                        <div class="gauge-unit">°C</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Clutch Current</div>
-                        <div class="gauge-value" id="udsClutchCurrent">--</div>
-                        <div class="gauge-unit">A</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">PWM Signal</div>
-                        <div class="gauge-value" id="udsClutchPWM">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Voltage (2BE4)</div>
-                        <div class="gauge-value" id="udsClutchVoltage">--</div>
-                        <div class="gauge-unit">V</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Blockage</div>
-                        <div class="gauge-value" id="udsBlockagePct">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                </div>
-            </section>
         </div>
 
         <div class="page" id="settings-page">
@@ -315,6 +285,12 @@
                         <span class="toggle-label">Fix Hunting</span>
                     </label>
                     <p class="hint">Enable only if the Haldex hunts at partial lock (e.g. 60/40 or 70/30) on a 554K controller.</p>
+                    <p class="hint">Full-lock torque ceiling</p>
+                    <div class="slider-container" id="bpkCeilingContainer">
+                        <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider">
+                        <div class="slider-value"><span id="bpkCeilingValue">220</span> Nm</div>
+                    </div>
+                    <p class="hint">Engine torque the spoofed Motor_11 frame claims at 100% lock. Raise this if full lock never reaches 100% engagement; the MQB signal maxes at 509 Nm. Only affects BPK packing (Fix Hunting on, or during a Learn).</p>
                 </div>
             </section>
 
@@ -586,7 +562,19 @@
         <div class="page" id="expert-page">
             <section class="card">
                 <h2>Expert Editor</h2>
-                <p class="hint">Tap cells to edit lock percentage</p>
+                <p class="hint expert-lead">Tap a cell to edit. <strong>Press and hold</strong> a cell for
+                    multi-select.</p>
+                <details class="more-info expert-help">
+                    <summary>More on multi-select</summary>
+                    <p>Or tap <strong>Select cells</strong> below to start. In multi-select, tap cells or drag a box
+                        across them - selected cells show as dots on the surface. Then Set Value applies one number to
+                        all, or Smooth averages them out.</p>
+                </details>
+
+                <div class="map-select-bar">
+                    <button class="btn-secondary sel-mode-btn" id="selModeToggle" aria-pressed="false">Select
+                        cells</button>
+                </div>
 
                 <div class="map-container">
                     <div class="map-axis-label-y">Throttle %</div>
@@ -594,22 +582,35 @@
                     <div class="map-axis-label-x">Speed (km/h)</div>
                 </div>
 
-                <div class="chart-toggle" role="tablist" aria-label="Lock map chart view">
-                    <button class="chart-toggle-btn active" id="chartViewSpeed" role="tab" aria-selected="true" aria-controls="tuneChartPanel">Lock vs Speed</button>
-                    <button class="chart-toggle-btn" id="chartViewThrottle" role="tab" aria-selected="false" aria-controls="tuneChartPanel">Lock vs Throttle</button>
-                </div>
-                <div class="tune-chart" id="tuneChartPanel" role="tabpanel">
-                    <svg id="tuneChartSvg" viewBox="0 0 320 200" role="img" aria-label="Lock map curves"></svg>
-                </div>
-                <div class="chart-legend">
-                    <div class="chart-legend-caption" id="chartLegendCaption">Throttle %</div>
-                    <div class="chart-legend-bar" id="chartLegendBar"></div>
-                    <div class="chart-legend-scale" id="chartLegendScale"></div>
+                <div class="sel-toolbar" id="selToolbar" style="display:none;">
+                    <span class="sel-count" id="selCount">0 selected</span>
+                    <button class="btn-secondary" id="selSetValue">Set Value</button>
+                    <button class="btn-secondary" id="selSmooth">Smooth</button>
+                    <button class="btn-secondary" id="selClear">Clear</button>
                 </div>
 
+                <!-- Pseudo-3D isometric render of the lock surface: speed and
+                     throttle on the ground, lock% as height, a live dot riding
+                     the surface at the current operating point. Built by
+                     drawTuneChart() as plain SVG (no libraries). -->
+                <div class="tune-chart" id="tuneChart"></div>
+                <div class="chart-legend" id="chartLegend"></div>
+
                 <div class="map-controls">
-                    <button class="btn-secondary" id="saveMap">Save Tune</button>
+                    <button class="btn-primary" id="saveMap">Apply</button>
                     <button class="btn-secondary" id="restoreDefaults">Restore Defaults</button>
+                </div>
+
+                <div class="map-library">
+                    <label class="map-library-label" for="mapPreset">Maps</label>
+                    <select class="input-select" id="mapPreset"></select>
+                    <div class="map-library-actions">
+                        <button class="btn-secondary" id="mapLoad">Load</button>
+                        <button class="btn-secondary" id="mapSaveAs">Save As</button>
+                        <button class="btn-secondary" id="mapDelete">Delete</button>
+                    </div>
+                    <p class="hint">Load a slot into the editor, then <strong>Apply</strong> to write it live.
+                        <strong>Save As</strong> stores the current map to a device slot, shared across phones.</p>
                 </div>
             </section>
 
@@ -747,7 +748,33 @@
             </section>
         </div>
 
-        <script src="./app.js?v=8.00.2" type="text/javascript"></script>
+        <!-- Drive-mode drawer: the dashboard shows only the current mode as a pill;
+             tapping it slides this in so the six modes stay one tap away without
+             eating a whole card on the glance view. -->
+        <div class="drawer-backdrop" id="modeBackdrop"></div>
+        <aside class="mode-drawer" id="modeDrawer" role="dialog" aria-modal="true" aria-label="Drive mode"
+            aria-hidden="true">
+            <div class="mode-drawer-head">
+                <h2>Drive Mode</h2>
+                <button class="drawer-close" id="modeDrawerClose" aria-label="Close drive mode">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+                        stroke-linejoin="round" aria-hidden="true">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="mode-drawer-grid">
+                <button class="mode-btn" data-mode="0">Stock</button>
+                <button class="mode-btn" data-mode="1">FWD</button>
+                <button class="mode-btn" data-mode="2">50:50</button>
+                <button class="mode-btn" data-mode="3">60:40</button>
+                <button class="mode-btn" data-mode="4">75:25</button>
+                <button class="mode-btn" data-mode="5">Expert</button>
+            </div>
+        </aside>
+
+        <script src="./app.js?v=8.00.14" type="text/javascript"></script>
         <!-- add version query param to force cache refresh on updates-->
 </body>
 

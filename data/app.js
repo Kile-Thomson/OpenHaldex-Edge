@@ -24,15 +24,18 @@ const arrayRows = throttleHeader.length; // var for number of rows
 var defaultSpeedHeader = [0, 30, 60, 90, 120, 160, 180]; // default speed header (for x-axis)
 var defaultThrottleHeader = [0, 15, 30, 45, 60, 75, 90]; // default throttle header (for y-axis)
 
-// constant for default lock (for restoring settings)
+// Default lock table for "Restore Defaults". This MUST mirror the firmware's
+// compiled-in default (lockArray in src/OpenHaldexC6_globals.cpp) so restoring
+// defaults in the UI reproduces exactly what the device ships with on a fresh
+// NVS. Rows = throttle (0..90), columns = speed (0..180).
 const defaultLock = [
   [0, 0, 0, 0, 0, 0, 0],
-  [100, 50, 20, 15, 10, 5, 0],
-  [100, 60, 30, 20, 15, 10, 0],
-  [100, 70, 40, 30, 15, 15, 10],
-  [100, 90, 60, 60, 30, 20, 10],
-  [100, 100, 80, 70, 50, 30, 15],
-  [100, 100, 100, 80, 60, 50, 40],
+  [0, 0, 0, 0, 0, 0, 0],
+  [5, 5, 5, 5, 5, 40, 40],
+  [40, 40, 40, 40, 40, 40, 40],
+  [80, 80, 80, 80, 80, 80, 80],
+  [80, 80, 80, 80, 80, 80, 80],
+  [80, 80, 80, 80, 80, 80, 80],
 ];
 
 // variable for current lock (to be used / traced)
@@ -56,9 +59,12 @@ function initApp() {
   //initStoredSettings(); // old
   initNavigation();
   initDashboard();
+  initDashTiles();
+  initModeDrawer();
   initModeButtons();
   initSettings();
   initExpertEditor();
+  initTuneSelection();
   initTuneChart();
   initLearn();
   initWifiSsid();
@@ -208,6 +214,13 @@ async function initStoredSettings() {
     const fixHuntingElem = document.getElementById("fixHunting");
     if (fixHuntingElem) fixHuntingElem.checked = data.fixHunting || false;
 
+    const bpkCeilRange = document.getElementById("bpkCeilingRange");
+    const bpkCeilVal   = document.getElementById("bpkCeilingValue");
+    if (bpkCeilRange && data.bpkCeilingNm !== undefined) {
+      bpkCeilRange.value = data.bpkCeilingNm;
+      if (bpkCeilVal) bpkCeilVal.textContent = data.bpkCeilingNm;
+    }
+
     const canSleepElem = document.getElementById("canSleepEnabled");
     if (canSleepElem) canSleepElem.checked = data.canSleepEnabled || false;
 
@@ -343,6 +356,7 @@ async function refreshStatus() {
     document.getElementById("boost").textContent = displayValue(data.boost);
     document.getElementById("steeringAngle").textContent = displayValue(data.steeringAngle);
     document.getElementById("steeringGainNow").textContent = displayValue(data.steeringGainNow);
+    document.getElementById("throttleBar").style.width = `${data.throttle ?? 0}%`;
 
     document.getElementById("lockTarget").textContent = displayValue(
       data.lockTarget,
@@ -357,13 +371,16 @@ async function refreshStatus() {
     pushLockSample(data.lockTarget, data.lockActual, traceNow);
     renderLockTrace(traceNow);
 
-    // Haldex Data card (Gen 1–4, non-UDS)
+    // Glance card: reported engagement + clutch values, and the status chips
+    // (chips light when the ECU reports the flag active, grey out on no data).
     document.getElementById("haldexEngagement").textContent = displayValue(data.haldexEngagement);
     document.getElementById("clutch1Report").textContent   = displayValue(data.clutch1Report);
     document.getElementById("clutch2Report").textContent   = displayValue(data.clutch2Report);
-    document.getElementById("tempProtection").textContent  = displayOnOff(data.tempProtection);
-    document.getElementById("couplingOpen").textContent    = displayOnOff(data.couplingOpen);
-    document.getElementById("speedLimit").textContent      = displayOnOff(data.speedLimit);
+    setChip("chipTempProtection", data.tempProtection);
+    setChip("chipCouplingOpen", data.couplingOpen);
+    setChip("chipSpeedLimit", data.speedLimit);
+    setChip("chipClutch1", data.clutch1Report);
+    setChip("chipClutch2", data.clutch2Report);
 
     if (data.mode !== undefined) {
       modeButton(data.mode); // set the mode button - there may be external influences
@@ -372,7 +389,7 @@ async function refreshStatus() {
     const canStatus = document.getElementById("canStatus");
     const chassisOk = data.chassisCAN;
     const haldexOk = data.haldexCAN;
-    canStatus.textContent = `CAN: ${chassisOk ? "✓" : "X"} Chassis | ${haldexOk ? "✓" : "X"} Haldex`;
+    canStatus.textContent = `CAN C:${chassisOk ? "✓" : "✗"} H:${haldexOk ? "✓" : "✗"}`;
 
     document.getElementById("diagChassisCAN").textContent = chassisOk
       ? "✓ Healthy"
@@ -443,28 +460,40 @@ async function refreshStatus() {
       gen41Card.style.display = "none";
     }
 
-    // UDS MQB diagnostic data — replaces the standard Haldex Data card when active
-    const haldexDataCard = document.getElementById("haldexDataCard");
-    const udsCard = document.getElementById("udsDataCard");
-    if (data.uds) {
-      if (haldexDataCard) haldexDataCard.style.display = "none";
-      if (udsCard) {
-        udsCard.style.display = "";
-        document.getElementById("udsTerminalVoltage").textContent = data.uds.terminalVoltage?.toFixed(1) ?? "--";
-        document.getElementById("udsModuleTemp").textContent = data.uds.moduleTemp?.toFixed(1) ?? "--";
-        document.getElementById("udsClutchTemp").textContent = data.uds.clutchTemp?.toFixed(1) ?? "--";
-        document.getElementById("udsCoolingFinTemp").textContent = data.uds.coolingFinTemp?.toFixed(1) ?? "--";
-        document.getElementById("udsClutchCurrent").textContent = data.uds.clutchCurrent?.toFixed(3) ?? "--";
-        document.getElementById("udsClutchPWM").textContent = displayValue(data.uds.clutchPWM);
-        document.getElementById("udsClutchVoltage").textContent = data.uds.clutchVoltage?.toFixed(3) ?? "--";
-        document.getElementById("udsBlockagePct").textContent = displayValue(data.uds.blockagePct);
-      }
+    // UDS MQB diagnostic data: the API only includes `uds` while the poller
+    // toggle is on. The four headline values sit inline in the glance grid; the
+    // rest fold into the details block. Both hide when the feature is off.
+    const uds = data.uds;
+    // Glance tile visibility is user-controlled (see initDashTiles); only the
+    // full UDS details block is gated on whether the poller is returning data.
+    const udsDetails = document.getElementById("udsDetails");
+    if (udsDetails) udsDetails.style.display = uds ? "" : "none";
+    if (uds) {
+      document.getElementById("udsTerminalVoltage").textContent = uds.terminalVoltage?.toFixed(1) ?? "--";
+      document.getElementById("udsModuleTemp").textContent = uds.moduleTemp?.toFixed(1) ?? "--";
+      document.getElementById("udsClutchTemp").textContent = uds.clutchTemp?.toFixed(1) ?? "--";
+      document.getElementById("udsCoolingFinTemp").textContent = uds.coolingFinTemp?.toFixed(1) ?? "--";
+      document.getElementById("udsClutchCurrent").textContent = uds.clutchCurrent?.toFixed(3) ?? "--";
+      document.getElementById("udsClutchPWM").textContent = displayValue(uds.clutchPWM);
+      document.getElementById("udsClutchVoltage").textContent = uds.clutchVoltage?.toFixed(3) ?? "--";
+      document.getElementById("udsBlockagePct").textContent = displayValue(uds.blockagePct);
     } else {
-      if (haldexDataCard) haldexDataCard.style.display = "";
-      if (udsCard) udsCard.style.display = "none";
+      // UDS-sourced glance tiles stay in the grid when the poller is off; blank
+      // them back to "--" rather than leaving a stale reading on screen.
+      ["udsClutchTemp", "udsModuleTemp", "udsCoolingFinTemp", "udsClutchPWM"].forEach(
+        (id) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = "--";
+        },
+      );
     }
 
-    refreshTrace(data); // update the live trace
+    refreshTrace(data); // update the live trace (editor-grid cell highlight)
+
+    // Ride the live operating point on the expert tune surface: cache the poll
+    // and move the dot without redrawing the whole surface each frame.
+    lastDashData = data;
+    updateChartMarker();
   } catch (error) {
     console.log("Status failed: " + error.message);
   } finally {
@@ -477,12 +506,15 @@ function hex2bin(hex) {
   return ("00000000" + parseInt(hex, 16).toString(2)).substr(-8);
 }
 
-// Update the header subtitle with current mode and any active force mode.
+// Keep the hero mode pill reading the live base mode plus any active force
+// trigger. The header badge shows the base mode only; the force annotation -
+// which must never be silently active - rides here on the pill and refreshes
+// every poll.
 function updateBannerSubtitle(data) {
-  const el = document.getElementById("modeStatus");
+  const el = document.getElementById("modePillLabel");
   if (!el) return;
   const modeName = MODE_NAMES[data.mode] ?? "Unknown";
-  let text = `Mode: ${modeName}`;
+  let text = modeName;
 
   // Surface EVERY active force trigger so a flag can never be silently active.
   // Each trigger must be BOTH enabled and have its live flag asserted - matching
@@ -496,7 +528,7 @@ function updateBannerSubtitle(data) {
 
   if (active.length) {
     const parts = active.map((a) => `${MODE_NAMES[a.fmv] ?? "Unknown"} (${a.trig})`);
-    text += ` | Force: ${parts.join(", ")}`;
+    text += ` · Force: ${parts.join(", ")}`;
   }
   el.textContent = text;
 }
@@ -585,6 +617,16 @@ async function saveSetting(key, value) {
     console.log("Saving setting failed: " + error.message);
     showNotification("Error saving setting", "error");
   }
+}
+
+// Status chip helper: 'on' lights the dot, 'unknown' greys the whole chip out
+// (no data - e.g. Haldex CAN down reports null for every flag).
+function setChip(id, value) {
+  const chip = document.getElementById(id);
+  if (!chip) return;
+  const unknown = value === undefined || value === null;
+  chip.classList.toggle("unknown", unknown);
+  chip.classList.toggle("on", !unknown && !!value);
 }
 
 // Semi-circular engagement arc, radius 80 centred at (100,100): the fill sweeps
@@ -778,6 +820,19 @@ function initNavigation() {
     });
   }
 
+  // BPK full-lock torque ceiling slider. Save on release (change), not on every
+  // input tick, so dragging doesn't stream torque-ceiling changes at a live car.
+  const bpkCeilingRange = document.getElementById("bpkCeilingRange");
+  const bpkCeilingValue = document.getElementById("bpkCeilingValue");
+  if (bpkCeilingRange) {
+    bpkCeilingRange.addEventListener("input", () => {
+      if (bpkCeilingValue) bpkCeilingValue.textContent = bpkCeilingRange.value;
+    });
+    bpkCeilingRange.addEventListener("change", () => {
+      saveSetting("bpkCeilingNm", parseInt(bpkCeilingRange.value));
+    });
+  }
+
   // Lock response ramp sliders (display update only — save handled in initSettings)
   const lockReleaseRange = document.getElementById("lockReleaseRampRange");
   const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
@@ -829,6 +884,50 @@ function initDashboard() {
   });
 }
 
+// Short vibration on tap where the browser allows it - purely tactile feedback.
+function haptic(ms) {
+  try {
+    if (navigator.vibrate) navigator.vibrate(ms);
+  } catch (e) {
+    /* vibration blocked or unsupported - ignore */
+  }
+}
+
+// Drive-mode drawer: the dashboard shows the live mode as a pill, and tapping it
+// slides in the full six-button picker from the right. Keeps the mode grid off
+// the glance view so lock %, live data and the trace fit one screen.
+function setModeDrawer(open) {
+  const drawer = document.getElementById("modeDrawer");
+  const backdrop = document.getElementById("modeBackdrop");
+  const pill = document.getElementById("modePill");
+  if (!drawer) return;
+  drawer.classList.toggle("open", open);
+  drawer.setAttribute("aria-hidden", open ? "false" : "true");
+  // inert keeps the off-screen mode buttons out of the tab order and the
+  // accessibility tree while the drawer is closed.
+  drawer.inert = !open;
+  if (backdrop) backdrop.classList.toggle("open", open);
+  if (pill) pill.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function initModeDrawer() {
+  const pill = document.getElementById("modePill");
+  const backdrop = document.getElementById("modeBackdrop");
+  const closeBtn = document.getElementById("modeDrawerClose");
+  if (pill) {
+    pill.addEventListener("click", () => {
+      haptic(10);
+      setModeDrawer(true);
+    });
+  }
+  if (backdrop) backdrop.addEventListener("click", () => setModeDrawer(false));
+  if (closeBtn) closeBtn.addEventListener("click", () => setModeDrawer(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") setModeDrawer(false);
+  });
+  setModeDrawer(false); // establish the closed/inert state on load
+}
+
 // initialise mode buttons
 function initModeButtons() {
   const buttons = document.querySelectorAll(".mode-btn");
@@ -854,8 +953,10 @@ function initModeButtons() {
         return;
       }
 
+      haptic(15); // firmer tick for a mode change
       modeButton(mode); // change highlighted mode
       sendMode(mode); // send new mode to ESP
+      setModeDrawer(false); // picked a mode - slide the drawer away
     });
   });
 
@@ -1044,12 +1145,25 @@ function modeButton(mode) {
     btn.classList.toggle("active", parseInt(btn.dataset.mode) === mode);
   });
 
-  //document.getElementById('currentMode').textContent = MODE_NAMES[mode] || 'Unknown';
+  // Keep the dashboard mode pill reading the live mode (set here rather than in
+  // the click handler so external mode changes from the ESP also update it).
+  const pillLabel = document.getElementById("modePillLabel");
+  if (pillLabel) pillLabel.textContent = MODE_NAMES[mode] || "Unknown";
+
+  // Mirror the base mode onto the header badge so the running mode is visible
+  // from any tab, not just the dashboard. Force triggers still annotate the
+  // hero pill; this is the compact glance.
+  const hdr = document.getElementById("modeStatus");
+  if (hdr) hdr.textContent = "Mode " + (MODE_NAMES[mode] || "Unknown");
 }
 
 // initialise expert editor
-function initExpertEditor() {
+// Build the editor grid (axis headers + lock cells) from the current
+// speedHeader/throttleHeader/currentLock globals. Called on first init and
+// again whenever a map is loaded (preset, import, or restore defaults).
+function buildMapGrid() {
   const mapGrid = document.getElementById("mapGrid"); // find the 'map grid'
+  mapGrid.innerHTML = ""; // clear any prior grid so a reload doesn't stack cells
 
   const cellMarker = document.createElement("div"); // create the first element (which will be a dead cell)
   cellMarker.className = "map-cellHeader";
@@ -1107,15 +1221,19 @@ function initExpertEditor() {
       cell.max = 100;
       cell.textContent = String(currentLock[throttle][speed]); // update the cell text with the value in currentLock
 
-      cell.addEventListener("click", () => {
-        openEditValue(cell);
-      });
+      // Lock cells no longer bind a click handler: taps and drag-selection are
+      // handled by initTuneSelection() via pointer events on the grid so a single
+      // tap opens the editor while a drag selects a block of cells.
 
       updateCellColor(cell, currentLock[throttle][speed]); // update the colour (low/medium/high)
 
       mapGrid.appendChild(cell);
     }
   }
+}
+
+function initExpertEditor() {
+  buildMapGrid();
 
   document.getElementById("cancelEdit").addEventListener("click", cancelEdit);
   document.getElementById("confirmEdit").addEventListener("click", confirmEdit);
@@ -1123,6 +1241,303 @@ function initExpertEditor() {
   document
     .getElementById("restoreDefaults")
     .addEventListener("click", restoreDefaults);
+
+  // Selection toolbar (drag-select block edit + smooth).
+  const selSetValue = document.getElementById("selSetValue");
+  const selSmooth = document.getElementById("selSmooth");
+  const selClear = document.getElementById("selClear");
+  if (selSetValue) selSetValue.addEventListener("click", openEditSelection);
+  if (selSmooth) selSmooth.addEventListener("click", smoothSelection);
+  if (selClear) selClear.addEventListener("click", clearSelection);
+
+  initMapManager(); // presets, saved slots, import/export
+}
+
+// ---- Expert editor: drag-select, block edit, smooth, chart dots ------------
+// Selected lock cells are tracked as "row,col" (throttle,speed) keys. A single
+// tap opens the editor for one cell; a click-drag paints a rectangular block.
+// Every selected cell is mirrored as a dot on the pseudo-3D surface so the tuner
+// sees exactly which cells an edit or smooth will touch.
+let selectedCells = new Set();
+let selDragging = false;
+let selAnchor = null; // {r, c} where the drag started
+let selMoved = false; // did the pointer leave the anchor cell during this gesture
+let editMultiMode = false; // confirmEdit applies to the whole selection when true
+// Phone-friendly selection: a single tap opens the one-cell editor by default,
+// which conflicts with drag-to-select on touch (the page just scrolls). So block
+// selection behind an explicit "Select cells" toggle. When off: normal scroll +
+// tap-to-edit. When on: the grid stops scrolling, a tap toggles one cell, and a
+// drag paints a rectangular block.
+let selectMode = false;
+let suppressClick = false; // swallow the click that trails a real drag gesture
+
+function cellKey(r, c) {
+  return r + "," + c;
+}
+
+function getCellRC(el) {
+  if (!el || !el.classList || !el.classList.contains("map-cell")) return null;
+  const c = parseInt(el.getAttribute("speed"));
+  const r = parseInt(el.getAttribute("throttle"));
+  if (Number.isNaN(r) || Number.isNaN(c)) return null;
+  return { r, c };
+}
+
+function cellForRC(r, c) {
+  return document.querySelector(
+    `#mapGrid .map-cell[throttle="${r}"][speed="${c}"]`,
+  );
+}
+
+function setRectSelection(a, b) {
+  selectedCells.clear();
+  const r0 = Math.min(a.r, b.r), r1 = Math.max(a.r, b.r);
+  const c0 = Math.min(a.c, b.c), c1 = Math.max(a.c, b.c);
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) selectedCells.add(cellKey(r, c));
+  }
+  applySelectionHighlight();
+}
+
+function applySelectionHighlight() {
+  document.querySelectorAll("#mapGrid .map-cell").forEach((cell) => {
+    const rc = getCellRC(cell);
+    cell.classList.toggle(
+      "selected",
+      !!rc && selectedCells.has(cellKey(rc.r, rc.c)),
+    );
+  });
+  updateSelectionToolbar();
+  updateSelectionMarkers();
+}
+
+function clearSelection() {
+  selectedCells.clear();
+  applySelectionHighlight();
+}
+
+function updateSelectionToolbar() {
+  const bar = document.getElementById("selToolbar");
+  const count = document.getElementById("selCount");
+  if (!bar) return;
+  const n = selectedCells.size;
+  bar.style.display = n > 0 ? "" : "none";
+  if (count) count.textContent = `${n} ${n === 1 ? "cell" : "cells"} selected`;
+}
+
+// Paint a dot on the 3D surface for every selected cell. Reuses the same
+// projection the surface was drawn with so each dot lands on its cell exactly.
+function updateSelectionMarkers() {
+  const g = document.getElementById("selDots");
+  if (!g) return;
+  if (!tuneProject) {
+    g.innerHTML = "";
+    return;
+  }
+  let out = "";
+  selectedCells.forEach((k) => {
+    const [r, c] = k.split(",").map(Number);
+    if (!currentLock[r]) return;
+    const p = tuneProject(c, r, currentLock[r][c]);
+    out += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.2" fill="#38bdf8" stroke="#fff" stroke-width="1.2"/>`;
+  });
+  g.innerHTML = out;
+}
+
+// Flip select mode on/off, updating the grid, the toggle button, and clearing
+// any selection when leaving the mode.
+function setSelectMode(on) {
+  selectMode = on;
+  const grid = document.getElementById("mapGrid");
+  const btn = document.getElementById("selModeToggle");
+  if (grid) grid.classList.toggle("select-mode", on);
+  if (btn) {
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.textContent = on ? "Selecting - tap cells (done)" : "Select cells";
+  }
+  if (!on) clearSelection();
+}
+
+// Toggle one cell in/out of the selection (a tap while in select mode), so a
+// scattered set of cells can be built up by tapping.
+function toggleCell(rc) {
+  const k = cellKey(rc.r, rc.c);
+  if (selectedCells.has(k)) selectedCells.delete(k);
+  else selectedCells.add(k);
+  applySelectionHighlight();
+}
+
+function initTuneSelection() {
+  const grid = document.getElementById("mapGrid");
+  if (!grid) return;
+
+  const toggle = document.getElementById("selModeToggle");
+  if (toggle) toggle.addEventListener("click", () => setSelectMode(!selectMode));
+
+  // Primary, always-reliable path: a plain click on a cell. Mobile browsers
+  // deliver a click for every tap; the earlier pointer-only approach dropped
+  // taps on touch (the reported bug). In select mode a click toggles the cell
+  // in/out of the selection; otherwise it opens the single-cell editor.
+  grid.addEventListener("click", (e) => {
+    if (suppressClick) {
+      // This click trails a drag gesture that already painted the selection -
+      // ignore it so the last cell isn't immediately toggled back off.
+      suppressClick = false;
+      return;
+    }
+    const rc = getCellRC(e.target);
+    if (!rc) return; // axis-header cells keep their own click handler
+    if (selectMode) {
+      toggleCell(rc);
+    } else {
+      const cell = cellForRC(rc.r, rc.c);
+      if (cell) openEditValue(cell);
+    }
+  });
+
+  // Progressive enhancement: drag to paint a rectangle while in select mode.
+  // Pointer events only, and layered so that if they misbehave on a given
+  // device the click path above still delivers tap-to-select.
+  const onMove = (e) => {
+    if (!selDragging) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const rc = getCellRC(el);
+    if (!rc) return;
+    if (rc.r !== selAnchor.r || rc.c !== selAnchor.c) selMoved = true;
+    // A drag paints a fresh rectangle from the anchor to the current cell.
+    setRectSelection(selAnchor, rc);
+  };
+
+  const teardown = () => {
+    selDragging = false;
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+    document.removeEventListener("pointercancel", onCancel);
+  };
+
+  const onUp = () => {
+    if (!selDragging) return;
+    teardown();
+    // Only a real drag (pointer left the anchor cell) owns the outcome; a tap
+    // that never moved falls through to the click handler above. Suppress the
+    // click that the browser fires after a drag so it can't undo the paint.
+    if (selMoved) suppressClick = true;
+  };
+
+  const onCancel = () => teardown();
+
+  // Long-press a cell (while NOT in select mode) to enter multi-select without
+  // reaching for the toolbar button - the standard mobile gesture. Holding ~450ms
+  // on a cell flips the mode on and seeds the selection with that cell. Any real
+  // finger movement first (a scroll) aborts the press so scrolling still works.
+  let lpTimer = null;
+  let lpStart = null;
+  const cancelLongPress = () => {
+    if (lpTimer) {
+      clearTimeout(lpTimer);
+      lpTimer = null;
+    }
+    lpStart = null;
+    document.removeEventListener("pointermove", onLongPressMove);
+    document.removeEventListener("pointerup", onLongPressEnd);
+    document.removeEventListener("pointercancel", onLongPressEnd);
+  };
+  const onLongPressMove = (e) => {
+    if (!lpStart) return;
+    const dx = e.clientX - lpStart.x;
+    const dy = e.clientY - lpStart.y;
+    if (dx * dx + dy * dy > 100) cancelLongPress(); // moved >10px: treat as scroll
+  };
+  const onLongPressEnd = () => cancelLongPress();
+
+  grid.addEventListener("pointerdown", (e) => {
+    if (!selectMode) {
+      // Arm a long-press to enter select mode; a short tap still edits one cell.
+      const rc = getCellRC(e.target);
+      if (!rc) return;
+      cancelLongPress();
+      lpStart = { x: e.clientX, y: e.clientY };
+      lpTimer = setTimeout(() => {
+        lpTimer = null;
+        cancelLongPress();
+        setSelectMode(true);
+        toggleCell(rc); // seed the selection with the held cell
+        suppressClick = true; // swallow the click that trails this press
+      }, 450);
+      document.addEventListener("pointermove", onLongPressMove);
+      document.addEventListener("pointerup", onLongPressEnd);
+      document.addEventListener("pointercancel", onLongPressEnd);
+      return;
+    }
+    const rc = getCellRC(e.target);
+    if (!rc) return;
+    e.preventDefault(); // claim the gesture so the page doesn't scroll-fight
+    selDragging = true;
+    selMoved = false;
+    selAnchor = rc;
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onCancel);
+  });
+
+  // Belt-and-suspenders for mobile Safari, where touch-action alone doesn't
+  // always stop the scroll: while dragging in select mode, kill touchmove.
+  grid.addEventListener(
+    "touchmove",
+    (e) => {
+      if (selectMode && selDragging) e.preventDefault();
+    },
+    { passive: false },
+  );
+}
+
+// Open the editor to set one value across the whole selection.
+function openEditSelection() {
+  if (selectedCells.size === 0) return;
+  editMultiMode = true;
+  currentEditCell = null;
+  const modal = document.getElementById("editModal");
+  const input = document.getElementById("editValue");
+  document.getElementById("editModalTitle").textContent =
+    `Set ${selectedCells.size} ${selectedCells.size === 1 ? "cell" : "cells"} (Lock %)`;
+  input.value = "";
+  modal.classList.add("active");
+  input.focus();
+}
+
+// Box-smooth: each selected cell becomes the average of itself and its four
+// orthogonal neighbours. Reads from a snapshot so the pass isn't biased by
+// cells already smoothed this round. With no selection, smooths the whole map.
+function smoothSelection() {
+  const keys = selectedCells.size
+    ? [...selectedCells]
+    : (() => {
+        const all = [];
+        for (let r = 0; r < arrayRows; r++)
+          for (let c = 0; c < arrayColumns; c++) all.push(cellKey(r, c));
+        return all;
+      })();
+  const src = currentLock.map((row) => row.slice());
+  keys.forEach((k) => {
+    const [r, c] = k.split(",").map(Number);
+    let sum = src[r][c], n = 1;
+    [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([dr, dc]) => {
+      const rr = r + dr, cc = c + dc;
+      if (rr >= 0 && rr < arrayRows && cc >= 0 && cc < arrayColumns) {
+        sum += src[rr][cc];
+        n++;
+      }
+    });
+    const v = Math.round(Math.max(0, Math.min(100, sum / n)));
+    currentLock[r][c] = v;
+    const cell = cellForRC(r, c);
+    if (cell) {
+      cell.textContent = String(v);
+      updateCellColor(cell, v);
+    }
+  });
+  drawTuneChart();
 }
 
 // find array position from a value
@@ -1206,9 +1621,32 @@ function openEditValue(cell) {
 function cancelEdit() {
   document.getElementById("editModal").classList.remove("active");
   currentEditCell = null;
+  editMultiMode = false;
 }
 
 function confirmEdit() {
+  // Multi-cell: apply one lock value across the whole selection.
+  if (editMultiMode) {
+    const value = parseInt(document.getElementById("editValue").value);
+    if (isNaN(value) || value < 0 || value > 100) {
+      showNotification("Value must be between 0 and 100", "error");
+      return;
+    }
+    selectedCells.forEach((k) => {
+      const [r, c] = k.split(",").map(Number);
+      if (!currentLock[r]) return;
+      currentLock[r][c] = value;
+      const cell = cellForRC(r, c);
+      if (cell) {
+        cell.textContent = String(value);
+        updateCellColor(cell, value);
+      }
+    });
+    cancelEdit();
+    drawTuneChart();
+    return;
+  }
+
   if (!currentEditCell) return;
 
   const currentCell = document.getElementById("editValue"); // find the current edit cell
@@ -1245,150 +1683,548 @@ function confirmEdit() {
 
   currentEditCell.textContent = value;
   cancelEdit();
-  renderTuneChart(); // keep the curve view in sync with the edited cell/axis
+  drawTuneChart(); // keep the surface in sync with the edited cell/axis
 }
 // end tune edit
 
 function restoreDefaults() {
-  // todo - redraw the map-grid
-  for (let throttle = 0; throttle < arrayRows; throttle++) {
-    throttleHeader[throttle] = defaultThrottleHeader[throttle];
-  }
-
-  for (let speed = 0; speed < arrayColumns; speed++) {
-    speedHeader[speed] = defaultSpeedHeader[speed];
-  }
-
-  const cell = [...document.querySelectorAll(".map-cell")];
-  let i = 0;
-  for (let throttle = 0; throttle < arrayRows; throttle++) {
-    for (let speed = 0; speed < arrayColumns; speed++) {
-      currentLock[throttle][speed] = defaultLock[throttle][speed];
-      cell[i].textContent = String(currentLock[throttle][speed]);
-      updateCellColor(cell[i], currentLock[throttle][speed]);
-      i++;
-    }
-  }
-  renderTuneChart(); // redraw the curve view against the restored map
+  applyMapToEditor(defaultSpeedHeader, defaultThrottleHeader, defaultLock);
 }
 
-// ---- Expert tune-map visualization -----------------------------------------
-// Read-only line chart of the lock surface so the 7x7 grid of numbers reads as
-// curves. Two views: lock-vs-speed (one line per throttle band) and
-// lock-vs-throttle (one line per speed band). Redrawn whenever a cell or an axis
-// value changes, so a tuner sees the shape of the map while editing it.
-let tuneChartMode = "speed"; // "speed" = x-axis is speed, one line per throttle row
-
-// Series colour ramp: teal (cool, low band) -> red (hot, high band), so the
-// bands stay distinguishable and higher input reads as hotter.
-function seriesColor(i, n) {
-  const t = n <= 1 ? 0 : i / (n - 1);
-  const hue = 165 - 165 * t; // 165 (teal) down to 0 (red)
-  return `hsl(${hue.toFixed(0)}, 72%, 52%)`;
+// Load a map (axes + lock table) into the editor: repaint the grid, drop any
+// selection, and redraw the 3D surface. This does NOT push to the ESP - the
+// device holds one tune, committed only when the user hits Apply.
+function applyMapToEditor(speed, throttle, lock) {
+  speedHeader = speed.slice();
+  throttleHeader = throttle.slice();
+  currentLock = lock.map((r) => r.slice());
+  buildMapGrid();
+  clearSelection();
+  drawTuneChart();
 }
 
-function renderTuneChart() {
-  const svg = document.getElementById("tuneChartSvg");
-  if (!svg) return;
+// ---- Map library: on-device saved slots ------------------------------------
+// Saved slots live on the ESP itself (a small fixed set of named slots in device
+// NVS), so a tune saved from one phone is visible from any phone that connects.
+// Loading a slot only fills the editor; the ESP's live tune is committed only
+// when the user hits Apply. There is no phone-side storage and no file
+// import/export - the device is the single source of truth.
 
-  const bySpeed = tuneChartMode === "speed";
-  const xHeader = bySpeed ? speedHeader : throttleHeader;
-  const seriesHeader = bySpeed ? throttleHeader : speedHeader;
+// Cache of the device's slot list ([{index, name, used}, ...]) plus the max
+// name length the device accepts. Refreshed from GET /api/maps whenever the
+// dropdown repopulates so Save/Load/Delete act on current device state.
+let deviceSlots = [];
+let deviceNameMax = 23;
 
-  if (!Array.isArray(xHeader) || !Array.isArray(seriesHeader) ||
-      xHeader.length < 2 || seriesHeader.length < 1 || !Array.isArray(currentLock)) {
-    svg.innerHTML = "";
+async function fetchDeviceSlots() {
+  const data = await fetchJson("/api/maps");
+  if (data && Array.isArray(data.slots)) {
+    deviceSlots = data.slots;
+    if (Number.isFinite(data.nameMax)) deviceNameMax = data.nameMax;
+  } else {
+    deviceSlots = []; // device unreachable - show presets only
+  }
+  return deviceSlots;
+}
+
+// Validate a map has 7x7 dims with strictly-ascending, finite axes and 0..100
+// lock values. Returns a normalised {speed,throttle,lock} or null. This mirrors
+// the firmware's ascending-axis guard so an imported map can't mis-interpolate.
+function validateMap(m) {
+  if (!m || !Array.isArray(m.speed) || !Array.isArray(m.throttle) || !Array.isArray(m.lock))
+    return null;
+  if (m.speed.length !== arrayColumns || m.throttle.length !== arrayRows) return null;
+  if (m.lock.length !== arrayRows) return null;
+  const speed = m.speed.map(Number);
+  const throttle = m.throttle.map(Number);
+  const asc = (a) =>
+    a.every((v, i) => Number.isFinite(v) && (i === 0 || v > a[i - 1]));
+  if (!asc(speed) || !asc(throttle)) return null;
+  const lock = [];
+  for (let r = 0; r < arrayRows; r++) {
+    if (!Array.isArray(m.lock[r]) || m.lock[r].length !== arrayColumns) return null;
+    lock[r] = m.lock[r].map((v) => {
+      const n = Math.round(Number(v));
+      return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
+    });
+  }
+  return { speed, throttle, lock };
+}
+
+// Rebuild the dropdown from the device's saved slots. Slot options carry value
+// "slot:N" (N = device slot index). Empty slots are shown greyed as "Slot N
+// (empty)" so the user can see how many of the fixed slots remain.
+async function populateMapDropdown(selectValue) {
+  const sel = document.getElementById("mapPreset");
+  if (!sel) return;
+  await fetchDeviceSlots();
+  sel.innerHTML = "";
+
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "Select a map...";
+  sel.appendChild(ph);
+
+  // Only device slots live here now, so list them directly - no optgroup
+  // heading (with presets gone there is nothing to distinguish it from).
+  deviceSlots.forEach((slot) => {
+    const o = document.createElement("option");
+    o.value = "slot:" + slot.index;
+    o.textContent = slot.used
+      ? slot.name
+      : `Slot ${slot.index + 1} (empty)`;
+    if (!slot.used) o.disabled = true;
+    sel.appendChild(o);
+  });
+
+  if (selectValue) sel.value = selectValue;
+}
+
+async function loadSelectedMap() {
+  const sel = document.getElementById("mapPreset");
+  if (!sel || !sel.value) {
+    showNotification("Pick a map to load first", "error");
     return;
   }
+  const key = sel.value.slice(sel.value.indexOf(":") + 1);
 
-  const nPoints = xHeader.length;
-  const nSeries = seriesHeader.length;
-
-  // geometry (viewBox 320x200)
-  const W = 320, H = 200;
-  const padL = 30, padR = 10, padT = 12, padB = 26;
-  const plotW = W - padL - padR;
-  const plotH = H - padT - padB;
-
-  const xMin = xHeader[0];
-  const xSpan = (xHeader[nPoints - 1] - xMin) || 1;
-  // Clamp X into the plot box like yPix clamps lock. The firmware rejects a
-  // non-ascending tune on upload, but the chart redraws live while a tuner is
-  // mid-edit, so an out-of-order axis value must not draw outside the viewBox.
-  const xPix = (v) => Math.max(padL, Math.min(W - padR, padL + ((v - xMin) / xSpan) * plotW));
-  const yPix = (lock) => padT + (1 - Math.max(0, Math.min(100, Number(lock) || 0)) / 100) * plotH;
-
-  const GRID = "#404040";   // --border, literal so it renders inside SVG on all browsers
-  const LABEL = "#9ca3af";  // --text-dim
-
-  let out = "";
-
-  // Y gridlines + labels (0/25/50/75/100 % lock)
-  for (let g = 0; g <= 100; g += 25) {
-    const y = yPix(g);
-    out += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="${GRID}" stroke-width="0.5"/>`;
-    out += `<text x="${padL - 4}" y="${(y + 3).toFixed(1)}" fill="${LABEL}" font-size="8" text-anchor="end">${g}</text>`;
+  // Device slot: pull the tune off the ESP, then drop it into the editor.
+  const data = await fetchJson("/api/maps/get?index=" + encodeURIComponent(key));
+  if (!data || !data.ok) {
+    showNotification("That slot is empty", "error");
+    return;
   }
-
-  // X-axis value labels. Coerce the axis value to a number before it goes into
-  // the string-built SVG so a non-numeric can never inject markup (the values are
-  // numeric today; this is defence-in-depth for the innerHTML assignment below).
-  for (let p = 0; p < nPoints; p++) {
-    const x = xPix(xHeader[p]);
-    out += `<text x="${x.toFixed(1)}" y="${H - padB + 12}" fill="${LABEL}" font-size="8" text-anchor="middle">${Number(xHeader[p])}</text>`;
+  const m = validateMap({
+    speed: data.speedArray,
+    throttle: data.throttleArray,
+    lock: data.lockArray,
+  });
+  if (!m) {
+    showNotification("Stored map is invalid", "error");
+    return;
   }
+  applyMapToEditor(m.speed, m.throttle, m.lock);
+  showNotification(`Loaded "${data.name}" - hit Apply to keep it`);
+}
 
-  // one polyline per series band
-  for (let s = 0; s < nSeries; s++) {
-    let pts = "";
-    for (let p = 0; p < nPoints; p++) {
-      const row = bySpeed ? currentLock[s] : currentLock[p];
-      const lock = row ? row[bySpeed ? p : s] : 0;
-      pts += `${xPix(xHeader[p]).toFixed(1)},${yPix(lock).toFixed(1)} `;
+// Save the editor's current map into a device slot. Targets the selected slot if
+// one is picked, otherwise the first free slot; if all slots are full and none
+// is selected, tells the user to pick one to overwrite.
+async function saveMapAs() {
+  const sel = document.getElementById("mapPreset");
+  let targetIndex = -1;
+
+  if (sel && sel.value.startsWith("slot:")) {
+    targetIndex = parseInt(sel.value.slice(5), 10);
+  } else {
+    const free = deviceSlots.find((s) => !s.used);
+    if (free) {
+      targetIndex = free.index;
+    } else {
+      showNotification(
+        "All slots full - select a slot in the list to overwrite",
+        "error",
+      );
+      return;
     }
-    out += `<polyline points="${pts.trim()}" fill="none" stroke="${seriesColor(s, nSeries)}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>`;
   }
 
-  svg.innerHTML = out;
+  const existing = deviceSlots.find((s) => s.index === targetIndex);
+  if (existing && existing.used) {
+    if (!confirm(`Overwrite "${existing.name}" (slot ${targetIndex + 1})?`))
+      return;
+  }
 
-  // legend: gradient strip across the ramp + the series values beneath it
-  const legendCaption = document.getElementById("chartLegendCaption");
-  const legendBar = document.getElementById("chartLegendBar");
-  const legendScale = document.getElementById("chartLegendScale");
-  if (legendCaption) legendCaption.textContent = bySpeed ? "Throttle %" : "Speed (km/h)";
-  if (legendBar) {
-    const stops = [];
-    for (let s = 0; s < nSeries; s++) {
-      const pct = (nSeries <= 1 ? 0 : (s / (nSeries - 1)) * 100).toFixed(0);
-      stops.push(`${seriesColor(s, nSeries)} ${pct}%`);
+  let name = (prompt("Save map as:", existing && existing.used ? existing.name : "") || "").trim();
+  if (!name) return;
+  if (name.length > deviceNameMax) name = name.slice(0, deviceNameMax);
+
+  const res = await fetchJson("/api/maps/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      index: targetIndex,
+      name,
+      speedArray: speedHeader,
+      throttleArray: throttleHeader,
+      lockArray: currentLock.map((r) => r),
+    }),
+  });
+  if (res && res.ok) {
+    await populateMapDropdown("slot:" + targetIndex);
+    showNotification(`Saved "${name}" to slot ${targetIndex + 1}`);
+  } else {
+    showNotification((res && res.error) || "Save failed", "error");
+  }
+}
+
+async function deleteSelectedMap() {
+  const sel = document.getElementById("mapPreset");
+  if (!sel || !sel.value.startsWith("slot:")) {
+    showNotification("Pick a saved slot to delete", "error");
+    return;
+  }
+  const idx = parseInt(sel.value.slice(5), 10);
+  const slot = deviceSlots.find((s) => s.index === idx);
+  if (!slot || !slot.used) {
+    showNotification("That slot is already empty", "error");
+    return;
+  }
+  if (!confirm(`Delete "${slot.name}" from slot ${idx + 1}?`)) return;
+
+  const res = await fetchJson("/api/maps/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index: idx }),
+  });
+  if (res && res.ok) {
+    await populateMapDropdown("");
+    showNotification(`Deleted slot ${idx + 1}`);
+  } else {
+    showNotification("Delete failed", "error");
+  }
+}
+
+function initMapManager() {
+  populateMapDropdown("");
+  const bind = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("click", fn);
+  };
+  bind("mapLoad", loadSelectedMap);
+  bind("mapSaveAs", saveMapAs);
+  bind("mapDelete", deleteSelectedMap);
+}
+
+// ---- Dashboard: user-selectable glance tiles -------------------------------
+// The glance grid holds a fixed catalogue of tiles (each carries data-signal).
+// The user picks which ones show; the choice persists in this browser. Values
+// are still populated by refreshStatus regardless - we only toggle visibility.
+
+const DASH_TILE_KEY = "ohEdgeDashTiles";
+
+// id -> label, in grid order. Keep in sync with the data-signal attributes in
+// index.html's glance grid.
+const DASH_SIGNALS = [
+  { id: "udsClutchTemp", label: "Clutch Temp" },
+  { id: "udsModuleTemp", label: "Module Temp" },
+  { id: "udsCoolingFinTemp", label: "Cooling Fin" },
+  { id: "speed", label: "Speed" },
+  { id: "throttle", label: "Throttle" },
+  { id: "rpm", label: "RPM" },
+  { id: "boost", label: "Boost" },
+  { id: "haldexEngagement", label: "Reported lock" },
+  { id: "udsClutchPWM", label: "Clutch PWM" },
+  { id: "steeringAngle", label: "Steering" },
+  { id: "steeringGainNow", label: "Steer Gain" },
+];
+
+const DASH_DEFAULT_ON = [
+  "udsClutchTemp",
+  "udsModuleTemp",
+  "udsCoolingFinTemp",
+  "speed",
+  "throttle",
+  "boost",
+  "haldexEngagement",
+  "rpm",
+];
+
+function loadDashSelection() {
+  try {
+    const raw = localStorage.getItem(DASH_TILE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr);
     }
-    legendBar.style.background = `linear-gradient(90deg, ${stops.join(", ")})`;
+  } catch (e) {
+    /* fall through to defaults */
   }
-  if (legendScale) {
-    // Number() coercion for the same defence-in-depth reason as the axis labels.
-    legendScale.innerHTML = seriesHeader.map((v) => `<span>${Number(v)}</span>`).join("");
+  return new Set(DASH_DEFAULT_ON);
+}
+
+function saveDashSelection(set) {
+  try {
+    localStorage.setItem(DASH_TILE_KEY, JSON.stringify([...set]));
+  } catch (e) {
+    /* storage full/blocked - selection just won't persist */
   }
+}
+
+function applyDashSelection(set) {
+  DASH_SIGNALS.forEach((sig) => {
+    const tile = document.querySelector(
+      `.glance-card [data-signal="${sig.id}"]`,
+    );
+    if (tile) tile.style.display = set.has(sig.id) ? "" : "none";
+  });
+}
+
+function buildDashCustomizer(set) {
+  const host = document.getElementById("dashTileOptions");
+  if (!host) return;
+  host.innerHTML = "";
+  DASH_SIGNALS.forEach((sig) => {
+    const label = document.createElement("label");
+    label.className = "tile-opt";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = set.has(sig.id);
+    cb.addEventListener("change", () => {
+      if (cb.checked) set.add(sig.id);
+      else set.delete(sig.id);
+      saveDashSelection(set);
+      applyDashSelection(set);
+    });
+    const span = document.createElement("span");
+    span.textContent = sig.label;
+    label.appendChild(cb);
+    label.appendChild(span);
+    host.appendChild(label);
+  });
+}
+
+function initDashTiles() {
+  const set = loadDashSelection();
+  applyDashSelection(set);
+  buildDashCustomizer(set);
+}
+
+// ---- Tune surface (pseudo-3D) ----------------------------------------------
+// Renders currentLock as an isometric SVG surface: speed and throttle are the
+// two ground axes, lock% is the height, and each facet is shaded on the same
+// green -> amber -> red heat ramp as the editor grid so the table and the
+// surface read the same. A dot rides the surface at the live operating point.
+// Plain SVG, no libraries - the page ships from the ESP32's flash.
+let lastDashData = null;
+
+// Projection closure built by drawTuneChart and reused by updateChartMarker so
+// the live dot lands on exactly the surface that was drawn.
+let tuneProject = null;
+
+// Heat ramp shared by the surface and the editor grid: green (low lock) through
+// amber to red (high lock). Returns an "r,g,b" triple for a 0..1 fraction.
+function heatRGB(frac) {
+  const stops = [
+    [16, 185, 129],  // green (#10b981) - low lock
+    [245, 158, 11],  // amber (#f59e0b) - mid
+    [220, 38, 38],   // red   (#dc2626) - high lock
+  ];
+  const f = Math.min(1, Math.max(0, frac));
+  const pos = f * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(pos));
+  const t = pos - i;
+  const mix = stops[i].map((c, k) => Math.round(c + (stops[i + 1][k] - c) * t));
+  return `${mix[0]},${mix[1]},${mix[2]}`;
+}
+
+// Linear interpolation helper over an ascending header array. Returns the
+// fractional index for a value, clamped to the ends (mirrors the firmware's
+// bracket scan).
+function fracIndex(value, header) {
+  if (value <= header[0]) return 0;
+  const last = header.length - 1;
+  if (value >= header[last]) return last;
+  for (let i = 0; i < last; i++) {
+    if (value < header[i + 1]) {
+      return i + (value - header[i]) / (header[i + 1] - header[i]);
+    }
+  }
+  return last;
 }
 
 function initTuneChart() {
-  const btnSpeed = document.getElementById("chartViewSpeed");
-  const btnThrottle = document.getElementById("chartViewThrottle");
-  if (!btnSpeed || !btnThrottle) return;
+  drawTuneChart();
+}
 
-  function setMode(mode) {
-    tuneChartMode = mode;
-    const speedActive = mode === "speed";
-    btnSpeed.classList.toggle("active", speedActive);
-    btnThrottle.classList.toggle("active", !speedActive);
-    btnSpeed.setAttribute("aria-selected", String(speedActive));
-    btnThrottle.setAttribute("aria-selected", String(!speedActive));
-    renderTuneChart();
+function drawTuneChart() {
+  const host = document.getElementById("tuneChart");
+  const legend = document.getElementById("chartLegend");
+  if (!host) return;
+
+  const cols = speedHeader.length;    // speed breakpoints (c axis)
+  const rows = throttleHeader.length; // throttle breakpoints (r axis)
+  const W = 340, H = 250;
+
+  // Perspective camera. The grid lies flat on the ground (speed = x across,
+  // throttle = depth into the scene), lock lifts straight up. We yaw the ground
+  // clockwise, tilt the camera down to a 3/4 view, then divide by depth so the
+  // far edge converges. That convergence is what makes the surface read as
+  // sitting flat on the ground - a parallel projection keeps the far edge as
+  // wide as the near one, which is why it looked like it was floating.
+  const yaw = -30 * Math.PI / 180;  // counter-clockwise orbit of the ground plane
+  const pitch = 26 * Math.PI / 180; // camera tilt: 90 = top-down, 0 = side-on; ~26 = front 3/4
+  const sinYaw = Math.sin(yaw), cosYaw = Math.cos(yaw);
+  const sinPit = Math.sin(pitch), cosPit = Math.cos(pitch);
+  const midC = (cols - 1) / 2, midR = (rows - 1) / 2;
+  const heightUnits = (cols - 1) * 0.6; // full-lock peak height in grid units
+  const camDist = (cols - 1) * 2.4;     // smaller = stronger perspective
+  // Returns screen x/y (pre-fit) plus camera depth for painter ordering.
+  const world = (c, r, lock) => {
+    const gx = c - midC;                  // centre the grid so it rotates in place
+    const gy = r - midR;
+    const gz = (lock / 100) * heightUnits;
+    const x = gx * cosYaw + gy * sinYaw;  // yaw about the vertical axis
+    const y = -gx * sinYaw + gy * cosYaw;
+    const up = gz * cosPit + y * sinPit;      // screen-up: height, plus receding ground
+    const depth = y * cosPit - gz * sinPit;   // into the scene: far ground, less for peaks
+    const persp = camDist / (camDist + depth);
+    return { x: x * persp, y: -up * persp, depth };
+  };
+
+  // Fit the whole surface (plus its lock-0 floor corners) into the viewBox by
+  // measuring the projected bounding box, then scaling and centring to it.
+  const pts = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) pts.push(world(c, r, currentLock[r][c]));
+  }
+  pts.push(world(0, 0, 0), world(cols - 1, 0, 0), world(0, rows - 1, 0), world(cols - 1, rows - 1, 0));
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  pts.forEach((p) => {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  });
+  const mX = 16, mTop = 12, mBot = 30; // room for the axis captions along the base
+  const scale = Math.min((W - 2 * mX) / (maxX - minX || 1), (H - mTop - mBot) / (maxY - minY || 1));
+  const ox = (W - (maxX - minX) * scale) / 2 - minX * scale;
+  const oy = mTop - minY * scale;
+  tuneProject = (c, r, lock) => {
+    const w = world(c, r, lock);
+    return { x: ox + w.x * scale, y: oy + w.y * scale };
+  };
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Lock map surface: speed and throttle on the ground, lock percent as height">`;
+
+  // Facets painter-ordered far-to-near by camera depth so nearer cells overdraw
+  // farther ones. Each facet is shaded by the mean lock of its corners. The fill
+  // is translucent and every facet carries a light gridline edge: where a peak
+  // overhangs a dip behind it the stacked fills composite toward opaque, so the
+  // wireframe edges are what keep the hidden dip readable through the surface.
+  const facets = [];
+  for (let r = 0; r < rows - 1; r++) {
+    for (let c = 0; c < cols - 1; c++) {
+      const depth =
+        (world(c, r, currentLock[r][c]).depth +
+          world(c + 1, r, currentLock[r][c + 1]).depth +
+          world(c, r + 1, currentLock[r + 1][c]).depth +
+          world(c + 1, r + 1, currentLock[r + 1][c + 1]).depth) / 4;
+      facets.push({ r, c, depth });
+    }
+  }
+  facets.sort((a, b) => b.depth - a.depth);
+  facets.forEach(({ r, c }) => {
+    const corners = [[r, c], [r, c + 1], [r + 1, c + 1], [r + 1, c]];
+    const poly = corners
+      .map(([rr, cc]) => {
+        const p = tuneProject(cc, rr, currentLock[rr][cc]);
+        return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+      })
+      .join(" ");
+    const avg = (currentLock[r][c] + currentLock[r][c + 1] + currentLock[r + 1][c] + currentLock[r + 1][c + 1]) / 4;
+    svg += `<polygon points="${poly}" fill="rgb(${heatRGB(avg / 100)})" fill-opacity="0.55" stroke="rgba(0,0,0,0.7)" stroke-width="0.5" stroke-linejoin="round"/>`;
+  });
+
+  // Floor footprint: outline the full lock-0 square under the surface, then drop
+  // a dotted line from each surface corner down to the matching base corner so
+  // the height of the four corners reads against the ground.
+  const floorPt = (c, r) => tuneProject(c, r, 0);
+  const fc = {
+    near:  floorPt(0, rows - 1),          // speed 0,   throttle max (front-left)
+    right: floorPt(cols - 1, rows - 1),   // speed max, throttle max (front-right)
+    back:  floorPt(cols - 1, 0),          // speed max, throttle 0   (back-right)
+    left:  floorPt(0, 0),                 // speed 0,   throttle 0   (back-left)
+  };
+  const floorLine = (pa, pb) =>
+    `<line x1="${pa.x.toFixed(1)}" y1="${pa.y.toFixed(1)}" x2="${pb.x.toFixed(1)}" y2="${pb.y.toFixed(1)}" stroke="#4b5563" stroke-width="1"/>`;
+  svg += floorLine(fc.left, fc.back) + floorLine(fc.back, fc.right) +
+         floorLine(fc.right, fc.near) + floorLine(fc.near, fc.left);
+
+  const corners3d = [[0, 0], [cols - 1, 0], [0, rows - 1], [cols - 1, rows - 1]];
+  corners3d.forEach(([c, r]) => {
+    const topP = tuneProject(c, r, currentLock[r][c]);
+    const footP = tuneProject(c, r, 0);
+    svg += `<line x1="${footP.x.toFixed(1)}" y1="${footP.y.toFixed(1)}" x2="${topP.x.toFixed(1)}" y2="${topP.y.toFixed(1)}" stroke="#6b7280" stroke-width="0.8" stroke-dasharray="2 2"/>`;
+  });
+
+  const speedEdge = { pa: fc.near, pb: fc.right };
+  const throttleEdge = { pa: fc.back, pb: fc.right };
+
+  // Axis captions just outside their edge midpoints, and the end values so the
+  // surface reads with real numbers rather than bare geometry.
+  const speedMid = tuneProject((cols - 1) / 2, rows - 1, 0);
+  const throttleMid = tuneProject(cols - 1, (rows - 1) / 2, 0);
+  svg += `<text x="${speedMid.x.toFixed(1)}" y="${(speedMid.y + 16).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="#9ca3af">SPEED (KM/H)</text>`;
+  svg += `<text x="${(throttleMid.x + 6).toFixed(1)}" y="${(throttleMid.y + 14).toFixed(1)}" text-anchor="start" font-size="8" font-weight="700" fill="#9ca3af">THROTTLE (%)</text>`;
+  svg += `<text x="${(speedEdge.pa.x - 3).toFixed(1)}" y="${(speedEdge.pa.y + 10).toFixed(1)}" text-anchor="end" font-size="7.5" fill="#6b7280">${speedHeader[0]}</text>`;
+  svg += `<text x="${(speedEdge.pb.x + 3).toFixed(1)}" y="${(speedEdge.pb.y + 10).toFixed(1)}" text-anchor="start" font-size="7.5" fill="#6b7280">${speedHeader[cols - 1]}</text>`;
+  svg += `<text x="${(throttleEdge.pa.x + 4).toFixed(1)}" y="${(throttleEdge.pa.y + 2).toFixed(1)}" text-anchor="start" font-size="7.5" fill="#6b7280">${throttleHeader[0]}</text>`;
+
+  // Live operating point: a dashed stem from the floor up to a dot riding the
+  // surface. Both are positioned by updateChartMarker.
+  svg += `<line id="chartMarkerStem" stroke="#fff" stroke-width="1" stroke-dasharray="2 2" visibility="hidden"/>`;
+  svg += `<circle id="chartMarker" r="4" fill="#dc2626" stroke="#fff" stroke-width="1.5" visibility="hidden"/>`;
+  // Dots for the currently selected editor cells, filled by updateSelectionMarkers.
+  svg += `<g id="selDots"></g>`;
+  svg += `</svg>`;
+
+  host.innerHTML = svg;
+
+  if (legend) {
+    legend.innerHTML =
+      `<div class="chart-legend-caption">Lock % (surface height &amp; colour)</div>` +
+      `<div class="chart-legend-bar" style="background:linear-gradient(90deg, rgb(${heatRGB(0)}), rgb(${heatRGB(0.5)}), rgb(${heatRGB(1)}))"></div>` +
+      `<div class="chart-legend-scale"><span>0</span><span>50</span><span>100</span></div>`;
+  }
+  updateChartMarker();
+  updateSelectionMarkers();
+}
+
+function updateChartMarker() {
+  const marker = document.getElementById("chartMarker");
+  const stem = document.getElementById("chartMarkerStem");
+  if (!marker || !tuneProject || !lastDashData) return;
+
+  const speed = Number(lastDashData.speed);
+  const throttle = Number(lastDashData.throttle);
+  if (Number.isNaN(speed) || Number.isNaN(throttle)) {
+    marker.setAttribute("visibility", "hidden");
+    if (stem) stem.setAttribute("visibility", "hidden");
+    return;
   }
 
-  btnSpeed.addEventListener("click", () => setMode("speed"));
-  btnThrottle.addEventListener("click", () => setMode("throttle"));
+  const c = fracIndex(speed, speedHeader);
+  const r = fracIndex(throttle, throttleHeader);
 
-  renderTuneChart();
+  // Land the dot on the drawn surface by bilinearly blending the four projected
+  // facet corners it sits between, so it rides the rendered grid exactly rather
+  // than floating above it.
+  const c0 = Math.floor(c), c1 = Math.min(speedHeader.length - 1, c0 + 1), tc = c - c0;
+  const r0 = Math.floor(r), r1 = Math.min(throttleHeader.length - 1, r0 + 1), tr = r - r0;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const blend = (q00, q10, q01, q11) => ({
+    x: lerp(lerp(q00.x, q10.x, tc), lerp(q01.x, q11.x, tc), tr),
+    y: lerp(lerp(q00.y, q10.y, tc), lerp(q01.y, q11.y, tc), tr),
+  });
+  const corner = (cc, rr) => tuneProject(cc, rr, currentLock[rr][cc]);
+  const top = blend(corner(c0, r0), corner(c1, r0), corner(c0, r1), corner(c1, r1));
+  // Blend the projected floor corners the same way, so the stem foot rides the
+  // drawn floor grid lines instead of the perspective-curved path a fractional
+  // tuneProject(c, r, 0) would take, which drifts off the straight mesh edges.
+  const floor = (cc, rr) => tuneProject(cc, rr, 0);
+  const foot = blend(floor(c0, r0), floor(c1, r0), floor(c0, r1), floor(c1, r1));
+
+  marker.setAttribute("cx", top.x.toFixed(1));
+  marker.setAttribute("cy", top.y.toFixed(1));
+  marker.setAttribute("visibility", "visible");
+  if (stem) {
+    stem.setAttribute("x1", foot.x.toFixed(1));
+    stem.setAttribute("y1", foot.y.toFixed(1));
+    stem.setAttribute("x2", top.x.toFixed(1));
+    stem.setAttribute("y2", top.y.toFixed(1));
+    stem.setAttribute("visibility", "visible");
+  }
 }
 
 // initialise Learn Haldex UI
