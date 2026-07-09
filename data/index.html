@@ -75,22 +75,10 @@
                             transform="rotate(0 100 100)" visibility="hidden" />
                     </svg>
                     <div class="gauge-hero-center">
-                        <div class="gauge-hero-label">Target duty</div>
+                        <div class="gauge-hero-label">Target lock</div>
                         <div class="gauge-hero-value"><span id="lockTarget">--</span><span
                                 class="gauge-hero-unit">%</span></div>
                         <div class="gauge-hero-sub">Now <span id="lockActual">--</span>%</div>
-                    </div>
-                </div>
-
-                <div class="lock-trace-inline" id="lockTraceCard">
-                    <h3 class="subsection-title">Lock Response <span class="trace-window-label">last 15s</span></h3>
-                    <div class="lock-trace">
-                        <svg id="lockTraceSvg" viewBox="0 0 320 160" preserveAspectRatio="none" role="img"
-                            aria-label="Lock target versus actual engagement over time"></svg>
-                    </div>
-                    <div class="trace-legend">
-                        <span class="trace-legend-item"><span class="trace-swatch trace-swatch-actual"></span>Actual</span>
-                        <span class="trace-legend-item"><span class="trace-swatch trace-swatch-target"></span>Target</span>
                     </div>
                 </div>
             </section>
@@ -194,6 +182,18 @@
                         <div class="gauge-unit"> bits</div>
                     </div>
                     <div id="haldexStateLegend" class="state-legend"></div>
+                </div>
+            </section>
+
+            <section class="card lock-trace-card" id="lockTraceCard">
+                <h3 class="subsection-title">Lock Response <span class="trace-window-label">last 15s</span></h3>
+                <div class="lock-trace">
+                    <svg id="lockTraceSvg" viewBox="0 0 320 160" preserveAspectRatio="none" role="img"
+                        aria-label="Lock target versus actual engagement over time"></svg>
+                </div>
+                <div class="trace-legend">
+                    <span class="trace-legend-item"><span class="trace-swatch trace-swatch-actual"></span>Actual</span>
+                    <span class="trace-legend-item"><span class="trace-swatch trace-swatch-target"></span>Target</span>
                 </div>
             </section>
 

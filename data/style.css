@@ -1855,15 +1855,9 @@ button,
     aspect-ratio: 320 / 200;
 }
 
-/* Lock-response trace folded into the engagement hero card: a divider above it
-   separates it from the gauge without spending a second card boundary. */
-.lock-trace-inline {
-    margin-top: 1rem;
-    padding-top: 0.9rem;
-    border-top: 1px solid var(--border);
-}
-
-.lock-trace-inline .subsection-title {
+/* Lock-response trace as its own card below the glance tiles, so the useful
+   at-a-glance signals stay at the top of the dashboard on a phone. */
+.lock-trace-card .subsection-title {
     margin-top: 0;
 }
 

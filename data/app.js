@@ -13,7 +13,13 @@ let _haldexGeneration = 1;
 let _isStandalone = false;
 let _useCANifAvailable = false;
 let _disableController = false;
-const setIntervalDuration = 500; // set refresh duration (for quickly to poll ESP for data)
+// Floor gap between the end of one dashboard poll and the start of the next.
+// The poll loop is self-scheduling (see initDashboard): it fires the next
+// request as soon as the previous one settles, so the live rate tracks the
+// device's real response latency instead of being quantised to a fixed tick.
+// A small floor keeps a fast device from being hammered while still letting the
+// UI run several Hz when the ESP answers quickly.
+const POLL_MIN_GAP_MS = 150;
 
 var speedHeader = [0, 30, 60, 90, 120, 160, 180]; // default speed header (for x-axis)
 var throttleHeader = [0, 15, 30, 45, 60, 75, 90]; // default throttle header (for y-axis)
@@ -959,18 +965,38 @@ function initNavigation() {
 // initialise dashboard:
 function initDashboard() {
   renderLockTrace(Date.now()); // draw the empty grid before the first poll lands
-  refreshStatus(); //
-  let pollTimer = setInterval(refreshStatus, setIntervalDuration); // request for new data every xms
+
+  // Self-scheduling poll loop. The old design used a fixed 500ms setInterval with
+  // a one-in-flight guard: whenever a response landed just after a tick had
+  // already fired-and-bailed (previous poll still in flight), the next tick was a
+  // full interval away, collapsing a nominal 2Hz to ~1Hz and wasting the gap
+  // between "reply arrived" and "next tick". Here the next poll is scheduled only
+  // once the previous one has fully settled, plus a small floor, so the live rate
+  // follows the device's real latency instead of being quantised to a tick.
+  //
+  // A generation token gates the loop: bumping it stops the current loop (its
+  // post-await check fails) so visibility changes can't leave two loops running.
+  let pollGeneration = 0;
+
+  async function pollLoop(myGen) {
+    while (myGen === pollGeneration && !document.hidden) {
+      const started = Date.now();
+      await refreshStatus(); // resolves when the poll settles (success, miss, or timeout)
+      if (myGen !== pollGeneration || document.hidden) return; // superseded or backgrounded
+      const gap = POLL_MIN_GAP_MS - (Date.now() - started);
+      if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap));
+    }
+  }
+
+  pollLoop(++pollGeneration);
 
   // Stop polling while the page is hidden (phone locked or app backgrounded) so
   // we don't keep waking the ESP's web server; resume with a fresh read on return.
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    } else if (pollTimer === null) {
-      refreshStatus();
-      pollTimer = setInterval(refreshStatus, setIntervalDuration);
+      pollGeneration++; // running loop exits at its next generation check
+    } else {
+      pollLoop(++pollGeneration); // fresh loop; any stale one exits on the token
     }
   });
 }
