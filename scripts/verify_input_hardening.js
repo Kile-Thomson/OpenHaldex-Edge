@@ -42,7 +42,17 @@ function makeNode(id) {
     appendChild() {}, focus() {}, select() {},
     addEventListener(ev, fn) { (handlers[ev] = handlers[ev] || []).push(fn); },
     removeEventListener() {},
-    _fire(ev, evt) { (handlers[ev] || []).forEach((fn) => fn(evt || {})); },
+    _fire(ev, evt) {
+      const e = evt || {};
+      let stopped = false;
+      const orig = e.stopImmediatePropagation;
+      e.stopImmediatePropagation = () => { stopped = true; if (orig) orig(); };
+      // Registration order stands in for capture-before-bubble: the guard's
+      // capture-phase listener is registered before any mock app listener, so
+      // stopImmediatePropagation() here halts the app handler just as it would
+      // in the browser.
+      for (const fn of (handlers[ev] || [])) { fn(e); if (stopped) break; }
+    },
     querySelectorAll() { return []; },
   };
 }
@@ -257,22 +267,46 @@ async function poll(mode) {
   check(hasPanY(".slider-inline"), ".slider-inline declares touch-action: pan-y");
 
   // --- 5. Slider track-tap guard --------------------------------------------
-  // A native range input jumps its value to wherever the track is pressed. The
-  // guard must cancel a press on the bare track (so a stray tap can't slam a
-  // setting) but leave a press on the thumb alone (so a real drag still works).
-  // sliderNode: x=[0,200], value 50 -> thumb centred at x=100, hit radius
-  // 24/2 + 12 = 24, so x=180 is off-thumb and x=100 is on it.
-  ctx.guardTrackTaps(".slider", 24);
-  let sliderPrevented = false;
-  const pointerEvt = (x) => ({ clientX: x, preventDefault: () => { sliderPrevented = true; } });
+  // A native range input jumps its value to wherever the track is pressed, and
+  // mobile browsers ignore preventDefault() for that jump. So the guard's real
+  // contract is: after an off-thumb press, the value change the browser produces
+  // is UNDONE and SWALLOWED before the app's save handler runs; an on-thumb
+  // press is left alone. sliderNode: x=[0,200], value 50 -> thumb centred at
+  // x=100, hit radius 24/2 + 12 = 24, so x=180 is off-thumb and x=100 is on it.
+  ctx.guardTrackTaps(".slider", 24); // registers the guard's capture listeners first
 
-  sliderPrevented = false;
+  // Mock the app's save handler (bubble phase) registered AFTER the guard, so it
+  // only runs if the guard didn't stopImmediatePropagation.
+  let appSaw = null;
+  sliderNode.addEventListener("input", () => { appSaw = sliderNode.value; });
+
+  const pointerEvt = (x) => ({ clientX: x, preventDefault() {} });
+  // Simulate the browser's jump-to-tap: value moves, then an input event fires.
+  const fireJump = (toValue) => {
+    sliderNode.value = String(toValue);
+    sliderNode._fire("input", {});
+  };
+
+  // Off-thumb press at x=180: the browser jumps the value to (say) 90; the guard
+  // must snap it back to the pre-press 50 and keep the app from saving 90.
+  sliderNode.value = "50";
+  appSaw = null;
   sliderNode._fire("pointerdown", pointerEvt(180));
-  check(sliderPrevented, "a press on the bare track is cancelled (no jump-to-tap)");
+  fireJump(90);
+  check(sliderNode.value === "50",
+    `off-thumb press value is reverted (got ${sliderNode.value}, want 50)`);
+  check(appSaw === null, "off-thumb press does not reach the app save handler");
+  sliderNode._fire("pointerup", {});
 
-  sliderPrevented = false;
+  // On-thumb press at x=100: a genuine drag to 60 must pass straight through.
+  sliderNode.value = "50";
+  appSaw = null;
   sliderNode._fire("pointerdown", pointerEvt(100));
-  check(!sliderPrevented, "a press on the thumb is allowed (drag still works)");
+  fireJump(60);
+  check(sliderNode.value === "60",
+    `on-thumb drag changes the value (got ${sliderNode.value}, want 60)`);
+  check(appSaw === "60", "on-thumb drag reaches the app save handler");
+  sliderNode._fire("pointerup", {});
 
   console.log(failures === 0 ? "\nALL INPUT-HARDENING CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);

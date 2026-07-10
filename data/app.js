@@ -70,29 +70,66 @@ function guardScrollTaps(selector) {
 // Require sliders to be grabbed by the thumb, not set by tapping the track. A
 // native <input type="range"> jumps its value to wherever you press on the bar,
 // so a stray tap (or a fat-finger meant for something else) can slam a setting
-// to a random value. This blocks any press that doesn't land on the thumb: the
-// value only changes when you grab the handle and drag it. thumbPx is the
-// rendered thumb diameter for the selector; a finger-slop margin is added so the
-// thumb stays easy to grab.
+// to a random value. Mobile browsers ignore preventDefault() on the range
+// input's pointerdown for this jump, so asking the browser not to move doesn't
+// work. Instead we let the browser do whatever it wants, then FORCIBLY reject
+// the change: on a press that doesn't land on the thumb we restore the value the
+// slider had before the press and stop the event so the app's save handlers
+// never see the jumped value. The value physically cannot change from an
+// off-thumb press. thumbPx is the rendered thumb diameter; a finger-slop margin
+// is added so the thumb stays easy to grab.
 const SLIDER_GRAB_SLOP_PX = 12;
 function guardTrackTaps(selector, thumbPx) {
   const hitRadius = thumbPx / 2 + SLIDER_GRAB_SLOP_PX;
   document.querySelectorAll(selector).forEach((el) => {
-    el.addEventListener("pointerdown", (e) => {
+    // While `blocked` is true, every value change the slider produces is undone
+    // and swallowed. It is (re)decided at the start of each press by hit-testing
+    // the press position against the thumb's current position.
+    let blocked = false;
+    let heldValue = el.value; // the value to snap back to when a press is blocked
+
+    const decideBlock = (clientX) => {
       const min = parseFloat(el.min) || 0;
       const max = parseFloat(el.max);
-      if (!Number.isFinite(max) || max <= min) return; // can't hit-test, allow
       const rect = el.getBoundingClientRect();
-      if (!rect.width) return;
+      if (!Number.isFinite(max) || max <= min || !rect.width) {
+        blocked = false; // can't hit-test - allow the interaction
+        return;
+      }
+      heldValue = el.value;
       const frac = (parseFloat(el.value) - min) / (max - min);
       // The thumb centre travels inset by half its width at each end.
       const thumbCenterX = rect.left + thumbPx / 2 + frac * (rect.width - thumbPx);
-      if (Math.abs(e.clientX - thumbCenterX) > hitRadius) {
-        // Pressed the bare track, not the thumb: cancel the jump-to-tap. The
-        // press must start on the handle for a drag to begin.
-        e.preventDefault();
-      }
+      blocked = Math.abs(clientX - thumbCenterX) > hitRadius;
+    };
+
+    el.addEventListener("pointerdown", (e) => {
+      decideBlock(e.clientX);
+      if (blocked) e.preventDefault(); // best-effort; browsers may ignore it
     });
+    // Touch fallback for browsers that don't emit pointer events on the range.
+    el.addEventListener("touchstart", (e) => {
+      if (e.touches && e.touches[0]) decideBlock(e.touches[0].clientX);
+    }, { passive: true });
+
+    // Capture phase so this beats the app's own input/change save listeners
+    // (added on the bubble phase in initSettings) - stopImmediatePropagation
+    // then prevents them from firing with the jumped value.
+    const reject = (e) => {
+      if (!blocked) return;
+      el.value = heldValue; // undo the jump-to-tap
+      e.stopImmediatePropagation();
+    };
+    el.addEventListener("input", reject, true);
+    el.addEventListener("change", reject, true);
+
+    // A completed press clears the block so a later thumb grab or keyboard
+    // adjustment isn't wrongly suppressed. The next press re-hit-tests.
+    const release = () => { blocked = false; };
+    el.addEventListener("pointerup", release);
+    el.addEventListener("pointercancel", release);
+    el.addEventListener("touchend", release);
+    el.addEventListener("touchcancel", release);
   });
 }
 
