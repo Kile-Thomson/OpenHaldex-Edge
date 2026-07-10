@@ -186,6 +186,22 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Added
 
+- **Per-corner slip and drive-mode over the diagnostic channel.** OpenHaldex now
+  answers three supplier-specific UDS DIDs on the Haldex address (0x70F request ->
+  0x779 response), the same channel that already carries clutch temps/PWM, because
+  the car's gateway does not forward the passive 0x6B0/0x6A0 broadcasts to the OBD
+  port. `0xFDA0` (lock) returns commanded lock %, applied engagement, and the live
+  drive mode. `0xFDA1` (slip) returns geometry-compensated per-corner slip - each
+  wheel's actual speed against the speed Ackermann geometry predicts for its turn
+  radius at the current steering angle, so a straight launch and a mid-corner
+  break-loose both read true slip rather than steering geometry, in [FL,FR,RL,RR]
+  order. `0xFDA2` (mode) is a WriteDataByIdentifier target: a one-byte mode write
+  sets `state.mode` (validated, mutex-guarded) and replies positive, so a UDS
+  tester such as the Rokketek gauge can set the drive mode and confirm it by
+  reading `0xFDA0` back. The four corner-slip values are also exposed as
+  `cornerSlip` on the web dashboard JSON. TT Mk3 geometry constants are
+  compile-time and flagged for on-car calibration. Not present in V8.00.2.
+
 - **Learn Haldex calibration chart.** When a learned calibration table exists the
   Learn section now plots it as a curve - commanded correction factor on X,
   measured Haldex engagement on Y - against a dashed 1:1 reference, so where the

@@ -219,6 +219,160 @@ void parseCAN_chs(void *arg)
         continue;
       }
 
+      // OpenHaldex lock% UDS responder. A UDS tester on the chassis/OBD bus (the
+      // Rokketek gauge) polls the Haldex physical address 0x70F for temps/PWM and
+      // decodes replies on 0x779. The passive 0x6B0 broadcast does not cross the
+      // car's gateway to the OBD port, so we answer a supplier-specific DID on the
+      // exact same request/response pair the gauge already uses. We respond directly
+      // on Bus 0 and CONSUME the request (continue) so the real Haldex ECU on Bus 1
+      // never sees it - no negative-response race on 0x779.
+      if (rx_message_chs.identifier == diagnostics_5_ID &&
+          rx_message_chs.data_length_code >= 4 &&
+          (rx_message_chs.data[0] & 0xF0) == 0x00 &&   // ISO-TP single frame
+          (rx_message_chs.data[0] & 0x0F) >= 3 &&      // >= 3 payload bytes (SID + DID)
+          rx_message_chs.data[1] == 0x22 &&            // ReadDataByIdentifier
+          rx_message_chs.data[2] == (uint8_t)(OPENHALDEX_LOCK_DID >> 8) &&
+          rx_message_chs.data[3] == (uint8_t)(OPENHALDEX_LOCK_DID & 0xFF))
+      {
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        float snapshot_lock_target = lock_target;
+        uint8_t snapshot_mode = (uint8_t)state.mode;
+        xSemaphoreGive(stateMutex);
+        uint8_t cmd = (uint8_t)(snapshot_lock_target < 0.0f
+                                    ? 0.0f
+                                    : (snapshot_lock_target > 100.0f ? 100.0f
+                                                                      : snapshot_lock_target + 0.5f));
+
+        twai_message_t lock_resp{};
+        lock_resp.identifier = 0x779;                 // Haldex UDS response ID the gauge already decodes
+        lock_resp.extd = 0;
+        lock_resp.rtr = 0;
+        lock_resp.data_length_code = 8;
+        lock_resp.data[0] = 0x06;                     // ISO-TP single frame, 6 payload bytes
+        lock_resp.data[1] = 0x62;                     // positive RDBI response
+        lock_resp.data[2] = (uint8_t)(OPENHALDEX_LOCK_DID >> 8);
+        lock_resp.data[3] = (uint8_t)(OPENHALDEX_LOCK_DID & 0xFF);
+        lock_resp.data[4] = cmd;                                     // commanded lock %, 0-100
+        lock_resp.data[5] = (uint8_t)received_haldex_engagement_raw; // applied engagement, raw
+        lock_resp.data[6] = snapshot_mode;                           // live openhaldex_mode_t, so a mode write can be read back
+        lock_resp.data[7] = 0xAA;                                    // ISO-TP padding
+        twai_transmit_v2(twai_bus_0, &lock_resp, (10 / portTICK_PERIOD_MS));
+        continue; // consume - do NOT forward the request to Bus 1
+      }
+
+      // OpenHaldex per-corner slip UDS responder. Same channel/trick as the lock
+      // DID above: answer a supplier-specific DID on 0x70F->0x779 and consume the
+      // request. Payload is 4 signed slip bytes [FL, FR, RL, RR], int8 %; -128
+      // marks "no data" (too slow, or stale wheel/steering signal) so the gauge
+      // can blank rather than draw a false zero.
+      if (rx_message_chs.identifier == diagnostics_5_ID &&
+          rx_message_chs.data_length_code >= 4 &&
+          (rx_message_chs.data[0] & 0xF0) == 0x00 &&
+          (rx_message_chs.data[0] & 0x0F) >= 3 &&
+          rx_message_chs.data[1] == 0x22 &&
+          rx_message_chs.data[2] == (uint8_t)(OPENHALDEX_SLIP_DID >> 8) &&
+          rx_message_chs.data[3] == (uint8_t)(OPENHALDEX_SLIP_DID & 0xFF))
+      {
+        int8_t slip[4] = {-128, -128, -128, -128};
+
+        // Only compute when the wheel speeds are fresh (< 500 ms). Steering feeds
+        // the geometry compensation: use it only while valid and fresh, otherwise
+        // pass 0 (straight) so we fall back to plain relative slip instead of
+        // mis-compensating on a stale angle.
+        const uint32_t nowMs = millis();
+        if (lastWheelSpeedResponse != 0 && (nowMs - lastWheelSpeedResponse) < 500)
+        {
+          int16_t steerTenths = 0;
+          const bool steerFresh =
+              steeringAngleValid && ((nowMs - lastSteeringResponse) < steeringTimeout);
+          if (steerFresh)
+          {
+            // steeringAngleNegative = direction sign; convention (which side is
+            // "negative") is display-only today and needs an on-car check - if
+            // left/right slip read swapped in a corner, flip this sign.
+            steerTenths = steeringAngleNegative
+                              ? -(int16_t)steeringAngleTenths
+                              : (int16_t)steeringAngleTenths;
+          }
+          if (!compute_corner_slip(wheelSpeedRaw, steerTenths, slipSteeringRatio,
+                                   slipWheelbaseMm, slipTrackFrontMm, slipTrackRearMm,
+                                   slipMinSpeedRaw, slip))
+          {
+            // compute_corner_slip zeroes slip_out on entry before its early-outs,
+            // so restore the no-data sentinel the DID contract promises (Lines 265-267)
+            // instead of shipping false zeros for the too-slow/degenerate case.
+            slip[0] = slip[1] = slip[2] = slip[3] = -128;
+          }
+        }
+
+        twai_message_t slip_resp{};
+        slip_resp.identifier = 0x779;
+        slip_resp.extd = 0;
+        slip_resp.rtr = 0;
+        slip_resp.data_length_code = 8;
+        slip_resp.data[0] = 0x07; // ISO-TP single frame, 7 payload bytes (0x62 + DID + 4)
+        slip_resp.data[1] = 0x62;
+        slip_resp.data[2] = (uint8_t)(OPENHALDEX_SLIP_DID >> 8);
+        slip_resp.data[3] = (uint8_t)(OPENHALDEX_SLIP_DID & 0xFF);
+        slip_resp.data[4] = (uint8_t)slip[0];
+        slip_resp.data[5] = (uint8_t)slip[1];
+        slip_resp.data[6] = (uint8_t)slip[2];
+        slip_resp.data[7] = (uint8_t)slip[3];
+        twai_transmit_v2(twai_bus_0, &slip_resp, (10 / portTICK_PERIOD_MS));
+        continue; // consume - do NOT forward the request to Bus 1
+      }
+
+      // OpenHaldex drive-mode WRITE responder. A UDS WriteDataByIdentifier
+      // (service 0x2E) on the same 0x70F->0x779 channel lets the gauge set the
+      // drive mode as a head unit would. Request payload after the ISO-TP length
+      // byte is [0x2E][DID_hi][DID_lo][mode]; we set state.mode and reply positive
+      // 0x6E, or negative 0x7F/0x31 (requestOutOfRange) for a bad mode value. The
+      // request is consumed so the real Haldex ECU never sees it.
+      if (rx_message_chs.identifier == diagnostics_5_ID &&
+          rx_message_chs.data_length_code >= 5 &&
+          (rx_message_chs.data[0] & 0xF0) == 0x00 &&   // ISO-TP single frame
+          (rx_message_chs.data[0] & 0x0F) >= 4 &&      // >= 4 payload bytes (SID + DID + value)
+          rx_message_chs.data[1] == 0x2E &&            // WriteDataByIdentifier
+          rx_message_chs.data[2] == (uint8_t)(OPENHALDEX_MODE_DID >> 8) &&
+          rx_message_chs.data[3] == (uint8_t)(OPENHALDEX_MODE_DID & 0xFF))
+      {
+        const uint8_t requested_mode = rx_message_chs.data[4];
+        twai_message_t mode_resp{};
+        mode_resp.identifier = 0x779;
+        mode_resp.extd = 0;
+        mode_resp.rtr = 0;
+        mode_resp.data_length_code = 8;
+
+        if (requested_mode < (uint8_t)openhaldex_mode_t_MAX)
+        {
+          xSemaphoreTake(stateMutex, portMAX_DELAY);
+          state.mode = (openhaldex_mode_t)requested_mode;
+          xSemaphoreGive(stateMutex);
+
+          mode_resp.data[0] = 0x03; // ISO-TP single frame, 3 payload bytes
+          mode_resp.data[1] = 0x6E; // positive WDBI response
+          mode_resp.data[2] = (uint8_t)(OPENHALDEX_MODE_DID >> 8);
+          mode_resp.data[3] = (uint8_t)(OPENHALDEX_MODE_DID & 0xFF);
+          mode_resp.data[4] = 0xAA;
+          mode_resp.data[5] = 0xAA;
+          mode_resp.data[6] = 0xAA;
+          mode_resp.data[7] = 0xAA;
+        }
+        else
+        {
+          mode_resp.data[0] = 0x03; // ISO-TP single frame, 3 payload bytes
+          mode_resp.data[1] = 0x7F; // negative response
+          mode_resp.data[2] = 0x2E; // ...to WriteDataByIdentifier
+          mode_resp.data[3] = 0x31; // requestOutOfRange
+          mode_resp.data[4] = 0xAA;
+          mode_resp.data[5] = 0xAA;
+          mode_resp.data[6] = 0xAA;
+          mode_resp.data[7] = 0xAA;
+        }
+        twai_transmit_v2(twai_bus_0, &mode_resp, (10 / portTICK_PERIOD_MS));
+        continue; // consume - do NOT forward the request to Bus 1
+      }
+
       if (!isStandalone || useCANifAvailable)
       { // process frames regardless
         switch (rx_message_chs.identifier)
@@ -427,6 +581,15 @@ void parseCAN_chs(void *arg)
               (wheel_speed_hl_raw + wheel_speed_hr_raw + wheel_speed_vl_raw + wheel_speed_vr_raw) * (0.0075f / 4.0f);
 
           received_vehicle_speed = (uint16_t)(average_wheel_speed + 0.5f);
+
+          // Promote all four corners for the per-corner slip DID (0xFDA1) and the
+          // browser dash. Order [FL, FR, RL, RR] = [VL, VR, HL, HR].
+          wheelSpeedRaw[0] = wheel_speed_vl_raw;
+          wheelSpeedRaw[1] = wheel_speed_vr_raw;
+          wheelSpeedRaw[2] = wheel_speed_hl_raw;
+          wheelSpeedRaw[3] = wheel_speed_hr_raw;
+          lastWheelSpeedResponse = millis();
+
           isABSValid = true;
           lastABSResponse = millis();
           break;

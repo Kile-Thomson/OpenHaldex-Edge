@@ -427,6 +427,16 @@ extern bool steeringAngleValid;       // false while the LWI QBit flags the sign
 extern uint32_t lastSteeringResponse; // millis() of the last decoded LWI_01
 extern uint32_t steeringTimeout;      // staleness window in ms; stale angle -> gain 100%
 
+// Per-corner wheel speeds (MQB ESP_19 0x0B2), raw 0.0075 km/h/LSB, [FL,FR,RL,RR].
+extern uint16_t wheelSpeedRaw[4];
+extern uint32_t lastWheelSpeedResponse; // millis() of last 0x0B2; 0 = none seen
+// Per-corner slip geometry (see globals.cpp). TT Mk3 defaults.
+extern uint16_t slipWheelbaseMm;
+extern uint16_t slipTrackFrontMm;
+extern uint16_t slipTrackRearMm;
+extern float    slipSteeringRatio;
+extern uint16_t slipMinSpeedRaw;
+
 // Steering-gain taper: reduce lock as steering angle grows so the rear axle is
 // not fighting the front through tight corners. Disabled by default.
 extern bool steeringGainEnabled;      // master toggle for the taper

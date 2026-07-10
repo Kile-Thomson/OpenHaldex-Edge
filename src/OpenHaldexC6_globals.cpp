@@ -213,6 +213,24 @@ bool steeringAngleValid = false;    // false while the LWI QBit flags the signal
 uint32_t lastSteeringResponse = 0;  // millis() of the last decoded LWI_01
 uint32_t steeringTimeout = 1000;    // staleness window in ms; stale angle -> gain 100%
 
+// Per-corner wheel speeds decoded from MQB ESP_19 (0x0B2), raw 0.0075 km/h/LSB,
+// in [FL, FR, RL, RR] order. Written only by parseCAN_chs; read by the slip
+// responder (same task) and the API/browser dash (plain reads, same benign-tear
+// convention as received_vehicle_speed and the steering angle above).
+uint16_t wheelSpeedRaw[4] = {0, 0, 0, 0};
+uint32_t lastWheelSpeedResponse = 0; // millis() of the last decoded 0x0B2; 0 = none
+
+// Per-corner slip geometry. Ackermann compensation needs the car's wheelbase,
+// front/rear track, and steering rack ratio. Defaults are the Audi TT Mk3 (8S) on
+// the Golf 7R MQB platform; these are compile-time for now (calibrate on-car, then
+// wire to EEP/API if they need tuning without a reflash). slipMinSpeedRaw is the
+// mean wheel-speed floor below which slip is not trusted (~5 km/h in 0.0075 units).
+uint16_t slipWheelbaseMm  = 2505; // TT Mk3 wheelbase
+uint16_t slipTrackFrontMm = 1572; // TT Mk3 front track
+uint16_t slipTrackRearMm  = 1544; // TT Mk3 rear track
+float    slipSteeringRatio = 15.6f; // MQB nominal steering-wheel:road-wheel ratio
+uint16_t slipMinSpeedRaw  = 667;  // ~5 km/h / 0.0075
+
 // Steering-gain taper settings (written by the API under stateMutex, read
 // inside getLockData which already holds it). Disabled by default so behaviour
 // is unchanged until explicitly enabled.

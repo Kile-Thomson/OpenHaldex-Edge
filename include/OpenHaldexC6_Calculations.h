@@ -26,6 +26,26 @@ float lock_rate_limit_step(float current, float target, uint16_t engage_ms, uint
 // (so a very slow legacy rate becomes the 1 s maximum). Pure, host-testable.
 uint16_t lock_ramp_ms_from_rate(float rate_per_sec);
 uint8_t steering_gain_percent(uint16_t angle_tenths, uint16_t start_deg, uint16_t full_deg, uint8_t floor_percent);
+
+// Geometry-compensated per-corner wheel slip. Given the four raw ABS wheel-speed
+// counts (any consistent unit; MQB 0x0B2 is 0.0075 km/h/LSB) in [FL, FR, RL, RR]
+// order, the SIGNED steering-WHEEL angle in 0.1-deg units (negative = left,
+// positive = right), the rack ratio (steering-wheel deg per road-wheel deg, e.g.
+// ~15.6 for MQB), and the car geometry (wheelbase and front/rear track in mm),
+// fill slip_out[0..3] with each corner's slip as whole-percent int8 (1%/LSB,
+// clamped -100..+127). Slip is actual_i / expected_i - 1, where expected_i is the
+// speed pure Ackermann geometry predicts for that corner's turn radius at the
+// current steering angle, normalised so the four expected speeds share the
+// measured mean. Positive => spinning faster than geometry allows (losing grip);
+// negative => the reference/dragging corner. On a straight the radii are equal so
+// it reduces to speed-vs-average. Returns false and zeroes slip_out when the mean
+// speed is below min_speed_raw (too slow to trust) or an input is degenerate.
+// LIMITATION: a relative method - if all four corners break loose equally it reads
+// ~0 slip. Pure float/trig math, no Arduino/TWAI symbols, host-testable.
+bool compute_corner_slip(const uint16_t wheel_raw[4], int16_t steer_wheel_tenths,
+                         float steering_ratio, uint16_t wheelbase_mm,
+                         uint16_t track_front_mm, uint16_t track_rear_mm,
+                         uint16_t min_speed_raw, int8_t slip_out[4]);
 static float get_expert_lock_target();
 uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert);
 void getLockData(twai_message_t& rx_message_chs);

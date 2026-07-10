@@ -58,6 +58,38 @@
 #define OPENHALDEX_BROADCAST_ID 0x6B0         // broadcast OpenHaldex via. CAN over this address - used for stating mode/performance etc
 #define OPENHALDEX_EXTERNAL_CONTROL_ID 0x6A0  // recieve OpenHaldex via. CAN over this address - used for changing modes etc
 
+// Supplier-specific UDS DID (RDBI 0x22) OpenHaldex answers itself on the Haldex
+// physical address 0x70F -> responds on 0x779. Lets a UDS tester on the chassis/OBD
+// bus (e.g. the Rokketek gauge) read the OpenHaldex commanded lock % over the same
+// request/response channel it already uses for Haldex temps/PWM, since the passive
+// 0x6B0 broadcast does not cross the car's gateway to the OBD port. 0xFD00-0xFEFF is
+// the ISO 14229 system-supplier-specific DID range, so this cannot collide with an
+// OEM Haldex DID. Response payload: [cmd_lock 0-100][applied_engagement_raw 0-250]
+// [mode]. The third byte is the live openhaldex_mode_t so a gauge that writes the
+// mode via OPENHALDEX_MODE_DID can read this DID back to confirm the write took.
+#define OPENHALDEX_LOCK_DID 0xFDA0
+
+// Second supplier-specific DID, answered the same way (0x70F request -> 0x779
+// response). Carries geometry-compensated per-corner slip so the gauge can draw a
+// Forza-style per-wheel grip picture. Payload is 4 signed bytes, one per corner in
+// [FL, FR, RL, RR] order, each slip % as int8 (1%/LSB, clamped -100..+127): the
+// wheel's actual speed vs. the speed Ackermann geometry predicts for its turn
+// radius at the current steering angle, so a straight-line launch and a mid-corner
+// break-loose both read true slip, not just steering geometry.
+#define OPENHALDEX_SLIP_DID 0xFDA1
+
+// Third supplier-specific DID, but WRITTEN not read: a UDS WriteDataByIdentifier
+// (service 0x2E) on 0x70F -> positive 0x6E response on 0x779. Lets the gauge act
+// as a head unit and set the OpenHaldex drive mode. Request payload is one byte,
+// an openhaldex_mode_t enum value (0=Stock,1=FWD,2=50:50,3=60:40,4=75:25,
+// 5=Expert). Out-of-range values are rejected with a 0x7F negative response.
+// After a successful write the gauge reads OPENHALDEX_LOCK_DID back to confirm the
+// mode actually took, so a dropped/duplicated write frame can never silently wedge
+// the mode. Rides the exact request/response pair that already carries temps/PWM
+// to the dash, since a chassis-bus OPENHALDEX_EXTERNAL_CONTROL_ID (0x6A0) frame
+// does not cross the gateway to the OBD port.
+#define OPENHALDEX_MODE_DID 0xFDA2
+
 #define diagnostics_1_ID 0x764
 #define diagnostics_2_ID 0x200
 #define diagnostics_3_ID 0x710
