@@ -744,6 +744,9 @@ header h1 .accent {
     border-radius: 4px;
     outline: none;
     margin-bottom: 0.5rem;
+    /* Let a vertical page scroll pass through the track; only a deliberate
+       sideways drag changes the value. Stops scroll-flicks nudging sliders. */
+    touch-action: pan-y;
 }
 
 .slider::-webkit-slider-thumb {
@@ -1717,6 +1720,7 @@ button,
     outline: none;
     -webkit-appearance: none;
     appearance: none;
+    touch-action: pan-y; /* vertical scroll passes through; only sideways drag moves it */
 }
 
 .slider-inline::-webkit-slider-thumb {

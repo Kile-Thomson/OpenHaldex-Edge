@@ -385,8 +385,19 @@ void mapSlotNames(char names[MAP_SLOT_COUNT][MAP_NAME_MAX])
   {
     char blobKey[4], nameKey[4];
     mapSlotKeys(i, blobKey, nameKey);
-    // A name is only real if a matching blob was actually stored.
-    if (mp.isKey(blobKey) && mp.isKey(nameKey))
+    // A name is only real if a matching, correctly-sized blob can actually be
+    // read back. This MUST use the exact same operation mapSlotLoad() uses to
+    // decide a slot is loadable - a real getBytes() into a full-size buffer -
+    // not getBytesLength(). getBytesLength() is a different NVS call and can
+    // disagree with getBytes() (e.g. it returns 0 for entries it doesn't
+    // classify as a plain blob), which would list a slot as used that load()
+    // then rejects ("Empty slot" on Load) or, worse, hide a slot that loads
+    // fine. Reading the blob here guarantees list and load never disagree. A
+    // wrong-size blob (stale write from an older struct layout, or a partial
+    // write) fails the == sizeof check and reads as free, so a fresh Save can
+    // cleanly reclaim the slot.
+    MapSlotBlob probe;
+    if (mp.isKey(nameKey) && mp.getBytes(blobKey, &probe, sizeof(probe)) == sizeof(probe))
     {
       String n = mp.getString(nameKey, "");
       strncpy(names[i], n.c_str(), MAP_NAME_MAX - 1);

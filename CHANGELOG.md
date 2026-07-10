@@ -146,6 +146,36 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Fixed
 
+- **Map slots read "Empty slot" on Load, and you couldn't choose which slot to
+  save into.** Two problems in the on-device tune slots. First, the saved-tune
+  list and the Load action decided "is this slot used?" with two different NVS
+  calls - the list checked the stored blob's reported length, Load actually read
+  the blob back - and those two calls can disagree, so a slot that loads fine
+  could still be listed as empty (and vice versa). The list now reads the blob
+  the exact same way Load does, so the two can never disagree. Second, empty
+  slots were greyed out in the dropdown, so there was no way to pick a specific
+  slot to save into - "Save As" just took the first free one. Empty slots are now
+  selectable and each option shows its slot number, so you can save straight to a
+  chosen slot (and re-save reclaims any slot that had been left unreadable).
+- **Accidental toggle/slider changes while scrolling.** On the phone a finger that
+  landed on a slider while flicking the page would drag the value, and a scroll
+  that started or ended on a toggle would flip the switch - so Standalone, Disable
+  Controller and the sliders changed by accident. Sliders now let a vertical scroll
+  pass straight through (only a deliberate sideways drag moves them), and a toggle
+  ignores a "tap" whose finger actually moved (a scroll, not a press). Sliders also
+  no longer jump their value when you tap the bar - the value only changes when you
+  grab the thumb and drag it, so a stray press on the track can't slam a setting to
+  wherever your finger landed.
+- **Disable Controller, Standalone and Analyzer now confirm before switching on.**
+  These three take the unit out of active control, so switching one into its
+  disruptive state now asks first - a stray tap can't silently disable the
+  controller, go standalone, or enter analyzer mode. Turning them back off is
+  unchanged.
+- **Drive-mode selection no longer snaps back to the old mode.** The dashboard
+  re-applies the device's reported mode every poll so external changes show up, but
+  a poll already in flight when you picked a new mode would report the old mode and
+  revert the highlight. The UI now holds your selection until the device confirms
+  the new mode (or a short timeout), so the pick sticks.
 - **Expert multi-select: first tap after a long-press is no longer eaten.** The
   long-press that enters multi-select armed a "swallow the next click" guard to
   absorb the ghost click a touch normally trails. But a long hold makes the
