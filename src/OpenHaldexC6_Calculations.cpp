@@ -389,7 +389,10 @@ bool compute_corner_slip(const uint16_t wheel_raw[4], int16_t steer_wheel_tenths
   slip_out[0] = slip_out[1] = slip_out[2] = slip_out[3] = 0;
 
   // Need a plausible car and a real steering ratio, or the geometry is nonsense.
-  if (wheelbase_mm == 0 || steering_ratio < 1.0f)
+  // Zero track collapses the left/right corners onto the centreline, so it is
+  // just as degenerate as a zero wheelbase.
+  if (wheelbase_mm == 0 || track_front_mm == 0 || track_rear_mm == 0 ||
+      steering_ratio < 1.0f)
     return false;
 
   // Too slow to trust: ABS wheel-speed quantisation and standstill jitter swamp

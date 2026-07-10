@@ -294,9 +294,15 @@ void parseCAN_chs(void *arg)
                               ? -(int16_t)steeringAngleTenths
                               : (int16_t)steeringAngleTenths;
           }
-          compute_corner_slip(wheelSpeedRaw, steerTenths, slipSteeringRatio,
-                              slipWheelbaseMm, slipTrackFrontMm, slipTrackRearMm,
-                              slipMinSpeedRaw, slip);
+          if (!compute_corner_slip(wheelSpeedRaw, steerTenths, slipSteeringRatio,
+                                   slipWheelbaseMm, slipTrackFrontMm, slipTrackRearMm,
+                                   slipMinSpeedRaw, slip))
+          {
+            // compute_corner_slip zeroes slip_out on entry before its early-outs,
+            // so restore the no-data sentinel the DID contract promises (Lines 265-267)
+            // instead of shipping false zeros for the too-slow/degenerate case.
+            slip[0] = slip[1] = slip[2] = slip[3] = -128;
+          }
         }
 
         twai_message_t slip_resp{};

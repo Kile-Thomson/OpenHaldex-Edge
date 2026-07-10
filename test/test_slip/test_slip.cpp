@@ -85,6 +85,10 @@ void test_degenerate_geometry_returns_false(void)
                             "zero wheelbase is rejected");
   TEST_ASSERT_FALSE_MESSAGE(compute_corner_slip(w, 0, 0.5f, WB, TF, TR, MIN_RAW, slip),
                             "sub-unity steering ratio is rejected");
+  TEST_ASSERT_FALSE_MESSAGE(compute_corner_slip(w, 0, RATIO, WB, 0, TR, MIN_RAW, slip),
+                            "zero front track is rejected");
+  TEST_ASSERT_FALSE_MESSAGE(compute_corner_slip(w, 0, RATIO, WB, TF, 0, MIN_RAW, slip),
+                            "zero rear track is rejected");
 }
 
 void test_right_turn_equal_speeds_inner_reads_positive(void)
