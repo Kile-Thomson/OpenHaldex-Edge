@@ -159,7 +159,10 @@ limiting - are Forbes's own work and are not repeated here.
   that started or ended on a toggle would flip the switch - so Standalone, Disable
   Controller and the sliders changed by accident. Sliders now let a vertical scroll
   pass straight through (only a deliberate sideways drag moves them), and a toggle
-  ignores a "tap" whose finger actually moved (a scroll, not a press).
+  ignores a "tap" whose finger actually moved (a scroll, not a press). Sliders also
+  no longer jump their value when you tap the bar - the value only changes when you
+  grab the thumb and drag it, so a stray press on the track can't slam a setting to
+  wherever your finger landed.
 - **Disable Controller, Standalone and Analyzer now confirm before switching on.**
   These three take the unit out of active control, so switching one into its
   disruptive state now asks first - a stray tap can't silently disable the

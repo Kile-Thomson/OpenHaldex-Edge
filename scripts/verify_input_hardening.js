@@ -65,12 +65,23 @@ function activeMode() {
 // A single .toggle label for the scroll-tap guard test.
 const toggleNode = makeNode("toggle-label");
 
+// A .slider for the track-tap guard test. It sits at x=[0,200], min 0 / max 100,
+// value 50 -> thumb centred at x=100 (accounting for the 24px thumb inset the
+// centre is at 12 + 0.5*(200-24) = 100). A press on the bare track (x=180) must
+// be cancelled; a press on the thumb (x=100) must be left alone.
+const sliderNode = makeNode("slider-node");
+sliderNode.min = "0";
+sliderNode.max = "100";
+sliderNode.value = "50";
+sliderNode.getBoundingClientRect = () => ({ left: 0, width: 200 });
+
 const documentStub = {
   addEventListener() {}, removeEventListener() {},
   getElementById: (id) => getNode(id),
   querySelectorAll: (sel) => {
     if (sel === ".mode-btn") return modeButtons;
     if (sel === ".toggle") return [toggleNode];
+    if (sel === ".slider") return [sliderNode];
     return [];
   },
   querySelector: () => null,
@@ -244,6 +255,24 @@ async function poll(mode) {
   };
   check(hasPanY(".slider"), ".slider declares touch-action: pan-y");
   check(hasPanY(".slider-inline"), ".slider-inline declares touch-action: pan-y");
+
+  // --- 5. Slider track-tap guard --------------------------------------------
+  // A native range input jumps its value to wherever the track is pressed. The
+  // guard must cancel a press on the bare track (so a stray tap can't slam a
+  // setting) but leave a press on the thumb alone (so a real drag still works).
+  // sliderNode: x=[0,200], value 50 -> thumb centred at x=100, hit radius
+  // 24/2 + 12 = 24, so x=180 is off-thumb and x=100 is on it.
+  ctx.guardTrackTaps(".slider", 24);
+  let sliderPrevented = false;
+  const pointerEvt = (x) => ({ clientX: x, preventDefault: () => { sliderPrevented = true; } });
+
+  sliderPrevented = false;
+  sliderNode._fire("pointerdown", pointerEvt(180));
+  check(sliderPrevented, "a press on the bare track is cancelled (no jump-to-tap)");
+
+  sliderPrevented = false;
+  sliderNode._fire("pointerdown", pointerEvt(100));
+  check(!sliderPrevented, "a press on the thumb is allowed (drag still works)");
 
   console.log(failures === 0 ? "\nALL INPUT-HARDENING CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);

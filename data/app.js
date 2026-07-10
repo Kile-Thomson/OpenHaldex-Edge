@@ -67,6 +67,35 @@ function guardScrollTaps(selector) {
   });
 }
 
+// Require sliders to be grabbed by the thumb, not set by tapping the track. A
+// native <input type="range"> jumps its value to wherever you press on the bar,
+// so a stray tap (or a fat-finger meant for something else) can slam a setting
+// to a random value. This blocks any press that doesn't land on the thumb: the
+// value only changes when you grab the handle and drag it. thumbPx is the
+// rendered thumb diameter for the selector; a finger-slop margin is added so the
+// thumb stays easy to grab.
+const SLIDER_GRAB_SLOP_PX = 12;
+function guardTrackTaps(selector, thumbPx) {
+  const hitRadius = thumbPx / 2 + SLIDER_GRAB_SLOP_PX;
+  document.querySelectorAll(selector).forEach((el) => {
+    el.addEventListener("pointerdown", (e) => {
+      const min = parseFloat(el.min) || 0;
+      const max = parseFloat(el.max);
+      if (!Number.isFinite(max) || max <= min) return; // can't hit-test, allow
+      const rect = el.getBoundingClientRect();
+      if (!rect.width) return;
+      const frac = (parseFloat(el.value) - min) / (max - min);
+      // The thumb centre travels inset by half its width at each end.
+      const thumbCenterX = rect.left + thumbPx / 2 + frac * (rect.width - thumbPx);
+      if (Math.abs(e.clientX - thumbCenterX) > hitRadius) {
+        // Pressed the bare track, not the thumb: cancel the jump-to-tap. The
+        // press must start on the handle for a drag to begin.
+        e.preventDefault();
+      }
+    });
+  });
+}
+
 var speedHeader = [0, 30, 60, 90, 120, 160, 180]; // default speed header (for x-axis)
 var throttleHeader = [0, 15, 30, 45, 60, 75, 90]; // default throttle header (for y-axis)
 
@@ -123,6 +152,8 @@ function initApp() {
   initWifi();
   //initOtaPage(); todo - currently just old OTA page, would like to incorporate the styling across
   guardScrollTaps(".toggle"); // stop scroll-flicks from flipping toggles
+  guardTrackTaps(".slider", 24); // grab the thumb to move; a track tap does nothing
+  guardTrackTaps(".slider-inline", 18);
 }
 
 // global function for getting data from the ESP
