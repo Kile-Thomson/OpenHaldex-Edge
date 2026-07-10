@@ -385,8 +385,13 @@ void mapSlotNames(char names[MAP_SLOT_COUNT][MAP_NAME_MAX])
   {
     char blobKey[4], nameKey[4];
     mapSlotKeys(i, blobKey, nameKey);
-    // A name is only real if a matching blob was actually stored.
-    if (mp.isKey(blobKey) && mp.isKey(nameKey))
+    // A name is only real if a matching, correctly-sized blob was actually
+    // stored. The size check must match mapSlotLoad()'s (getBytes == sizeof)
+    // exactly: if this listed a slot as used that load() then rejects, the UI
+    // shows a name that can't be loaded ("Empty slot" on Load). A blob of the
+    // wrong size (stale write from an older struct layout, or a partial write)
+    // is treated as free so a fresh Save can cleanly reclaim the slot.
+    if (mp.isKey(nameKey) && mp.getBytesLength(blobKey) == sizeof(MapSlotBlob))
     {
       String n = mp.getString(nameKey, "");
       strncpy(names[i], n.c_str(), MAP_NAME_MAX - 1);

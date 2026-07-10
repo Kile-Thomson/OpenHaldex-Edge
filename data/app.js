@@ -21,6 +21,52 @@ let _disableController = false;
 // UI run several Hz when the ESP answers quickly.
 const POLL_MIN_GAP_MS = 150;
 
+// Optimistic mode tracking. The dashboard poll re-applies modeButton(data.mode)
+// every cycle so an externally-driven mode change (button, force trigger) shows
+// up. But right after the user picks a mode, a poll whose snapshot was taken
+// before the device processed the change would snap the highlight back to the
+// old mode - the "didn't respect which drive mode" report. While a change is
+// pending we hold the user's selection until the device echoes it back (or a
+// timeout elapses, so an ignored/failed change can't wedge the UI forever).
+let _pendingMode = null;
+let _pendingModeTs = 0;
+const PENDING_MODE_TIMEOUT_MS = 4000;
+
+// Reject taps that are really the tail of a scroll. On the phone a finger that
+// lands on a toggle while flicking the page up/down fires a click on touchend,
+// silently flipping high-consequence switches (Standalone, Disable Controller).
+// If the finger moved more than this many pixels between touchstart and the
+// click, we swallow the click so only a deliberate stationary tap toggles.
+const TAP_MOVE_TOLERANCE_PX = 12;
+function guardScrollTaps(selector) {
+  document.querySelectorAll(selector).forEach((el) => {
+    let startX = 0;
+    let startY = 0;
+    let moved = false;
+    el.addEventListener("touchstart", (e) => {
+      const t = e.touches[0];
+      startX = t.clientX;
+      startY = t.clientY;
+      moved = false;
+    }, { passive: true });
+    el.addEventListener("touchmove", (e) => {
+      const t = e.touches[0];
+      if (Math.abs(t.clientX - startX) > TAP_MOVE_TOLERANCE_PX ||
+          Math.abs(t.clientY - startY) > TAP_MOVE_TOLERANCE_PX) {
+        moved = true;
+      }
+    }, { passive: true });
+    el.addEventListener("click", (e) => {
+      if (moved) {
+        // It was a scroll, not a tap: cancel the label's default control toggle.
+        e.preventDefault();
+        e.stopPropagation();
+        moved = false;
+      }
+    });
+  });
+}
+
 var speedHeader = [0, 30, 60, 90, 120, 160, 180]; // default speed header (for x-axis)
 var throttleHeader = [0, 15, 30, 45, 60, 75, 90]; // default throttle header (for y-axis)
 
@@ -76,6 +122,7 @@ function initApp() {
   initWifiSsid();
   initWifi();
   //initOtaPage(); todo - currently just old OTA page, would like to incorporate the styling across
+  guardScrollTaps(".toggle"); // stop scroll-flicks from flipping toggles
 }
 
 // global function for getting data from the ESP
@@ -389,7 +436,17 @@ async function refreshStatus() {
     setChip("chipClutch2", data.clutch2Report);
 
     if (data.mode !== undefined) {
-      modeButton(data.mode); // set the mode button - there may be external influences
+      // Hold the user's just-picked mode until the device echoes it (or the
+      // pending window expires), so a stale in-flight poll can't snap the
+      // highlight back. External mode changes still show once nothing is pending.
+      if (_pendingMode !== null) {
+        if (data.mode === _pendingMode || Date.now() - _pendingModeTs > PENDING_MODE_TIMEOUT_MS) {
+          _pendingMode = null;
+          modeButton(data.mode);
+        }
+      } else {
+        modeButton(data.mode); // set the mode button - there may be external influences
+      }
     }
 
     const canStatus = document.getElementById("canStatus");
@@ -1071,6 +1128,8 @@ function initModeButtons() {
       }
 
       haptic(15); // firmer tick for a mode change
+      _pendingMode = mode; // hold this selection against stale polls until echoed
+      _pendingModeTs = Date.now();
       modeButton(mode); // change highlighted mode
       sendMode(mode); // send new mode to ESP
       setModeDrawer(false); // picked a mode - slide the drawer away
@@ -1142,6 +1201,16 @@ function initSettings() {
     useCANifAvailable: (v) => { _useCANifAvailable = v; },
   };
 
+  // High-consequence toggles get a confirm when switched INTO their disruptive
+  // state, so a stray tap (or a scroll that slips past guardScrollTaps) can't
+  // silently take the car out of active control. Turning them back off is the
+  // recovery action and needs no confirm.
+  const confirmOnEnable = {
+    disableController: "Disable the Haldex controller? The unit stops modifying CAN frames and the car reverts to stock behaviour.",
+    isStandalone: "Switch to Standalone? The unit stops reading the car's CAN bus and synthesises frames on its own.",
+    analyzerMode: "Enter Analyzer (SavvyCAN) mode? The controller stops spoofing and only sniffs the bus.",
+  };
+
   const checkboxIds = [
     "disableController",
     "isStandalone",
@@ -1166,6 +1235,10 @@ function initSettings() {
     const elem = document.getElementById(id);
     if (elem) {
       elem.addEventListener("change", () => {
+        if (confirmOnEnable[id] && elem.checked && !confirm(confirmOnEnable[id])) {
+          elem.checked = false; // user backed out - revert without saving
+          return;
+        }
         if (checkboxCacheMap[id]) checkboxCacheMap[id](elem.checked);
         saveSetting(id, elem.checked);
       });
@@ -1240,6 +1313,10 @@ function initSettings() {
   const analyzerSerialElem = document.getElementById("analyzerSerial");
   if (analyzerModeElem && analyzerSerialElem) {
     analyzerModeElem.addEventListener("change", () => {
+      if (analyzerModeElem.checked && !confirm(confirmOnEnable.analyzerMode)) {
+        analyzerModeElem.checked = false; // user backed out - revert without saving
+        return;
+      }
       if (analyzerModeElem.checked) {
         analyzerSerialElem.checked = false;
         saveSetting("analyzerSerial", false);

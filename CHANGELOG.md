@@ -146,6 +146,30 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Fixed
 
+- **Map slot showed a name but Load said "Empty slot".** The saved-tune dropdown
+  and the Load action asked "is this slot used?" two different ways: the list
+  marked a slot used whenever a name and a blob key both existed, while Load only
+  succeeded if the stored blob was exactly the current size. A slot whose blob was
+  written by an earlier firmware with a different data layout therefore showed its
+  name in the list but refused to load. Both now use the same size-checked test,
+  so a stale slot reads as empty (and a fresh Save cleanly reclaims it) instead of
+  showing a name that can't be loaded.
+- **Accidental toggle/slider changes while scrolling.** On the phone a finger that
+  landed on a slider while flicking the page would drag the value, and a scroll
+  that started or ended on a toggle would flip the switch - so Standalone, Disable
+  Controller and the sliders changed by accident. Sliders now let a vertical scroll
+  pass straight through (only a deliberate sideways drag moves them), and a toggle
+  ignores a "tap" whose finger actually moved (a scroll, not a press).
+- **Disable Controller, Standalone and Analyzer now confirm before switching on.**
+  These three take the unit out of active control, so switching one into its
+  disruptive state now asks first - a stray tap can't silently disable the
+  controller, go standalone, or enter analyzer mode. Turning them back off is
+  unchanged.
+- **Drive-mode selection no longer snaps back to the old mode.** The dashboard
+  re-applies the device's reported mode every poll so external changes show up, but
+  a poll already in flight when you picked a new mode would report the old mode and
+  revert the highlight. The UI now holds your selection until the device confirms
+  the new mode (or a short timeout), so the pick sticks.
 - **Expert multi-select: first tap after a long-press is no longer eaten.** The
   long-press that enters multi-select armed a "swallow the next click" guard to
   absorb the ghost click a touch normally trails. But a long hold makes the
