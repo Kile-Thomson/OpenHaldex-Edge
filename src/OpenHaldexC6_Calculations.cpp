@@ -3,6 +3,7 @@
 #include <cstdlib> // malloc/free for http_body_alloc
 #include <cstring> // memset/memcpy for the request-body buffer helpers
 #include <cstdint> // SIZE_MAX for the overflow guard in http_body_alloc
+#include <math.h>  // tanf/sqrtf/fabsf for the per-corner slip geometry
 
 // Speed-disengage gate. See include/OpenHaldexC6_Calculations.h for the full
 // rationale. Lock is permitted only while speed is at or above the lower bound
@@ -368,6 +369,106 @@ uint8_t steering_gain_percent(uint16_t angle_tenths, uint16_t start_deg, uint16_
   const uint32_t into = (uint32_t)angle_tenths - start_tenths;
   const uint32_t reduction = ((uint32_t)(100 - floor_percent) * into + span / 2) / span;
   return (uint8_t)(100 - reduction);
+}
+
+// Geometry-compensated per-corner slip. See the header for the full contract.
+// Model: at steering road-wheel angle delta, pure Ackermann puts the turn centre
+// on the rear-axle line a distance R = wheelbase / tan(delta) from the vehicle
+// centreline. Each wheel then traces a circle of its own radius, so with zero
+// actual slip the wheel speeds are proportional to those radii. We compute the
+// four geometric radii, turn them into expected speeds that share the measured
+// mean, and report each corner's fractional excess over its expected speed as
+// slip. On a straight (delta ~ 0) all radii are equal, so this cleanly reduces to
+// "speed vs. the average of the others" - the drag-mode behaviour - with no
+// special-casing.
+bool compute_corner_slip(const uint16_t wheel_raw[4], int16_t steer_wheel_tenths,
+                         float steering_ratio, uint16_t wheelbase_mm,
+                         uint16_t track_front_mm, uint16_t track_rear_mm,
+                         uint16_t min_speed_raw, int8_t slip_out[4])
+{
+  slip_out[0] = slip_out[1] = slip_out[2] = slip_out[3] = 0;
+
+  // Need a plausible car and a real steering ratio, or the geometry is nonsense.
+  if (wheelbase_mm == 0 || steering_ratio < 1.0f)
+    return false;
+
+  // Too slow to trust: ABS wheel-speed quantisation and standstill jitter swamp
+  // any real slip, and dividing by a near-zero expected speed explodes.
+  const uint32_t sum_raw =
+      (uint32_t)wheel_raw[0] + wheel_raw[1] + wheel_raw[2] + wheel_raw[3];
+  const float mean_actual = sum_raw * 0.25f;
+  if (mean_actual < (float)min_speed_raw || mean_actual <= 0.0f)
+    return false;
+
+  const float L = (float)wheelbase_mm;
+  const float half_tf = (float)track_front_mm * 0.5f;
+  const float half_tr = (float)track_rear_mm * 0.5f;
+
+  // Road-wheel angle in radians from the steering-wheel angle and the rack ratio.
+  const float delta_deg = ((float)steer_wheel_tenths * 0.1f) / steering_ratio;
+  const float delta = fabsf(delta_deg) * (float)M_PI / 180.0f;
+
+  // Radii in [FL, FR, RL, RR] order.
+  float rad[4];
+  const float kStraight = 0.0005f; // ~0.03 deg road angle: below this treat as straight
+  if (delta < kStraight)
+  {
+    rad[0] = rad[1] = rad[2] = rad[3] = 1.0f; // all equal -> pure relative slip
+  }
+  else
+  {
+    float R = L / tanf(delta); // distance from turn centre to rear-axle centre
+    // Guard an unrealistically tight radius (R below half-track) so an inner
+    // radius can never go negative and invert the ratios.
+    const float min_R = (half_tf > half_tr ? half_tf : half_tr) + 1.0f;
+    if (R < min_R)
+      R = min_R;
+
+    const float r_rear_inner = R - half_tr;
+    const float r_rear_outer = R + half_tr;
+    const float r_front_inner = sqrtf(L * L + (R - half_tf) * (R - half_tf));
+    const float r_front_outer = sqrtf(L * L + (R + half_tf) * (R + half_tf));
+
+    if (delta_deg > 0.0f)
+    {
+      // Turning right: right-side wheels are inner (shorter radius, slower).
+      rad[0] = r_front_outer; // FL
+      rad[1] = r_front_inner; // FR
+      rad[2] = r_rear_outer;  // RL
+      rad[3] = r_rear_inner;  // RR
+    }
+    else
+    {
+      // Turning left: left-side wheels are inner.
+      rad[0] = r_front_inner; // FL
+      rad[1] = r_front_outer; // FR
+      rad[2] = r_rear_inner;  // RL
+      rad[3] = r_rear_outer;  // RR
+    }
+  }
+
+  const float mean_rad = (rad[0] + rad[1] + rad[2] + rad[3]) * 0.25f;
+  if (mean_rad <= 0.0f)
+    return false;
+
+  for (int i = 0; i < 4; i++)
+  {
+    // Expected speed for this corner: the measured mean scaled by how much longer
+    // or shorter this corner's arc is than the average arc.
+    const float expected = mean_actual * (rad[i] / mean_rad);
+    if (expected <= 0.0f)
+    {
+      slip_out[i] = 0;
+      continue;
+    }
+    float slip_pct = ((float)wheel_raw[i] / expected - 1.0f) * 100.0f;
+    if (slip_pct > 127.0f)
+      slip_pct = 127.0f;
+    else if (slip_pct < -100.0f)
+      slip_pct = -100.0f;
+    slip_out[i] = (int8_t)(slip_pct < 0.0f ? slip_pct - 0.5f : slip_pct + 0.5f);
+  }
+  return true;
 }
 
 // Slew one step of the lock-target rate limiter. Ramp times are milliseconds for

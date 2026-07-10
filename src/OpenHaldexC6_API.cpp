@@ -182,6 +182,32 @@ static void statusOutgoing(AsyncWebServerRequest *request)
         data["steeringGainNow"] = nullptr;
     }
 
+    // Geometry-compensated per-corner slip %, [FL, FR, RL, RR], for the browser
+    // dash. Same freshness gate as the 0xFDA1 DID: each entry is null when the
+    // wheel speeds are stale/too slow to trust. Steering (when fresh) feeds the
+    // Ackermann compensation; a stale angle falls back to plain relative slip.
+    {
+        int8_t slip[4] = {0, 0, 0, 0};
+        bool slipOk = false;
+        if (chassisOk && lastWheelSpeedResponse != 0 && (millis() - lastWheelSpeedResponse) < 500)
+        {
+            int16_t steerTenths = 0;
+            if (steeringFresh)
+                steerTenths = steeringAngleNegative ? -(int16_t)steeringAngleTenths : (int16_t)steeringAngleTenths;
+            slipOk = compute_corner_slip(wheelSpeedRaw, steerTenths, slipSteeringRatio,
+                                         slipWheelbaseMm, slipTrackFrontMm, slipTrackRearMm,
+                                         slipMinSpeedRaw, slip);
+        }
+        JsonArray slipArr = data["cornerSlip"].to<JsonArray>();
+        for (int i = 0; i < 4; i++)
+        {
+            if (slipOk)
+                slipArr.add((int)slip[i]);
+            else
+                slipArr.add(nullptr);
+        }
+    }
+
     data["brakeIn"] = brakeSignalActive;
     data["brakeOut"] = brakeActive;
     data["handbrakeIn"] = handbrakeSignalActive;
