@@ -146,14 +146,17 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Fixed
 
-- **Map slot showed a name but Load said "Empty slot".** The saved-tune dropdown
-  and the Load action asked "is this slot used?" two different ways: the list
-  marked a slot used whenever a name and a blob key both existed, while Load only
-  succeeded if the stored blob was exactly the current size. A slot whose blob was
-  written by an earlier firmware with a different data layout therefore showed its
-  name in the list but refused to load. Both now use the same size-checked test,
-  so a stale slot reads as empty (and a fresh Save cleanly reclaims it) instead of
-  showing a name that can't be loaded.
+- **Map slots read "Empty slot" on Load, and you couldn't choose which slot to
+  save into.** Two problems in the on-device tune slots. First, the saved-tune
+  list and the Load action decided "is this slot used?" with two different NVS
+  calls - the list checked the stored blob's reported length, Load actually read
+  the blob back - and those two calls can disagree, so a slot that loads fine
+  could still be listed as empty (and vice versa). The list now reads the blob
+  the exact same way Load does, so the two can never disagree. Second, empty
+  slots were greyed out in the dropdown, so there was no way to pick a specific
+  slot to save into - "Save As" just took the first free one. Empty slots are now
+  selectable and each option shows its slot number, so you can save straight to a
+  chosen slot (and re-save reclaims any slot that had been left unreadable).
 - **Accidental toggle/slider changes while scrolling.** On the phone a finger that
   landed on a slider while flicking the page would drag the value, and a scroll
   that started or ended on a toggle would flip the switch - so Standalone, Disable

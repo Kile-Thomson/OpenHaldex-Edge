@@ -2042,13 +2042,16 @@ async function populateMapDropdown(selectValue) {
 
   // Only device slots live here now, so list them directly - no optgroup
   // heading (with presets gone there is nothing to distinguish it from).
+  // Empty slots stay SELECTABLE (not disabled): the dropdown doubles as the
+  // "which slot do I save to?" picker, so the user must be able to pick an
+  // empty slot as a Save target. Load/Delete reject an empty selection at
+  // click time, so nothing breaks by leaving them enabled.
   deviceSlots.forEach((slot) => {
     const o = document.createElement("option");
     o.value = "slot:" + slot.index;
     o.textContent = slot.used
-      ? slot.name
+      ? `Slot ${slot.index + 1}: ${slot.name}`
       : `Slot ${slot.index + 1} (empty)`;
-    if (!slot.used) o.disabled = true;
     sel.appendChild(o);
   });
 
