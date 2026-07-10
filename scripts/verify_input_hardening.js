@@ -195,6 +195,56 @@ async function poll(mode) {
   check(fetchCalls.some((c) => c.url === "/api/settings" && /disableController/.test(c.body || "")),
     "accepted confirm persists disableController via /api/settings");
 
+  // isStandalone goes through the SAME generic checkbox handler as
+  // disableController - confirm it is equally gated (decline reverts + no POST).
+  const sa = getNode("isStandalone");
+  fetchCalls.length = 0;
+  confirmReturn = false;
+  sa.checked = true;
+  sa._fire("change", {});
+  check(sa.checked === false, "declined confirm reverts isStandalone to off");
+  check(!fetchCalls.some((c) => c.url === "/api/settings"),
+    "declined confirm does not persist isStandalone");
+
+  fetchCalls.length = 0;
+  confirmReturn = true;
+  sa.checked = true;
+  sa._fire("change", {});
+  check(sa.checked === true, "accepted confirm keeps isStandalone on");
+  check(fetchCalls.some((c) => c.url === "/api/settings" && /isStandalone/.test(c.body || "")),
+    "accepted confirm persists isStandalone via /api/settings");
+
+  // analyzerMode is wired by its OWN handler (mutually-exclusive with
+  // analyzerSerial), not the generic loop - verify its confirm gate separately.
+  const am = getNode("analyzerMode");
+  fetchCalls.length = 0;
+  confirmReturn = false;
+  am.checked = true;
+  am._fire("change", {});
+  check(am.checked === false, "declined confirm reverts analyzerMode to off");
+  check(!fetchCalls.some((c) => c.url === "/api/settings"),
+    "declined confirm does not persist analyzerMode");
+
+  fetchCalls.length = 0;
+  confirmReturn = true;
+  am.checked = true;
+  am._fire("change", {});
+  check(am.checked === true, "accepted confirm keeps analyzerMode on");
+  check(fetchCalls.some((c) => c.url === "/api/settings" && /analyzerMode/.test(c.body || "")),
+    "accepted confirm persists analyzerMode via /api/settings");
+
+  // --- 4. Slider touch-action regression ------------------------------------
+  // The scroll-tap fix also depends on both slider rules declaring
+  // `touch-action: pan-y` so a vertical drag scrolls instead of dragging the
+  // thumb. Assert against the real stylesheet so a dropped rule is caught here.
+  const css = fs.readFileSync(path.join(__dirname, "..", "data", "style.css"), "utf8");
+  const hasPanY = (selector) => {
+    const m = new RegExp(`\\${selector}\\s*\\{[^}]*\\}`).exec(css);
+    return m ? /touch-action\s*:\s*pan-y/.test(m[0]) : false;
+  };
+  check(hasPanY(".slider"), ".slider declares touch-action: pan-y");
+  check(hasPanY(".slider-inline"), ".slider-inline declares touch-action: pan-y");
+
   console.log(failures === 0 ? "\nALL INPUT-HARDENING CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })();
