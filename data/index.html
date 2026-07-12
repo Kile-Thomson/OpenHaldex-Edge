@@ -292,13 +292,13 @@
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Fix Hunting</span>
                     </label>
-                    <p class="hint">Enable only if the Haldex hunts at partial lock (e.g. 60/40 or 70/30) on a 554K controller.</p>
-                    <p class="hint">Full-lock torque ceiling</p>
+                    <p class="hint">Turn this on if the rear lock surges or won't hold steady at the part-lock modes (60:40, 75:25). Only the 554K Haldex controller needs it - leave it off otherwise.</p>
+                    <p class="hint">Full-lock strength</p>
                     <div class="slider-container" id="bpkCeilingContainer">
                         <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider">
                         <div class="slider-value"><span id="bpkCeilingValue">220</span> Nm</div>
                     </div>
-                    <p class="hint">Engine torque the spoofed Motor_11 frame claims at 100% lock. Raise this if full lock never reaches 100% engagement; the MQB signal maxes at 509 Nm. Only affects BPK packing (Fix Hunting on, or during a Learn).</p>
+                    <p class="hint">How hard the rear axle is pulled in at 100% lock. If full lock never feels like it fully engages, raise this a little. The default suits most cars - only change it if you're tuning for yours. Only does anything while Fix Hunting is on (or during a Learn).</p>
                 </div>
             </section>
 
