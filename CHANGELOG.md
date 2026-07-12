@@ -194,6 +194,15 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Added
 
+- **Plain-English help across the tuning UI.** The drive-mode drawer now
+  describes what each mode actually does (Stock passes the factory engagement
+  through, FWD holds the rear open, 50:50/60:40/75:25 hold progressively lighter
+  fixed lock targets, Expert follows the throttle/speed map) instead of showing
+  bare labels. Added inline hints to the previously unexplained controls: Haldex
+  Generation, the brake/handbrake follow/invert outputs, and the Controller and
+  Connectivity toggles (Controller Disabled, Standalone Mode, Use CAN if
+  Available, Broadcast over CAN). Copy only - no behaviour change.
+
 - **Per-corner slip and drive-mode over the diagnostic channel.** OpenHaldex now
   answers three supplier-specific UDS DIDs on the Haldex address (0x70F request ->
   0x779 response), the same channel that already carries clutch temps/PWM, because
