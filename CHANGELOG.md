@@ -158,8 +158,9 @@ limiting - are Forbes's own work and are not repeated here.
   clutch and cooling-fin temperatures (decoded and raw) are zero until the module
   first answers, and were published to `/api` as `0` - indistinguishable from a
   real 0 degC reading, which corrupted the raw-byte capture used to solve the
-  temperature scale. Each field now publishes as `null` until its DID has decoded
-  at least once in the session, and reverts to `null` when the session ends.
+  temperature scale. Each field now publishes as `null` until its DID has been
+  decoded at least once in the session, and reverts to `null` when the session
+  ends.
 - **A learned lock table could be applied to the wrong CAN frame.** A learning run
   always runs under the DBC-correct BPK packing, so the table it builds is calibrated
   against BPK frames. But when driving with Fix Hunting off the firmware sent the
