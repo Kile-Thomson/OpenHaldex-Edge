@@ -292,15 +292,13 @@ static void statusOutgoing(AsyncWebServerRequest *request)
         JsonObject uds = data["uds"].to<JsonObject>();
         uds["terminalVoltage"] = udsTerminalVoltage;
         uds["moduleTemp"] = udsModuleTemp;
-        // The 0x2BF1/0x2BE4 temp scale is an unvalidated disassembled guess that
-        // reads an impossible ~160 °C on the fin under load. Null the value rather
-        // than publish a physically impossible temperature; the front end shows
-        // "--". Expose the raw 16-bit wire value so the real decode can be solved
-        // against module temp as a trusted reference (see HALDEX-KNOWLEDGE.md).
-        if (uds_temp_plausible(udsClutchTemp)) uds["clutchTemp"] = udsClutchTemp;
-        else uds["clutchTemp"] = nullptr;
-        if (uds_temp_plausible(udsCoolingFinTemp)) uds["coolingFinTemp"] = udsCoolingFinTemp;
-        else uds["coolingFinTemp"] = nullptr;
+        // The 0x2BF1/0x2BE4 temp scale is still being calibrated: the shared
+        // (rawLE - 22767)/100 decode is a disassembled guess pending a two-point
+        // solve against module temp (see HALDEX-KNOWLEDGE.md). Publish the decoded
+        // value as-is - the reading is valuable - and also expose the raw 16-bit
+        // wire value so the corrected scale can be locked from real captures.
+        uds["clutchTemp"] = udsClutchTemp;
+        uds["coolingFinTemp"] = udsCoolingFinTemp;
         uds["clutchTempRaw"] = udsClutchTempRaw;
         uds["coolingFinTempRaw"] = udsCoolingFinTempRaw;
         uds["clutchCurrent"] = udsClutchCurrent;

@@ -172,10 +172,12 @@ solve offset and scale exactly for a linear decode. A single idle capture alread
 discriminates candidates: `/1024` vs `(raw-22767)/100` predict *different* raw values
 for the same known ~30, so one reading tells you which is right (or that neither is).
 
-Until validated, firmware nulls any temp outside -40..150 degC rather than publish
-the impossible 160 (`uds_temp_plausible`, `API.cpp`); the UI shows "--". The raw is
-always exposed for the capture. Strong prior: the corrected fin value lands under
-~64 degC.
+The decoded value keeps displaying (the reading is useful even before the scale is
+confirmed), and the raw 16-bit word is always exposed alongside it for the capture.
+Planned correction: with VCDS on a splitter, toggle one Haldex block on/off, find the
+byte that moves in the CAN sniff to pin the DID, then read VCDS's real number next to
+the raw bytes - each pair is a solved point, and offset + scale fall out. Strong prior:
+the corrected fin value lands under ~64 degC.
 
 ## 8. opendbc torque field definitions (the externally-proven part)
 
