@@ -157,6 +157,11 @@ float udsClutchTemp = 0.0f;
 float udsCoolingFinTemp = 0.0f;
 uint16_t udsClutchTempRaw = 0;
 uint16_t udsCoolingFinTempRaw = 0;
+// Per-DID freshness: false until the DID decodes at least once this session,
+// cleared on session teardown. The API publishes null (not the reset 0) while
+// false so a capture client can distinguish "no sample yet" from a real 0.
+bool udsClutchTempValid = false;
+bool udsCoolingFinTempValid = false;
 float udsClutchCurrent = 0.0f;
 uint8_t udsClutchPWM = 0;
 float udsClutchVoltage = 0.0f;

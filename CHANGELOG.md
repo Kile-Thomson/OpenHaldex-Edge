@@ -154,14 +154,20 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Fixed
 
-- **A learned lock table could be applied to the wrong CAN frame.** A Learn always
-  runs under the DBC-correct BPK packing, so the table it builds is calibrated
+- **Haldex temperatures could read a fake 0 before the first sample.** The UDS
+  clutch and cooling-fin temperatures (decoded and raw) are zero until the module
+  first answers, and were published to `/api` as `0` - indistinguishable from a
+  real 0 degC reading, which corrupted the raw-byte capture used to solve the
+  temperature scale. Each field now publishes as `null` until its DID has decoded
+  at least once in the session, and reverts to `null` when the session ends.
+- **A learned lock table could be applied to the wrong CAN frame.** A learning run
+  always runs under the DBC-correct BPK packing, so the table it builds is calibrated
   against BPK frames. But when driving with Fix Hunting off the firmware sent the
   legacy V3 frame while still applying that BPK-measured table - a mismatch that
   made lock behave differently than it did during the Learn (worst case, stuck at
   full lock). The frame selector now stays on BPK whenever a valid learn table
   exists, regardless of the Fix Hunting switch, so what you calibrated is what you
-  drive. Users who have never run a Learn are unaffected and keep the V3 default.
+  drive. Users who have never done a learning run are unaffected and keep the V3 default.
   The standalone CAN path now shares the same selector, so it can no longer drift
   from the passthrough path.
 - **Map slots read "Empty slot" on Load, and you couldn't choose which slot to

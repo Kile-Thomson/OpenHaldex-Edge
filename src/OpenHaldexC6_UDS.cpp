@@ -60,8 +60,8 @@ static void udsDecodeDID(uint16_t did, const twai_message_t &frame)
     if (n >= 2)
     {
         const uint16_t rawLE = (uint16_t)(((uint16_t)payload[1] << 8) | payload[0]);
-        if (did == 0x2BF1) udsClutchTempRaw = rawLE;
-        else if (did == 0x2BE4) udsCoolingFinTempRaw = rawLE;
+        if (did == 0x2BF1)      { udsClutchTempRaw = rawLE; udsClutchTempValid = true; }
+        else if (did == 0x2BE4) { udsCoolingFinTempRaw = rawLE; udsCoolingFinTempValid = true; }
     }
 
     float value;
@@ -176,6 +176,8 @@ void udsMQBTask(void *arg)
         udsCoolingFinTemp = 0.0f;
         udsClutchTempRaw   = 0;
         udsCoolingFinTempRaw = 0;
+        udsClutchTempValid = false;
+        udsCoolingFinTempValid = false;
         udsClutchCurrent   = 0.0f;
         udsClutchPWM       = 0;
         udsClutchVoltage   = 0.0f;

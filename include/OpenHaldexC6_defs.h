@@ -375,6 +375,8 @@ extern float udsCoolingFinTemp;  // 0x2BE4: LE16 (D6×256+D5 − 22767)/100 °C
 // HALDEX-KNOWLEDGE.md. Byte-swap in the reader to test the big-endian /1024 candidate.
 extern uint16_t udsClutchTempRaw;     // 0x2BF1 raw LE16, unscaled
 extern uint16_t udsCoolingFinTempRaw; // 0x2BE4 raw LE16, unscaled
+extern bool udsClutchTempValid;       // true once 0x2BF1 decoded this session
+extern bool udsCoolingFinTempValid;   // true once 0x2BE4 decoded this session
 extern float udsClutchCurrent;   // 0x2BE6: BE16 × 0.001 A
 extern uint8_t udsClutchPWM;     // 0x2BE7: raw % (1 byte, 0–100)
 extern float udsClutchVoltage;   // 0x2BE9: BE16 × 0.001 V

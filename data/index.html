@@ -293,9 +293,9 @@
                         <span class="toggle-label">Fix Hunting</span>
                     </label>
                     <p class="hint">Turn this on if the rear lock surges or won't hold steady at the part-lock modes (60:40, 75:25). Only the 554K Haldex controller needs it - leave it off otherwise.</p>
-                    <p class="hint">Lock calibration</p>
+                    <p class="hint" id="bpkCeilingLabel">Lock calibration</p>
                     <div class="slider-container" id="bpkCeilingContainer">
-                        <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider">
+                        <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider" aria-labelledby="bpkCeilingLabel">
                         <div class="slider-value"><span id="bpkCeilingValue">220</span> Nm</div>
                     </div>
                     <p class="hint">A per-car calibration number, NOT more lock and NOT your engine's torque. There is one correct value: the one where the lock you command matches what the Haldex actually delivers (1:1). Set it with the Learn - run a Learn and adjust this until the Sent vs Returned line sits on the 1:1 diagonal. Higher does not lock harder: too high and the coupling grabs early and slams shut; too low and it under-delivers. Once you have run a Learn this value applies whenever you drive - you do not need the Fix Hunting switch on for it to work.</p>

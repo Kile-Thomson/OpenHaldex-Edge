@@ -175,7 +175,11 @@ discriminates candidates: `/1024` vs `(raw-22767)/100` predict *different* raw v
 for the same known ~30, so one reading tells you which is right (or that neither is).
 
 The decoded value keeps displaying (the reading is useful even before the scale is
-confirmed), and the raw 16-bit word is always exposed alongside it for the capture.
+confirmed), and the raw 16-bit word is exposed alongside it for the capture. The
+`uds` object only appears when the module is present and MQB UDS is enabled
+(`haldexOk && udsMQBEnabled`), and each temp field (decoded and raw) publishes as
+`null` until its DID has decoded at least once this session - so a capture client
+never mistakes the reset 0 for a real reading.
 Planned correction: with VCDS on a splitter, toggle one Haldex block on/off, find the
 byte that moves in the CAN sniff to pin the DID, then read VCDS's real number next to
 the raw bytes - each pair is a solved point, and offset + scale fall out. Strong prior:
