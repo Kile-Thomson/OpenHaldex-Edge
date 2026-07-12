@@ -86,17 +86,19 @@ Two traps:
 - **Engagement % is NOT torque-split %** (see #6). Learn does not, and cannot,
   prove that 20% engagement = 20% of torque to the rear.
 - **A learn table is recorded under one packing and must be replayed under the
-  same one.** During any learn the passthrough path forces BPK (`Calculations.cpp:1115`,
-  `motor11_use_bpk_packing` returns `fixHunting || haldexLearnActive`), so on current
-  firmware a table is always a BPK-language artifact. Drive it in V3 and the lookup
-  hands V3 a CF that means something else -> stuck-at-100 at idle in Expert. This is
-  the "learn with the switch off, then it sits at 100%" symptom. (Fix under
-  discussion: gate the table to the packing it was recorded under.)
+  same one.** During any learn both frame paths force BPK, so a table is always a
+  BPK-language artifact. **Fixed:** `motor11_use_bpk_packing` now returns
+  `fixHunting || haldexLearnActive || haldexLearnTableValid` (`Calculations.cpp:1602`),
+  so once a valid table exists the frame path stays BPK on drive regardless of the
+  Fix Hunting switch. A BPK-calibrated table can no longer be applied to a V3 frame -
+  the "learn with the switch off, then it sits at 100%" mismatch is closed. An
+  untuned user (no table, switch off) still gets the legacy V3 default.
 
-**Standalone path asymmetry (open bug):** the standalone frame generator
-(`StandaloneCAN.cpp:1869`) uses raw `if (!fixHunting)` and does NOT force BPK during
-learn, so a standalone learn with Fix Hunting off records a flat ~100% garbage
-table. The passthrough path is protected; standalone is not.
+Both frame generators route through the same selector: the passthrough path
+(`Calculations.cpp:1115`) and the standalone path (`StandaloneCAN.cpp:1869`) both
+call `motor11_use_bpk_packing(fixHunting, haldexLearnActive, haldexLearnTableValid)`.
+The earlier standalone asymmetry (raw `if (!fixHunting)`, no BPK during learn) is
+resolved - the two paths can no longer drift.
 
 ## 5. Clutch pump PWM ~60% at full lock is NORMAL and healthy. (ground truth)
 

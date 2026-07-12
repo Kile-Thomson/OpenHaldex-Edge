@@ -94,11 +94,16 @@ uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_rec
 // the dominant torque demand and the Haldex just locks fully the whole sweep -
 // the "sits at 100% regardless" symptom, and a garbage flat learn table. BPK
 // derives every field from the modulated torque, so the sweep is visible. The
-// rule: BPK whenever the user enabled Fix Hunting OR a learn is active, so a
-// learn can never silently record a flat 100% table. Outside a learn the user's
-// toggle is honoured unchanged. Pure boolean logic, no Arduino symbols,
-// host-testable.
-bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active);
+// rule: BPK whenever the user enabled Fix Hunting OR a learn is active OR a valid
+// learn table exists. The table one closes a silent mismatch: a learn always runs
+// under BPK (learn_active forces it), so a learned table maps correction factor to
+// engagement measured against BPK frames. If the user then drove with Fix Hunting
+// off, get_lock_target_adjusted_value would apply that BPK-calibrated table to V3
+// frame bytes - a different frame the calibration was never measured against. So
+// once a table has been learned, drive BPK regardless of the toggle. An untuned
+// user (no table) still gets the legacy V3 default. Pure boolean logic, no Arduino
+// symbols, host-testable.
+bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_table_valid);
 
 // MQB Motor_11 (0x0A7) BPK torque-spoof packer. Fills out[0..7] with the
 // DBC-correct bit-packed engine-torque frame that provokes the Haldex to close

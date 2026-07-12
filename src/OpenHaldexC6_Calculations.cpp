@@ -1111,8 +1111,10 @@ void getLockData(twai_message_t &rx_message_chs)
       //                         lock (60/40, 70/30) where V3 packing causes hunting.
       // During a learn we force BPK regardless of the toggle: V3 pins the torque
       // fields at full, so a learn on V3 records a flat ~100% table (the "sits at
-      // 100% regardless" symptom). See motor11_use_bpk_packing.
-      if (!motor11_use_bpk_packing(fixHunting, haldexLearnActive))
+      // 100% regardless" symptom). A valid learn table also forces BPK, so a
+      // BPK-calibrated table is never applied to a V3 frame. See
+      // motor11_use_bpk_packing.
+      if (!motor11_use_bpk_packing(fixHunting, haldexLearnActive, haldexLearnTableValid))
       {
         rx_message_chs.data[0] = 0x00;                                        // checksum placeholder
         rx_message_chs.data[1] = MOTOR_11_counter;                            // rolling - 0x40>0x4F
@@ -1597,11 +1599,13 @@ uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_rec
 // a flat ~100% table (the observed "sits at 100% regardless" symptom). BPK
 // derives every field from the modulated torque, so the learn sweep is actually
 // visible to the Haldex. During a learn we therefore force BPK regardless of the
-// user toggle; outside a learn the user's fixHunting setting is honoured exactly
-// as before. Pure boolean logic, no Arduino symbols, host-testable.
-bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active)
+// user toggle. We also force BPK whenever a valid learn table exists: the table was
+// measured under BPK (the learn forces it), so applying it under V3 would calibrate
+// against a frame that mode never sends. Once learned, drive BPK; an untuned user
+// (no table) keeps the legacy V3 default. Pure boolean logic, host-testable.
+bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_table_valid)
 {
-  return fix_hunting || learn_active;
+  return fix_hunting || learn_active || learn_table_valid;
 }
 
 // Slew one BPK torque field one cycle toward `target`, moving at most `step` Nm.

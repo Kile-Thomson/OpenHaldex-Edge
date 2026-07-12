@@ -154,6 +154,16 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Fixed
 
+- **A learned lock table could be applied to the wrong CAN frame.** A Learn always
+  runs under the DBC-correct BPK packing, so the table it builds is calibrated
+  against BPK frames. But when driving with Fix Hunting off the firmware sent the
+  legacy V3 frame while still applying that BPK-measured table - a mismatch that
+  made lock behave differently than it did during the Learn (worst case, stuck at
+  full lock). The frame selector now stays on BPK whenever a valid learn table
+  exists, regardless of the Fix Hunting switch, so what you calibrated is what you
+  drive. Users who have never run a Learn are unaffected and keep the V3 default.
+  The standalone CAN path now shares the same selector, so it can no longer drift
+  from the passthrough path.
 - **Map slots read "Empty slot" on Load, and you couldn't choose which slot to
   save into.** Two problems in the on-device tune slots. First, the saved-tune
   list and the Load action decided "is this slot used?" with two different NVS
