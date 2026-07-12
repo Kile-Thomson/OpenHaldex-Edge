@@ -39,6 +39,15 @@ limiting - are Forbes's own work and are not repeated here.
   `responseLen` before it was used as the copy bound, collapsing every bound to
   zero so every `readDataByIdentifier` returned zero bytes. Capacity is now
   captured before it is zeroed, so the built-in ECU read returns real data.
+- **Implausible Haldex fin/clutch temperatures suppressed.** The 16-bit temp
+  DIDs (`0x2BE4` cooling fin, `0x2BF1` clutch) were decoded with an unvalidated
+  `(rawLE - 22767) / 100` scale disassembled from the upstream binary. It has no
+  ceiling and ran the cooling-fin reading to a physically impossible ~160C under
+  sustained pump duty. Any decoded temperature outside -40..150C is now nulled so
+  the UI shows `--` instead of a fabricated value, and the raw 16-bit wire words
+  are exposed in the `/api` JSON (`coolingFinTempRaw`, `clutchTempRaw`) so the
+  real scale can be solved from captures at two known temperatures. The broken
+  scale is left in place, not replaced with another guess.
 - **ESP_10 (0x116) E2E checksum DataID corrected.** The `ID_SEQ_116` array was
   all `0x05`, a verbatim copy of the EPB_01/0x104 table, so the live pass-through
   and standalone generator both produced a wrong checksum for the ESP_10 frame.
