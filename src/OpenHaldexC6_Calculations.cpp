@@ -1862,6 +1862,11 @@ int uds_parse_sf_rdbi(const uint8_t *data, uint8_t dlc, uint16_t did, uint8_t *o
   return payloadLen;
 }
 
+bool uds_temp_plausible(float degC)
+{
+  return degC >= -40.0f && degC <= 150.0f;
+}
+
 bool uds_scale_mqb_did(uint16_t did, const uint8_t *payload, uint8_t len, float &out)
 {
   if (payload == nullptr)

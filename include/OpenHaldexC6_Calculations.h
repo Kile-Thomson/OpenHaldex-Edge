@@ -240,3 +240,10 @@ int uds_parse_sf_rdbi(const uint8_t *data, uint8_t dlc, uint16_t did, uint8_t *o
 // big-endian. Returns false for a short payload or an unknown DID, leaving `out`
 // untouched.
 bool uds_scale_mqb_did(uint16_t did, const uint8_t *payload, uint8_t len, float &out);
+
+// uds_temp_plausible: true when a decoded Haldex temperature is within a
+// physically possible band (-40..150 °C). The 0x2BE4/0x2BF1 scale is an
+// unvalidated disassembled guess that reads an impossible ~160 °C on the fin
+// under load; callers null the display when this returns false rather than
+// showing a value the hardware cannot produce.
+bool uds_temp_plausible(float degC);

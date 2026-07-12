@@ -192,6 +192,17 @@ void test_scale_rejects_short_u16_payload(void)
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(-1234.0f, v, "out untouched on short payload");
 }
 
+void test_temp_plausible_band(void)
+{
+  // In-band values pass.
+  TEST_ASSERT_TRUE_MESSAGE(uds_temp_plausible(20.0f), "20 C is plausible");
+  TEST_ASSERT_TRUE_MESSAGE(uds_temp_plausible(-40.0f), "lower edge inclusive");
+  TEST_ASSERT_TRUE_MESSAGE(uds_temp_plausible(150.0f), "upper edge inclusive");
+  // The impossible ~160 C fin reading under load is rejected so callers null it.
+  TEST_ASSERT_FALSE_MESSAGE(uds_temp_plausible(160.0f), "160 C fin reading rejected");
+  TEST_ASSERT_FALSE_MESSAGE(uds_temp_plausible(-41.0f), "below band rejected");
+}
+
 // ===========================================================================
 // End-to-end: raw CAN frame -> parse -> scale, one per DID, as the poller runs.
 // ===========================================================================
@@ -249,6 +260,7 @@ int main(int argc, char **argv)
   RUN_TEST(test_scale_clutch_voltage);
   RUN_TEST(test_scale_rejects_unknown_did);
   RUN_TEST(test_scale_rejects_short_u16_payload);
+  RUN_TEST(test_temp_plausible_band);
 
   RUN_TEST(test_frame_to_value_round_trip);
 

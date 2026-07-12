@@ -368,6 +368,13 @@ extern float udsTerminalVoltage; // 0x0286: raw × 0.1 V
 extern float udsModuleTemp;      // 0x028D: raw − 55 °C  (1 byte, offset 55)
 extern float udsClutchTemp;      // 0x2BF1: LE16 (D6×256+D5 − 22767)/100 °C
 extern float udsCoolingFinTemp;  // 0x2BE4: LE16 (D6×256+D5 − 22767)/100 °C
+// Raw unscaled 16-bit wire value (LE = payload[1]<<8 | payload[0]) for the two
+// temp DIDs. The (raw-22767)/100 scale is Forbes' disassembled guess and produces
+// physically impossible values under load (fin ~160 °C). These expose the raw so
+// the decode can be solved against a trusted reference (module temp) — see
+// HALDEX-KNOWLEDGE.md. Byte-swap in the reader to test the big-endian /1024 candidate.
+extern uint16_t udsClutchTempRaw;     // 0x2BF1 raw LE16, unscaled
+extern uint16_t udsCoolingFinTempRaw; // 0x2BE4 raw LE16, unscaled
 extern float udsClutchCurrent;   // 0x2BE6: BE16 × 0.001 A
 extern uint8_t udsClutchPWM;     // 0x2BE7: raw % (1 byte, 0–100)
 extern float udsClutchVoltage;   // 0x2BE9: BE16 × 0.001 V
