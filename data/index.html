@@ -293,12 +293,12 @@
                         <span class="toggle-label">Fix Hunting</span>
                     </label>
                     <p class="hint">Turn this on if the rear lock surges or won't hold steady at the part-lock modes (60:40, 75:25). Only the 554K Haldex controller needs it - leave it off otherwise.</p>
-                    <p class="hint">Full-lock strength</p>
+                    <p class="hint">Full-lock calibration</p>
                     <div class="slider-container" id="bpkCeilingContainer">
                         <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider">
                         <div class="slider-value"><span id="bpkCeilingValue">220</span> Nm</div>
                     </div>
-                    <p class="hint">How hard the rear axle is pulled in at 100% lock. If full lock never feels like it fully engages, raise this a little. The default suits most cars - only change it if you're tuning for yours. Only does anything while Fix Hunting is on (or during a Learn).</p>
+                    <p class="hint">A per-car tuning number for Fix Hunting mode - NOT your engine's torque. There's a correct value where the lock you ask for matches what the Haldex actually delivers (1:1). Higher does not lock harder: set it too high and the coupling grabs early and slams shut. Find your value with a road-test sweep, don't guess. 220 is a safe starting point. Only does anything while Fix Hunting is on (or during a Learn).</p>
                 </div>
             </section>
 
