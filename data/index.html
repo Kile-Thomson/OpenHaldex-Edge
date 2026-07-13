@@ -10,7 +10,17 @@
     <meta http-equiv="Expires" content="0">
 
     <title>OpenHaldex-C6</title>
-    <link rel="stylesheet" href="style.css?v=8.00.14">
+
+    <!-- PWA: installable, full-screen standalone launch from the home screen. -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="OpenHaldex">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+
+    <link rel="stylesheet" href="style.css?v=8.00.15">
 </head>
 
 <body>
@@ -815,7 +825,7 @@
             </div>
         </aside>
 
-        <script src="./app.js?v=8.00.14" type="text/javascript"></script>
+        <script src="./app.js?v=8.00.15" type="text/javascript"></script>
         <!-- add version query param to force cache refresh on updates-->
     </div>
 </body>

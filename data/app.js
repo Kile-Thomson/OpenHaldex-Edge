@@ -172,6 +172,19 @@ var currentLock = [
 // this is possible a hack, but I can't think of a better way to do it(!)
 document.addEventListener("DOMContentLoaded", initStoredSettings);
 
+// Register the service worker so the app installs as a full-screen PWA and can
+// still open its shell when the module is briefly unreachable. Service workers
+// only run in a secure context (https or localhost); over plain http to the
+// module's LAN IP the registration rejects, so guard it and swallow the failure
+// rather than throw an uncaught error on every load.
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}
+
 // once settings are stored, start applying data where required
 function initApp() {
   //initStoredSettings(); // old
