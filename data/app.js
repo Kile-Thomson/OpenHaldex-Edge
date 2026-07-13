@@ -200,7 +200,7 @@ function initApp() {
   initLearn();
   initWifiSsid();
   initWifi();
-  //initOtaPage(); todo - currently just old OTA page, would like to incorporate the styling across
+  initOtaUpdate();
   guardScrollTaps(".toggle"); // stop scroll-flicks from flipping toggles
   guardTrackTaps(".slider", 24); // grab the thumb to move; a track tap does nothing
   guardTrackTaps(".slider-inline", 18);
@@ -2811,4 +2811,130 @@ function showNotification(message, type = "success") {
     notification.style.opacity = "0";
     setTimeout(() => notification.remove(), 300);
   }, 3000);
+}
+
+// Software Update card (Settings tab): live version/safe-state info from
+// /ota/info + /ota/check, then firmware and web-UI (LittleFS image) uploads
+// with real progress via XHR. The device reboots itself after a successful
+// upload; we poll /ota/health until it comes back and then reload.
+function initOtaUpdate() {
+  const version      = document.getElementById("otaVersion");
+  const build        = document.getElementById("otaBuild");
+  const slot         = document.getElementById("otaPartition");
+  const safeState    = document.getElementById("otaSafeState");
+  const safeReason   = document.getElementById("otaSafeReason");
+  const fwFile       = document.getElementById("otaFwFile");
+  const fwBtn        = document.getElementById("otaFwUpload");
+  const fsFile       = document.getElementById("otaFsFile");
+  const fsBtn        = document.getElementById("otaFsUpload");
+  const progressWrap = document.getElementById("otaProgressWrap");
+  const progressFill = document.getElementById("otaProgressFill");
+  const progressLbl  = document.getElementById("otaProgressLabel");
+  const result       = document.getElementById("otaResult");
+  if (!fwBtn || !fsBtn || !progressWrap || !result) return;
+
+  async function refreshInfo() {
+    const info = await fetchJson("/ota/info");
+    if (info) {
+      version.textContent = info.version || "--";
+      build.textContent = info.appDate ? info.appDate + " " + (info.appTime || "") : "--";
+      slot.textContent = info.partition || "--";
+    }
+    const check = await fetchJson("/ota/check");
+    if (check) {
+      safeState.textContent = check.allowed ? "Ready" : "Blocked";
+      safeState.style.color = check.allowed ? "var(--success)" : "var(--danger)";
+      if (check.reason) safeReason.textContent = check.reason;
+    }
+  }
+
+  refreshInfo();
+  // The safe-state can change (car starts moving, CAN fault) - refresh whenever
+  // the user lands on the Settings tab rather than polling continuously.
+  document.querySelectorAll('.nav-tab[data-page="settings"]').forEach((tab) => {
+    tab.addEventListener("click", refreshInfo);
+  });
+
+  function setProgress(pct) {
+    progressFill.style.width = pct + "%";
+    progressLbl.textContent = pct + "%";
+  }
+
+  // fetch() has no upload progress, so uploads go through XMLHttpRequest.
+  function uploadBin(url, fieldName, file) {
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", url);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      xhr.onload = () => resolve({ ok: xhr.status === 200, text: xhr.responseText || "" });
+      xhr.onerror = () => resolve({ ok: false, text: "Connection lost during upload" });
+      const form = new FormData();
+      form.append(fieldName, file, file.name);
+      xhr.send(form);
+    });
+  }
+
+  async function waitForReboot() {
+    result.textContent = "Update sent - module is rebooting. Waiting for it to come back...";
+    const start = Date.now();
+    while (Date.now() - start < 120000) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const resp = await fetch("/ota/health", { cache: "no-store" });
+        if (resp.ok) {
+          result.textContent = "Module is back - reloading...";
+          location.reload();
+          return;
+        }
+      } catch (e) {
+        // still down - keep waiting
+      }
+    }
+    result.textContent = "Module did not come back within 2 minutes. Check its power and WiFi, then reload this page.";
+    fwBtn.disabled = false;
+    fsBtn.disabled = false;
+  }
+
+  async function runUpload(fileInput, url, fieldName, kindLabel) {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      showNotification("Choose a .bin file first", "error");
+      return;
+    }
+    // Pre-flight the safe-state gate so a blocked update fails with a reason
+    // instead of dying mid-upload.
+    const check = await fetchJson("/ota/check");
+    if (!check) {
+      showNotification("Failed to reach device", "error");
+      return;
+    }
+    if (!check.allowed) {
+      showNotification(check.reason || "Module not in a safe state for updates", "error");
+      refreshInfo();
+      return;
+    }
+
+    fwBtn.disabled = true;
+    fsBtn.disabled = true;
+    progressWrap.style.display = "";
+    setProgress(0);
+    result.textContent = "Uploading " + kindLabel + ": " + file.name + " (do not close this page or power the module off)";
+
+    const res = await uploadBin(url, fieldName, file);
+    if (res.ok) {
+      setProgress(100);
+      await waitForReboot();
+    } else {
+      result.textContent = res.text || "Upload failed";
+      showNotification(res.text || "Upload failed", "error");
+      fwBtn.disabled = false;
+      fsBtn.disabled = false;
+      refreshInfo();
+    }
+  }
+
+  fwBtn.addEventListener("click", () => runUpload(fwFile, "/ota/update", "firmware", "firmware"));
+  fsBtn.addEventListener("click", () => runUpload(fsFile, "/ota/updatefs", "filesystem", "web UI"));
 }

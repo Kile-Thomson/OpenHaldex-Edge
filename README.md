@@ -227,13 +227,13 @@ data[7] = pedal_value
 
 There is no default password and no build step - you do not compile or flash anything to set one.
 
-On a fresh or factory-reset device, connect to the access point, open `192.168.1.1`, and the device sends you straight to a short setup page. Enter a password and confirm it (8-63 characters). That password is stored on the device and from then on is required for firmware updates and every setting-changing action. The setup page closes for good and the main UI loads.
+On a fresh or factory-reset device, connect to the access point, open `192.168.1.1`, and the device sends you straight to a short setup page. Enter a password and confirm it (8-63 characters). That becomes the **WiFi AP (WPA2) password** - the single auth boundary: anyone who can join the AP can use the UI and flash updates, anyone who cannot, cannot. The AP restarts secured and the main UI loads.
 
-Until you set it, flashing and all state-changing calls are **refused** (HTTP 503) - the device never runs with an empty or default credential.
+Until you set it, the AP runs open so you can reach the setup page - and while it is open, host-to-device CAN injection over the analyzer port is refused and the dashboard keeps redirecting to setup.
 
-**Changing it later.** Once set, rotate the password with an authenticated `POST /ota/credential`. The setup page does not reopen.
+**Changing it later.** Rotate the password from the WiFi Access Point card on the Diagnostics tab (or `POST /api/wifi`). Long-pressing the mode button resets the AP back to open.
 
-**The WiFi access point is open by default** so you can reach the setup page on first connection. Removing the committed password and requiring a login for every control action are what keep the CAN bus safe on an open AP - passive sniffing is harmless, and nothing can change the car's behaviour without the password.
+**The WiFi access point is open by default** so you can reach the setup page on first connection. Removing the committed password and refusing CAN injection until the AP is secured are what keep the CAN bus safe - passive sniffing is harmless, and nothing can change the car's behaviour until the network itself is locked.
 
 ---
 
@@ -332,19 +332,31 @@ pio run -e esp32c6-release
 
 **OTA update:**
 
-Once the device has an OTA credential provisioned, you can flash over WiFi. The
-device accepts an authenticated HTTP upload to `/ota/update` (it does not speak
-the espota protocol, so PlatformIO's `--upload-port <ip>` will not work):
+The easiest path is the **Software Update** card on the Settings tab of the web
+UI: it shows the current version and safe-state, and takes both a firmware
+image and a web-UI (LittleFS) image with upload progress. Access is gated by
+the WiFi AP password - anyone on the AP can update; there is no separate HTTP
+login.
+
+From the command line, the device accepts an HTTP upload to `/ota/update`
+(firmware) or `/ota/updatefs` (web-UI LittleFS image). It does not speak the
+espota protocol, so PlatformIO's `--upload-port <ip>` will not work:
 
 ```sh
 pio run -e esp32c6
-curl -u admin:your-ota-secret \
-  -F "firmware=@.pio/build/esp32c6/firmware.bin" \
+curl -F "firmware=@.pio/build/esp32c6/firmware.bin" \
   http://192.168.1.1/ota/update
+
+pio run -e esp32c6 -t buildfs
+curl -F "filesystem=@.pio/build/esp32c6/littlefs.bin" \
+  http://192.168.1.1/ota/updatefs
 ```
 
-The update is refused unless the safety checks pass (vehicle stationary, buses
-healthy, no Haldex temperature fault); check `GET /ota/check` first.
+Either update is refused unless the safety checks pass (vehicle stationary,
+buses healthy, no Haldex temperature fault); check `GET /ota/check` first. A
+filesystem update briefly takes the web UI offline and reboots the module when
+it completes; the firmware is untouched, so a failed upload just means
+re-uploading the image.
 
 For a ready-to-flash binary of this fork, see [Pre-built release binary](#pre-built-release-binary) above. For official, supported firmware, use the upstream build from [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater); note the upstream binary does not include the security and correctness fixes in this fork.
 

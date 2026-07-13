@@ -1,5 +1,7 @@
 #include <OpenHaldexC6_OTA.h>
 #include <OpenHaldexC6_Calculations.h> // wifi_password_provisioned
+#include <LittleFS.h>                  // unmount before rewriting the FS partition
+#include <esp_partition.h>             // raw partition writes for the web-UI image
 
 //static AsyncWebServer *otaServer = nullptr;
 
@@ -305,6 +307,107 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
 }
 
 // ============================================================================
+// Filesystem (web UI) Update Handler - SAFETY-CRITICAL: Blocks unsafe updates
+// ============================================================================
+// Writes a LittleFS image straight to the filesystem partition so the web UI
+// can be updated over the air. Same chunk-0 authorization pattern as
+// handleOTAUpdate above: the safe-state gate runs on chunk 0 and sets
+// _tempObject as the "authorized" marker; later chunks no-op while it is null.
+// Unlike the app path there is no esp_ota_end() image validation, so chunk 0
+// also rejects anything carrying the ESP firmware image magic (0xE9) - the one
+// realistic wrong-file mistake that would otherwise blank the UI silently.
+// ============================================================================
+
+#define FS_OTA_SECTOR_SIZE 4096 // SPI flash erase granularity
+
+static const esp_partition_t *fsPartition = nullptr;
+static size_t fsErasedUpTo = 0; // erase high-water mark, always sector-aligned
+
+void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+  if (index == 0) {
+    // SAFETY CHECK: block update if system is not in a safe state.
+    if (!isSystemSafeForOTA()) {
+      request->send(403, "text/plain", "FS OTA BLOCKED: System not in safe state. Vehicle must be stationary, CAN initialized, outputs safe, no faults.");
+      return;
+    }
+
+    // Wrong-file guard: a firmware image starts with the ESP image magic byte
+    // 0xE9; a LittleFS image never does.
+    if (len > 0 && data[0] == 0xE9) {
+      request->send(400, "text/plain", "FS OTA ERROR: This looks like a firmware image. Upload littlefs.bin here; firmware goes in the firmware slot.");
+      return;
+    }
+
+    fsPartition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+    if (fsPartition == NULL) {
+      request->send(500, "text/plain", "FS OTA ERROR: No filesystem partition found. Check partition table.");
+      return;
+    }
+
+    otaUpdateInProgress = true;
+    fsErasedUpTo = 0;
+
+    // The web UI is served from this partition - unmount before overwriting.
+    // From here until the post-update reboot, static file requests will fail;
+    // the uploading client is told to stay on the page.
+    LittleFS.end();
+
+#if enableDebug || detailedDebugWiFi
+    DEBUG("[OTA] Starting filesystem update to partition: %s (%u bytes)", fsPartition->label, (unsigned)fsPartition->size);
+#endif
+
+    request->_tempObject = malloc(1);
+    if (request->_tempObject == nullptr) {
+      otaUpdateInProgress = false;
+      request->send(500, "text/plain", "FS OTA ERROR: Out of memory");
+      return;
+    }
+  } else if (request->_tempObject == nullptr) {
+    // First chunk was rejected (auth / safety / partition) -> ignore every later chunk.
+    return;
+  }
+
+  if (index + len > fsPartition->size) {
+    request->send(400, "text/plain", "FS OTA ERROR: Image larger than filesystem partition");
+    otaUpdateInProgress = false;
+    return;
+  }
+
+  // Erase ahead of the write cursor in whole sectors - upload chunks arrive at
+  // arbitrary sizes, but flash erases only in FS_OTA_SECTOR_SIZE blocks.
+  size_t needed = index + len;
+  if (needed > fsErasedUpTo) {
+    size_t eraseEnd = (needed + FS_OTA_SECTOR_SIZE - 1) & ~(size_t)(FS_OTA_SECTOR_SIZE - 1);
+    if (eraseEnd > fsPartition->size) eraseEnd = fsPartition->size;
+    esp_err_t eraseErr = esp_partition_erase_range(fsPartition, fsErasedUpTo, eraseEnd - fsErasedUpTo);
+    if (eraseErr != ESP_OK) {
+      request->send(500, "text/plain", "FS OTA ERROR: Erase failed");
+      otaUpdateInProgress = false;
+      return;
+    }
+    fsErasedUpTo = eraseEnd;
+  }
+
+  esp_err_t err = esp_partition_write(fsPartition, index, data, len);
+  if (err != ESP_OK) {
+    request->send(500, "text/plain", "FS OTA ERROR: Write failed");
+    otaUpdateInProgress = false;
+    return;
+  }
+
+  if (final) {
+#if enableDebug || detailedDebugWiFi
+    DEBUG("[OTA] Filesystem update complete (%u bytes). Rebooting...", (unsigned)(index + len));
+#endif
+    request->send(200, "text/plain", "Filesystem update complete. Rebooting...");
+
+    // Small delay to allow response to be sent
+    delay(1000);
+    ESP.restart();
+  }
+}
+
+// ============================================================================
 // Setup OTA Server
 // ============================================================================
 void setupOTA() {
@@ -464,6 +567,22 @@ void setupOTA() {
       request->send(200, "text/plain", "Ready for upload");
     },
     handleOTAUpdate);
+
+  // SAFETY-CRITICAL: Filesystem (web UI) update endpoint. Same auth and
+  // safe-state model as /ota/update; handleFSUpdate re-checks safe-state on
+  // chunk 0 and sends the definitive response from the body handler.
+  webServer.on(
+    "/ota/updatefs", HTTP_POST,
+    [](AsyncWebServerRequest *request) {
+      // SAFETY CHECK: Block if system not safe
+      if (!isSystemSafeForOTA()) {
+        request->send(403, "application/json", "{\"error\":\"OTA BLOCKED: System not in safe state\"}");
+        return;
+      }
+
+      request->send(200, "text/plain", "Ready for upload");
+    },
+    handleFSUpdate);
 
   // Legacy endpoint for AsyncElegantOTA compatibility (redirects to new endpoint)
   webServer.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {

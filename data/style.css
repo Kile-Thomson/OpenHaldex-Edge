@@ -1786,6 +1786,29 @@ button,
     transition: border-color 0.2s, box-shadow 0.2s;
 }
 
+/* Software Update card: .bin pickers for firmware / web-UI uploads */
+.ota-file {
+    flex: 1;
+    min-width: 0;
+    padding: 0.6rem;
+    background: var(--surface-light);
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-dim);
+    font-size: 0.9rem;
+}
+
+.ota-file::file-selector-button {
+    margin-right: 0.75rem;
+    padding: 0.4rem 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
 .input-wifi-password::placeholder {
     color: var(--text-dim);
 }

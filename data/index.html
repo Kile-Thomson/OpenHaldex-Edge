@@ -499,6 +499,55 @@
                     </div>
                 </div>
             </section>
+
+            <section class="card" id="otaSection">
+                <h2>Software Update</h2>
+                <div class="diag-grid">
+                    <div class="diag-item">
+                        <span class="diag-label">Firmware:</span>
+                        <span class="diag-value" id="otaVersion">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Built:</span>
+                        <span class="diag-value" id="otaBuild">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Running slot:</span>
+                        <span class="diag-value" id="otaPartition">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Update state:</span>
+                        <span class="diag-value" id="otaSafeState">--</span>
+                    </div>
+                </div>
+                <p class="hint" id="otaSafeReason">Updates are blocked unless the car is stationary with no CAN faults. On a bench with no CAN connected they are always allowed.</p>
+
+                <h3 class="subsection-title">Firmware</h3>
+                <p class="hint">Upload a firmware.bin. It is written to the spare slot and the module reboots into it; if the new build fails its safety checks the module rolls back to this one. Settings and the learn table are kept.</p>
+                <div class="wifi-password-row">
+                    <input type="file" id="otaFwFile" accept=".bin" class="ota-file" aria-label="Firmware image file">
+                </div>
+                <div class="wifi-controls">
+                    <button class="btn-secondary" id="otaFwUpload">Upload Firmware</button>
+                </div>
+
+                <h3 class="subsection-title">Web Interface</h3>
+                <p class="hint">Upload a littlefs.bin to update this web UI. The module reboots when it finishes. Stay on this page and keep the module powered during the upload - if it is interrupted the UI stays blank until a new image is uploaded (this page keeps working from your phone's cache to retry), but the firmware itself is untouched.</p>
+                <div class="wifi-password-row">
+                    <input type="file" id="otaFsFile" accept=".bin" class="ota-file" aria-label="Web interface image file">
+                </div>
+                <div class="wifi-controls">
+                    <button class="btn-secondary" id="otaFsUpload">Upload Web UI</button>
+                </div>
+
+                <div class="learn-progress-wrap" id="otaProgressWrap" style="display:none;">
+                    <div class="learn-progress-bar">
+                        <div class="learn-progress-fill" id="otaProgressFill"></div>
+                    </div>
+                    <span class="learn-progress-label" id="otaProgressLabel">0%</span>
+                </div>
+                <p class="hint" id="otaResult" role="status" aria-live="polite"></p>
+            </section>
         </div>
 
         <div class="page" id="basic-page">
