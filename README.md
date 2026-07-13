@@ -333,18 +333,29 @@ pio run -e esp32c6-release
 **OTA update:**
 
 The easiest path is the **Software Update** card on the Settings tab of the web
-UI: it shows the current version and safe-state, and takes both a firmware
-image and a web-UI (LittleFS) image with upload progress. Access is gated by
-the WiFi AP password - anyone on the AP can update; there is no separate HTTP
-login.
+UI: it shows the current version and safe-state, and has a single upload slot
+with progress. Give it the release's merged image (the same single file used
+for USB flashing) and it updates the firmware and the web UI in one go - the
+device splits the image by flash offset and skips the bootloader, partition
+table and NVS regions, so settings and the learn table are kept. A bare
+`firmware.bin` or `littlefs.bin` works too when only one half changed. Access
+is gated by the WiFi AP password - anyone on the AP can update; there is no
+separate HTTP login.
 
 From the command line, the device accepts an HTTP upload to `/ota/update`
-(firmware) or `/ota/updatefs` (web-UI LittleFS image). It does not speak the
-espota protocol, so PlatformIO's `--upload-port <ip>` will not work:
+(merged image, firmware, or LittleFS image - it classifies the file from its
+first bytes) or `/ota/updatefs` (explicitly the web-UI LittleFS image). It
+does not speak the espota protocol, so PlatformIO's `--upload-port <ip>` will
+not work:
 
 ```sh
+# everything in one file
+curl -F "update=@.pio/build/esp32c6-release/firmware-merged.bin" \
+  http://192.168.1.1/ota/update
+
+# or just one half
 pio run -e esp32c6
-curl -F "firmware=@.pio/build/esp32c6/firmware.bin" \
+curl -F "update=@.pio/build/esp32c6/firmware.bin" \
   http://192.168.1.1/ota/update
 
 pio run -e esp32c6 -t buildfs
@@ -352,11 +363,11 @@ curl -F "filesystem=@.pio/build/esp32c6/littlefs.bin" \
   http://192.168.1.1/ota/updatefs
 ```
 
-Either update is refused unless the safety checks pass (vehicle stationary,
+Any update is refused unless the safety checks pass (vehicle stationary,
 buses healthy, no Haldex temperature fault); check `GET /ota/check` first. A
-filesystem update briefly takes the web UI offline and reboots the module when
-it completes; the firmware is untouched, so a failed upload just means
-re-uploading the image.
+filesystem or merged update briefly takes the web UI offline and reboots the
+module when it completes; if a filesystem upload fails partway the firmware is
+untouched, so recovery is just re-uploading the image.
 
 For a ready-to-flash binary of this fork, see [Pre-built release binary](#pre-built-release-binary) above. For official, supported firmware, use the upstream build from [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater); note the upstream binary does not include the security and correctness fixes in this fork.
 

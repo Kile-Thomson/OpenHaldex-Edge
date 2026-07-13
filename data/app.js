@@ -2823,15 +2823,13 @@ function initOtaUpdate() {
   const slot         = document.getElementById("otaPartition");
   const safeState    = document.getElementById("otaSafeState");
   const safeReason   = document.getElementById("otaSafeReason");
-  const fwFile       = document.getElementById("otaFwFile");
-  const fwBtn        = document.getElementById("otaFwUpload");
-  const fsFile       = document.getElementById("otaFsFile");
-  const fsBtn        = document.getElementById("otaFsUpload");
+  const fileInput    = document.getElementById("otaFile");
+  const uploadBtn    = document.getElementById("otaUpload");
   const progressWrap = document.getElementById("otaProgressWrap");
   const progressFill = document.getElementById("otaProgressFill");
   const progressLbl  = document.getElementById("otaProgressLabel");
   const result       = document.getElementById("otaResult");
-  if (!fwBtn || !fsBtn || !progressWrap || !result) return;
+  if (!fileInput || !uploadBtn || !progressWrap || !result) return;
 
   async function refreshInfo() {
     const info = await fetchJson("/ota/info");
@@ -2893,14 +2891,39 @@ function initOtaUpdate() {
       }
     }
     result.textContent = "Module did not come back within 2 minutes. Check its power and WiFi, then reload this page.";
-    fwBtn.disabled = false;
-    fsBtn.disabled = false;
+    uploadBtn.disabled = false;
   }
 
-  async function runUpload(fileInput, url, fieldName, kindLabel) {
+  // Mirror of the firmware's upload classifier, used only for the status label
+  // and to reject an obviously wrong file before wasting an upload. The
+  // firmware re-checks server-side and is authoritative. A littlefs image has
+  // "littlefs" at byte 8; ESP firmware/bootloader images start with 0xE9, and a
+  // merged full-flash image is far larger than one firmware slot.
+  async function classifyFile(file) {
+    try {
+      const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+      if (head.length >= 16 &&
+          String.fromCharCode.apply(null, Array.from(head.slice(8, 16))) === "littlefs") {
+        return "web UI";
+      }
+      if (head[0] === 0xe9) {
+        return file.size > 0x1a0000 ? "full package (firmware + web UI)" : "firmware";
+      }
+      return null;
+    } catch (e) {
+      return "update"; // can't sniff (old browser) - let the module decide
+    }
+  }
+
+  async function runUpload() {
     const file = fileInput.files && fileInput.files[0];
     if (!file) {
       showNotification("Choose a .bin file first", "error");
+      return;
+    }
+    const kindLabel = await classifyFile(file);
+    if (!kindLabel) {
+      showNotification("That file is not a firmware, web-UI, or merged update image", "error");
       return;
     }
     // Pre-flight the safe-state gate so a blocked update fails with a reason
@@ -2916,25 +2939,22 @@ function initOtaUpdate() {
       return;
     }
 
-    fwBtn.disabled = true;
-    fsBtn.disabled = true;
+    uploadBtn.disabled = true;
     progressWrap.style.display = "";
     setProgress(0);
     result.textContent = "Uploading " + kindLabel + ": " + file.name + " (do not close this page or power the module off)";
 
-    const res = await uploadBin(url, fieldName, file);
+    const res = await uploadBin("/ota/update", "update", file);
     if (res.ok) {
       setProgress(100);
       await waitForReboot();
     } else {
       result.textContent = res.text || "Upload failed";
       showNotification(res.text || "Upload failed", "error");
-      fwBtn.disabled = false;
-      fsBtn.disabled = false;
+      uploadBtn.disabled = false;
       refreshInfo();
     }
   }
 
-  fwBtn.addEventListener("click", () => runUpload(fwFile, "/ota/update", "firmware", "firmware"));
-  fsBtn.addEventListener("click", () => runUpload(fsFile, "/ota/updatefs", "filesystem", "web UI"));
+  uploadBtn.addEventListener("click", runUpload);
 }

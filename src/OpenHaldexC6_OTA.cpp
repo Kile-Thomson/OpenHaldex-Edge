@@ -1,5 +1,6 @@
 #include <OpenHaldexC6_OTA.h>
 #include <OpenHaldexC6_Calculations.h> // wifi_password_provisioned
+#include <OpenHaldexC6_OTARoute.h>     // upload classification + merged-image chunk routing (host-tested)
 #include <LittleFS.h>                  // unmount before rewriting the FS partition
 #include <esp_partition.h>             // raw partition writes for the web-UI image
 
@@ -191,7 +192,44 @@ bool needsFirmwareConfirmation() {
 // ============================================================================
 // OTA Update Handler - SAFETY-CRITICAL: Blocks unsafe updates
 // ============================================================================
-//        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+// /ota/update accepts three image types, classified from the first chunk (see
+// OpenHaldexC6_OTARoute.h): a bare firmware.bin (dual-slot app OTA), a bare
+// littlefs.bin (delegated to handleFSUpdate), or the release's
+// firmware-merged.bin - the same single file used for USB flashing - whose app
+// and filesystem segments are split out by flash offset and written to their
+// partitions. The bootloader / partition-table / NVS regions of a merged image
+// are never written, so settings and the learn table survive.
+// ============================================================================
+
+#define FS_OTA_SECTOR_SIZE 4096 // SPI flash erase granularity
+
+static const esp_partition_t *fsPartition = nullptr;
+static size_t fsErasedUpTo = 0; // erase high-water mark, always sector-aligned
+
+// What the in-flight upload was classified as on chunk 0. One OTA upload at a
+// time (matching the single otaHandle above); a failure mid-upload flips this
+// back to OTA_KIND_INVALID so the dead upload's remaining chunks no-op.
+static ota_upload_kind_t uploadKind = OTA_KIND_INVALID;
+
+// Merged-image source windows: absolute offsets within the uploaded file where
+// the app and filesystem segments sit (a merged image mirrors flash layout).
+static size_t mergedAppSrcStart = 0, mergedAppSrcEnd = 0;
+static size_t mergedFsSrcStart = 0, mergedFsSrcEnd = 0;
+static bool mergedFsUnmounted = false;
+
+void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
+
+// Erase the filesystem partition ahead of the write cursor in whole sectors -
+// upload chunks arrive at arbitrary sizes, but flash erases only in
+// FS_OTA_SECTOR_SIZE blocks.
+static esp_err_t fsEraseAhead(size_t needed) {
+  if (needed <= fsErasedUpTo) return ESP_OK;
+  size_t eraseEnd = (needed + FS_OTA_SECTOR_SIZE - 1) & ~(size_t)(FS_OTA_SECTOR_SIZE - 1);
+  if (eraseEnd > fsPartition->size) eraseEnd = fsPartition->size;
+  esp_err_t err = esp_partition_erase_range(fsPartition, fsErasedUpTo, eraseEnd - fsErasedUpTo);
+  if (err == ESP_OK) fsErasedUpTo = eraseEnd;
+  return err;
+}
 
 void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
   // SAFETY CHECK: the safe-state gate must be enforced HERE, not in the onRequest
@@ -211,18 +249,53 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
       return;
     }
 
-    otaUpdateInProgress = true;
-
-    // Get next OTA partition
-    otaPartition = esp_ota_get_next_update_partition(NULL);
-    if (otaPartition == NULL) {
+    // Classify the upload so one endpoint (and one Settings-page file input)
+    // takes firmware.bin, littlefs.bin, or firmware-merged.bin.
+    const esp_partition_t *nextApp = esp_ota_get_next_update_partition(NULL);
+    const esp_partition_t *fsPart = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+    if (nextApp == NULL) {
       request->send(500, "text/plain", "OTA ERROR: No OTA partition found. Check partition table.");
-      otaUpdateInProgress = false;
+      return;
+    }
+    uploadKind = ota_classify_upload(data, len, request->contentLength(),
+                                     nextApp->size,
+                                     fsPart ? fsPart->address : SIZE_MAX);
+
+    if (uploadKind == OTA_KIND_FS) {
+      // A bare littlefs.bin - the filesystem handler owns the whole upload.
+      handleFSUpdate(request, filename, index, data, len, final);
+      return;
+    }
+    if (uploadKind == OTA_KIND_INVALID) {
+      request->send(400, "text/plain", "OTA ERROR: Unrecognized file. Upload firmware-merged.bin (full package), firmware.bin, or littlefs.bin.");
       return;
     }
 
+    if (uploadKind == OTA_KIND_MERGED) {
+      // A merged image mirrors absolute flash offsets: its app segment sits at
+      // ota_0's address (a dual-slot app image runs from either slot), its
+      // filesystem segment at the fs partition's address. classify() can only
+      // return MERGED when fsPart resolved, but keep the write path honest.
+      const esp_partition_t *ota0 = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
+      if (ota0 == NULL || fsPart == NULL) {
+        request->send(500, "text/plain", "OTA ERROR: Partition table missing ota_0 or filesystem entry.");
+        uploadKind = OTA_KIND_INVALID;
+        return;
+      }
+      mergedAppSrcStart = ota0->address;
+      mergedAppSrcEnd = ota0->address + nextApp->size;
+      mergedFsSrcStart = fsPart->address;
+      mergedFsSrcEnd = fsPart->address + fsPart->size;
+      mergedFsUnmounted = false;
+      fsPartition = fsPart;
+      fsErasedUpTo = 0;
+    }
+
+    otaUpdateInProgress = true;
+    otaPartition = nextApp;
+
 #if enableDebug || detailedDebugWiFi
-    DEBUG("[OTA] Starting update to partition: %s", otaPartition->label);
+    DEBUG("[OTA] Starting %s update to partition: %s", uploadKind == OTA_KIND_MERGED ? "merged (firmware + web UI)" : "firmware", otaPartition->label);
 #endif
 
     // Begin OTA update
@@ -230,6 +303,7 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
     if (beginErr != ESP_OK) {
       request->send(500, "text/plain", "OTA ERROR: Failed to begin update");
       otaUpdateInProgress = false;
+      uploadKind = OTA_KIND_INVALID;
       return;
     }
 
@@ -240,26 +314,74 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
     if (request->_tempObject == nullptr) {
       esp_ota_abort(otaHandle);
       otaUpdateInProgress = false;
+      uploadKind = OTA_KIND_INVALID;
       request->send(500, "text/plain", "OTA ERROR: Out of memory");
       return;
     }
-  } else if (request->_tempObject == nullptr) {
-    // First chunk was rejected (auth / safety / begin) -> ignore every later chunk.
-    return;
+  } else {
+    if (uploadKind == OTA_KIND_FS) {
+      // Later chunks of a delegated littlefs.bin upload.
+      handleFSUpdate(request, filename, index, data, len, final);
+      return;
+    }
+    if (request->_tempObject == nullptr || uploadKind == OTA_KIND_INVALID) {
+      // Chunk 0 was rejected, or the upload already failed -> ignore the rest.
+      return;
+    }
   }
 
   // Write data chunk
-  esp_err_t err = esp_ota_write(otaHandle, data, len);
-  if (err != ESP_OK) {
-    request->send(500, "text/plain", "OTA ERROR: Write failed");
-    esp_ota_abort(otaHandle);
-    otaUpdateInProgress = false;
-    return;
+  if (uploadKind == OTA_KIND_MERGED) {
+    size_t srcOff = 0, dstOff = 0, n;
+
+    // App segment -> spare app slot via the OTA handle. Chunks arrive in file
+    // order, so the app bytes reach esp_ota_write sequentially; the 0xFF pad
+    // between the real image and the slot end writes harmlessly to erased
+    // flash and esp_ota_end() validates only the image proper.
+    n = ota_region_overlap(index, len, mergedAppSrcStart, mergedAppSrcEnd, &srcOff, &dstOff);
+    if (n > 0) {
+      esp_err_t werr = esp_ota_write(otaHandle, data + srcOff, n);
+      if (werr != ESP_OK) {
+        request->send(500, "text/plain", "OTA ERROR: Write failed");
+        esp_ota_abort(otaHandle);
+        otaUpdateInProgress = false;
+        uploadKind = OTA_KIND_INVALID;
+        return;
+      }
+    }
+
+    // Filesystem segment -> fs partition. Unmount on first touch: the web UI
+    // is served from this partition and it is rewritten in place.
+    n = ota_region_overlap(index, len, mergedFsSrcStart, mergedFsSrcEnd, &srcOff, &dstOff);
+    if (n > 0) {
+      if (!mergedFsUnmounted) {
+        LittleFS.end();
+        mergedFsUnmounted = true;
+      }
+      esp_err_t werr = fsEraseAhead(dstOff + n);
+      if (werr == ESP_OK) werr = esp_partition_write(fsPartition, dstOff, data + srcOff, n);
+      if (werr != ESP_OK) {
+        request->send(500, "text/plain", "OTA ERROR: Filesystem write failed");
+        esp_ota_abort(otaHandle);
+        otaUpdateInProgress = false;
+        uploadKind = OTA_KIND_INVALID;
+        return;
+      }
+    }
+  } else {
+    esp_err_t werr = esp_ota_write(otaHandle, data, len);
+    if (werr != ESP_OK) {
+      request->send(500, "text/plain", "OTA ERROR: Write failed");
+      esp_ota_abort(otaHandle);
+      otaUpdateInProgress = false;
+      uploadKind = OTA_KIND_INVALID;
+      return;
+    }
   }
 
   // Final chunk - finish OTA
   if (final) {
-    err = esp_ota_end(otaHandle);
+    esp_err_t err = esp_ota_end(otaHandle);
     if (err != ESP_OK) {
       if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
         request->send(400, "text/plain", "OTA ERROR: Image validation failed");
@@ -268,6 +390,7 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
       }
       esp_ota_abort(otaHandle);
       otaUpdateInProgress = false;
+      uploadKind = OTA_KIND_INVALID;
       return;
     }
 
@@ -276,6 +399,7 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
     if (err != ESP_OK) {
       request->send(500, "text/plain", "OTA ERROR: Failed to set boot partition");
       otaUpdateInProgress = false;
+      uploadKind = OTA_KIND_INVALID;
       return;
     }
 
@@ -284,7 +408,9 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
     DEBUG("[OTA SAFETY] New firmware will require confirmation on boot");
 #endif
 
-    request->send(200, "text/plain", "OTA update complete. Rebooting... Firmware will be confirmed after safety checks pass.");
+    request->send(200, "text/plain", uploadKind == OTA_KIND_MERGED
+      ? "Update complete (firmware + web UI). Rebooting... Firmware will be confirmed after safety checks pass."
+      : "OTA update complete. Rebooting... Firmware will be confirmed after safety checks pass.");
 
     // Small delay to allow response to be sent
     delay(1000);
@@ -314,14 +440,9 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
 // handleOTAUpdate above: the safe-state gate runs on chunk 0 and sets
 // _tempObject as the "authorized" marker; later chunks no-op while it is null.
 // Unlike the app path there is no esp_ota_end() image validation, so chunk 0
-// also rejects anything carrying the ESP firmware image magic (0xE9) - the one
-// realistic wrong-file mistake that would otherwise blank the UI silently.
+// requires the littlefs superblock magic - any other file (a firmware image,
+// a random download) is rejected before it can blank the UI silently.
 // ============================================================================
-
-#define FS_OTA_SECTOR_SIZE 4096 // SPI flash erase granularity
-
-static const esp_partition_t *fsPartition = nullptr;
-static size_t fsErasedUpTo = 0; // erase high-water mark, always sector-aligned
 
 void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
   if (index == 0) {
@@ -331,10 +452,11 @@ void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t inde
       return;
     }
 
-    // Wrong-file guard: a firmware image starts with the ESP image magic byte
-    // 0xE9; a LittleFS image never does.
-    if (len > 0 && data[0] == 0xE9) {
-      request->send(400, "text/plain", "FS OTA ERROR: This looks like a firmware image. Upload littlefs.bin here; firmware goes in the firmware slot.");
+    // Wrong-file guard: a littlefs image carries the "littlefs" superblock
+    // magic at byte 8. Anything else - a firmware image, a random file - gets
+    // rejected before it can overwrite the web UI.
+    if (!ota_image_is_littlefs(data, len)) {
+      request->send(400, "text/plain", "FS OTA ERROR: Not a littlefs image. Upload littlefs.bin here, or use firmware-merged.bin for a full update.");
       return;
     }
 
@@ -373,19 +495,11 @@ void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t inde
     return;
   }
 
-  // Erase ahead of the write cursor in whole sectors - upload chunks arrive at
-  // arbitrary sizes, but flash erases only in FS_OTA_SECTOR_SIZE blocks.
-  size_t needed = index + len;
-  if (needed > fsErasedUpTo) {
-    size_t eraseEnd = (needed + FS_OTA_SECTOR_SIZE - 1) & ~(size_t)(FS_OTA_SECTOR_SIZE - 1);
-    if (eraseEnd > fsPartition->size) eraseEnd = fsPartition->size;
-    esp_err_t eraseErr = esp_partition_erase_range(fsPartition, fsErasedUpTo, eraseEnd - fsErasedUpTo);
-    if (eraseErr != ESP_OK) {
-      request->send(500, "text/plain", "FS OTA ERROR: Erase failed");
-      otaUpdateInProgress = false;
-      return;
-    }
-    fsErasedUpTo = eraseEnd;
+  esp_err_t eraseErr = fsEraseAhead(index + len);
+  if (eraseErr != ESP_OK) {
+    request->send(500, "text/plain", "FS OTA ERROR: Erase failed");
+    otaUpdateInProgress = false;
+    return;
   }
 
   esp_err_t err = esp_partition_write(fsPartition, index, data, len);
@@ -552,9 +666,11 @@ void setupOTA() {
     request->send(200, "application/json", json);
   });
 
-  // SAFETY-CRITICAL: OTA update endpoint. Network access is gated by the WiFi AP
-  // password (the single auth boundary); this handler only enforces the safe-state
-  // gate. The upload body handler (handleOTAUpdate) re-checks safe-state on chunk 0.
+  // SAFETY-CRITICAL: OTA update endpoint. Accepts firmware.bin, littlefs.bin,
+  // or firmware-merged.bin - the body handler classifies from the first chunk.
+  // Network access is gated by the WiFi AP password (the single auth boundary);
+  // this handler only enforces the safe-state gate. The upload body handler
+  // (handleOTAUpdate) re-checks safe-state on chunk 0.
   webServer.on(
     "/ota/update", HTTP_POST,
     [](AsyncWebServerRequest *request) {

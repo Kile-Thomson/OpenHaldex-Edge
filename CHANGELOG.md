@@ -211,18 +211,27 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Added
 
-- **Software Update card with web-UI OTA.** The Settings tab now has a Software
-  Update section: current firmware version/build/slot, the live safe-state gate
-  with its blocking reason, and upload-with-progress for two image types. The
-  firmware path uses the existing dual-slot OTA (write to spare slot, reboot,
-  auto-rollback on failed safety checks). New in this fork's firmware is a
-  filesystem OTA path (`POST /ota/updatefs`) that writes a LittleFS image
-  straight to the filesystem partition, so web-UI updates no longer need a USB
-  cable. Same safe-state gating as firmware OTA, plus a magic-byte guard that
-  rejects a firmware image aimed at the filesystem slot. Previously the OTA
-  endpoints existed but nothing in the UI linked to them - updating meant
-  knowing to type `/update` into the address bar, and the web UI itself could
-  not be updated over the air at all.
+- **Software Update card with single-file OTA.** The Settings tab now has a
+  Software Update section: current firmware version/build/slot, the live
+  safe-state gate with its blocking reason, and one upload-with-progress slot.
+  It takes the release's single merged image - the same file used for USB
+  flashing - and updates firmware and web UI in one upload, so an end user
+  handles exactly one file. `POST /ota/update` classifies the upload from its
+  first bytes: a merged image is split by flash offset (app segment to the
+  spare OTA slot, filesystem segment to the LittleFS partition; the
+  bootloader, partition table and NVS regions are skipped, so settings and the
+  learn table survive), while a bare `firmware.bin` or `littlefs.bin` still
+  works for partial updates (`POST /ota/updatefs` remains as the explicit
+  filesystem endpoint). The firmware path keeps the dual-slot OTA semantics
+  (write to spare slot, reboot, auto-rollback on failed safety checks), and
+  everything sits behind the same safe-state gate. Wrong-file guards check
+  real image magics: filesystem writes require the littlefs superblock magic,
+  and an ESP image too big for the app slot but too short to be a merged image
+  is rejected as truncated. The classification and merged-image chunk routing
+  live in a host-tested pure header (`OpenHaldexC6_OTARoute.h`). Previously
+  the OTA endpoints existed but nothing in the UI linked to them - updating
+  meant knowing to type `/update` into the address bar, and the web UI itself
+  could not be updated over the air at all.
 
 - **Installable PWA.** The web UI can be added to a phone home screen and
   launched full-screen with one tap: web app manifest, generated icon set

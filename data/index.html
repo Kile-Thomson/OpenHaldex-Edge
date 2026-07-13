@@ -522,22 +522,14 @@
                 </div>
                 <p class="hint" id="otaSafeReason">Updates are blocked unless the car is stationary with no CAN faults. On a bench with no CAN connected they are always allowed.</p>
 
-                <h3 class="subsection-title">Firmware</h3>
-                <p class="hint">Upload a firmware.bin. It is written to the spare slot and the module reboots into it; if the new build fails its safety checks the module rolls back to this one. Settings and the learn table are kept.</p>
+                <h3 class="subsection-title">Update</h3>
+                <p class="hint">Upload one file from a release: <strong>the merged .bin</strong> updates everything - firmware and this web UI - in a single go. A bare firmware.bin or littlefs.bin also works if you only need one half; the module works out which it got. Settings and the learn table are kept. Firmware goes to the spare slot and rolls back automatically if the new build fails its safety checks.</p>
+                <p class="hint">Stay on this page and keep the module powered during the upload. It reboots when the update finishes and this page reloads itself.</p>
                 <div class="wifi-password-row">
-                    <input type="file" id="otaFwFile" accept=".bin" class="ota-file" aria-label="Firmware image file">
+                    <input type="file" id="otaFile" accept=".bin" class="ota-file" aria-label="Update file">
                 </div>
                 <div class="wifi-controls">
-                    <button class="btn-secondary" id="otaFwUpload">Upload Firmware</button>
-                </div>
-
-                <h3 class="subsection-title">Web Interface</h3>
-                <p class="hint">Upload a littlefs.bin to update this web UI. The module reboots when it finishes. Stay on this page and keep the module powered during the upload - if it is interrupted the UI stays blank until a new image is uploaded (this page keeps working from your phone's cache to retry), but the firmware itself is untouched.</p>
-                <div class="wifi-password-row">
-                    <input type="file" id="otaFsFile" accept=".bin" class="ota-file" aria-label="Web interface image file">
-                </div>
-                <div class="wifi-controls">
-                    <button class="btn-secondary" id="otaFsUpload">Upload Web UI</button>
+                    <button class="btn-secondary" id="otaUpload">Upload &amp; Install</button>
                 </div>
 
                 <div class="learn-progress-wrap" id="otaProgressWrap" style="display:none;">
