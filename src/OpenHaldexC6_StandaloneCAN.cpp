@@ -286,7 +286,7 @@ void Gen1_frames10()
 
 void Gen1_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Motor_1 (0x280, DLC 8) - main engine ECU broadcast (vw_pq.dbc: Motor_1).
   frame.identifier = MOTOR1_ID;
   frame.extd = 0;
@@ -390,7 +390,7 @@ void Gen1_frames1000()
 // All transmitted on the haldex bus (twai_bus_1).
 void Gen2_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Bremse_1 (0x1A0, DLC 8) - ABS/ESP main broadcast (vw_pq.dbc: Bremse_1).
   frame.identifier = BRAKES1_ID;
   frame.data_length_code = 8;
@@ -526,7 +526,7 @@ void Gen2_frames10()
 
 void Gen2_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Motor_1 (0x280, DLC 8) - engine ECU broadcast (vw_pq.dbc: Motor_1).
   // Lock-adjusted bytes bias inneres_Motor_Moment / mechanisches_Verlustmoment so the
   // haldex thinks the engine is producing more torque than it actually is.
@@ -596,7 +596,7 @@ void Gen2_frames20()
 
 void Gen2_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_1 (0x320, DLC 8) - instrument-cluster broadcast (vw_pq.dbc: Kombi_1).
   frame.identifier = mKombi_1;
   frame.data_length_code = 8;
@@ -621,7 +621,7 @@ void Gen2_frames1000() {}
 // All frames go out on the haldex bus (twai_bus_1).
 void Gen4_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ LW_1 / mLW_1 (0x0C2, DLC 8) - steering-angle replay (vw_pq.dbc: LW_1).
   frame.identifier = mLW_1;
   frame.extd = 0;
@@ -708,7 +708,7 @@ void Gen4_frames10()
 
 void Gen4_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Bremse_2 (0x5A0, DLC 8) - ESP/ABS sensor broadcast (vw_pq.dbc: Bremse_2).
   frame.identifier = BRAKES2_ID;
   frame.data_length_code = 8;
@@ -728,7 +728,7 @@ void Gen4_frames20()
 
 void Gen4_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_1 (0x320, DLC 8) - instrument-cluster broadcast (vw_pq.dbc: Kombi_1).
   frame.identifier = mKombi_1;
   frame.data_length_code = 8;
@@ -758,7 +758,7 @@ void Gen4_frames25()
 
 void Gen4_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Gate_Komf_1 (0x390, DLC 8) - gateway-comfort broadcast (vw_pq.dbc: Gate_Komf_1).
   frame.identifier = mGate_Komf_1;
   frame.data_length_code = 8;
@@ -789,7 +789,7 @@ void Gen4_frames100()
 
 void Gen4_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_2 (0x420, DLC 8) - cluster temps (vw_pq.dbc: Kombi_2).
   frame.identifier = mKombi_2;
   frame.data_length_code = 8;
@@ -806,7 +806,7 @@ void Gen4_frames200()
 
 void Gen4_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Diagnose_1 (0x7D0, DLC 8) - diagnostic timestamp broadcast (vw_pq.dbc: Diagnose_1).
   frame.identifier = mDiagnose_1;
   frame.data_length_code = 8;
@@ -940,7 +940,7 @@ void gen41DualBusRatesTask(void *arg)
       extern twai_message_t gen41_bus0_cache_c1;
       extern bool gen41_bus0_cache_valid_c1;
       extern portMUX_TYPE gen41_bus0_cache_mux;
-      twai_message_t tx;
+      twai_message_t tx = {};
       bool has_frame = false;
       taskENTER_CRITICAL(&gen41_bus0_cache_mux);
       if (gen41_bus0_cache_valid_c1)
@@ -961,7 +961,7 @@ void gen41DualBusRatesTask(void *arg)
       extern twai_message_t gen41_bus0_cache_c5;
       extern bool gen41_bus0_cache_valid_c5;
       extern portMUX_TYPE gen41_bus0_cache_mux;
-      twai_message_t tx;
+      twai_message_t tx = {};
       bool has_frame = false;
       taskENTER_CRITICAL(&gen41_bus0_cache_mux);
       if (gen41_bus0_cache_valid_c5)
@@ -1222,7 +1222,7 @@ static inline uint8_t gen41_wheel_status_byte(uint8_t roll, uint8_t seq,
 
 void Gen41_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1352,7 +1352,7 @@ void Gen41_frames20()
   uint8_t step = static_cast<uint8_t>(Gen41_1CE234_counter & 0x03);
   uint8_t d4_common = (step == 0) ? 0x00 : static_cast<uint8_t>(0x100 - step);
 
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1428,7 +1428,7 @@ void Gen41_frames20()
 
 void Gen41_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1517,7 +1517,7 @@ void Gen41_frames25()
 
 void Gen41_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1586,7 +1586,7 @@ void Gen41_frames100()
 
 void Gen41_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1636,7 +1636,7 @@ void Gen41_frames200()
 
 void Gen41_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
   const uint32_t now_ms = millis();
@@ -1678,7 +1678,7 @@ void Gen41_frames1000()
 
 void Gen41_frames13()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1706,7 +1706,7 @@ void Gen41_frames13()
 
 void Gen41_frames50()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1731,7 +1731,7 @@ void Gen41_frames50()
 
 void Gen41_frames250()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1753,7 +1753,7 @@ void Gen41_frames250()
 
 void Gen5_0CQ_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB ESP_18 (0x135, DLC 8) - ESP minor broadcast. Fixed response, no changes.
   frame.identifier = ESP_18; // 0x135.  Fixed response, no changes
   frame.extd = 0;
@@ -1978,7 +1978,7 @@ void Gen5_0CQ_frames10()
 
 void Gen5_0CQ_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB Motor_20 (0x121, DLC 8) - accelerator pedal raw/filtered + status.
   // MO_Accelerator_Raw_Value_01 (raw pedal), MO_Fahrpedal_Roh, MO_Pedal_Filt.
   frame.identifier = MOTOR_20;      // MOTOR_20 0x121
@@ -2131,7 +2131,7 @@ void Gen5_0CQ_frames20()
 
 void Gen5_0CQ_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB Kombi_01 (0x30B, DLC 8) - instrument cluster broadcast.
   // KBI_Kilometerstand (odometer), KBI_Geschw_Anzeige (displayed speed), warning lamps.
   frame.identifier = KOMBI_01; // kombi 1 0x30b
@@ -2149,7 +2149,7 @@ void Gen5_0CQ_frames25()
 
 void Gen5_0CQ_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB ESP_23 (0x5BE, DLC 8) - longitudinal/lateral acceleration, tyre data.
   // BR_Laengsbeschleunigung (longitudinal G), BR_Querbeschleunigung (lateral G), BR_Tire_Circumference.
   frame.identifier = ESP_23;                            // ESP_23 0x5be - this is fixed in Savvy but CHKS in Kmatrix?
@@ -2278,7 +2278,7 @@ void Gen5_0CQ_frames100()
 
 void Gen5_0CQ_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ mKombi_2 (0x0C2, DLC 8) - electronic power steering / instrument-cluster slow.
   // Transmit currently disabled (commented out below).
   frame.identifier = mKombi_2; // electronic power steering 0x0C2
@@ -2296,7 +2296,7 @@ void Gen5_0CQ_frames200()
 
 void Gen5_0CQ_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB Motor_07 (0x640, DLC 8) - engine slow-rate diagnostics broadcast.
   frame.identifier = MOTOR_07; // motor 07, 1000ms
   frame.data_length_code = 8;  // DLC 8
@@ -2420,7 +2420,7 @@ void Gen5_0CQ_frames1000()
 // =============================================================================
 void Gen5_0AY_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ LW_1 / mLW_1 (0x0C2, DLC 8) - steering-angle replay (vw_pq.dbc: LW_1).
   frame.identifier = mLW_1;
   frame.extd = 0;
@@ -2581,7 +2581,7 @@ void Gen5_0AY_frames10()
 
 void Gen5_0AY_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Bremse_2 (0x5A0, DLC 8) - ESP/ABS sensor broadcast (vw_pq.dbc: Bremse_2).
   frame.identifier = BRAKES2_ID;
   frame.data_length_code = 8;
@@ -2635,7 +2635,7 @@ void Gen5_0AY_frames20()
 
 void Gen5_0AY_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_1 (0x320, DLC 8) - instrument-cluster broadcast (vw_pq.dbc: Kombi_1).
   frame.identifier = mKombi_1;
   frame.data_length_code = 8;
@@ -2665,7 +2665,7 @@ void Gen5_0AY_frames25()
 
 void Gen5_0AY_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Gate_Komf_1 (0x390, DLC 8) - gateway-comfort broadcast (vw_pq.dbc: Gate_Komf_1).
   frame.identifier = mGate_Komf_1;
   frame.data_length_code = 8;
@@ -2723,7 +2723,7 @@ void Gen5_0AY_frames100()
 
 void Gen5_0AY_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_2 (0x420, DLC 8) - cluster temps (vw_pq.dbc: Kombi_2).
   frame.identifier = mKombi_2;
   frame.data_length_code = 8;
@@ -2740,7 +2740,7 @@ void Gen5_0AY_frames200()
 
 void Gen5_0AY_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Diagnose_1 (0x7D0, DLC 8) - diagnostic timestamp broadcast (vw_pq.dbc: Diagnose_1).
   frame.identifier = mDiagnose_1;
   frame.data_length_code = 8;
@@ -2785,7 +2785,7 @@ void Gen5_0AY_frames1000()
 
 void Gen42_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr  = 0;
 
@@ -2882,7 +2882,7 @@ void Gen42_frames10()
 
 void Gen42_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr  = 0;
 
@@ -2983,7 +2983,7 @@ void Gen42_frames20()
 
 void Gen42_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr  = 0;
 
@@ -3013,7 +3013,7 @@ void Gen42_frames100()
 
 void Gen42_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr  = 0;
 
@@ -3054,7 +3054,7 @@ void Gen42_frames200()
 
 void Gen42_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr  = 0;
 

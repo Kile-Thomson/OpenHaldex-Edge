@@ -105,7 +105,7 @@ void udsMQBTask(void *arg)
         const uint8_t sessReq[] = {0x10, 0x03};
         udsSendFrame(kReqId, sessReq, sizeof(sessReq));
 
-        twai_message_t sessResp;
+        twai_message_t sessResp = {};
         if (xQueueReceive(udsRxQueue, &sessResp, pdMS_TO_TICKS(2000)) != pdTRUE)
         {
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -142,7 +142,7 @@ void udsMQBTask(void *arg)
             {
                 const uint32_t kWindow = 500; // ms total receive window per DID
                 uint32_t deadline = millis() + kWindow;
-                twai_message_t rsp;
+                twai_message_t rsp = {};
                 for (;;)
                 {
                     uint32_t elapsed = millis();
@@ -293,7 +293,7 @@ bool UDS::sendRequest(uint32_t requestId,
             return false;
 
         // Wait for Flow Control frame from ECU (on responseId) before sending Consecutive frames
-        twai_message_t fc;
+        twai_message_t fc = {};
         if (!receiveFrame(fc, timeoutMs))
             return false;
 
@@ -338,7 +338,7 @@ bool UDS::sendRequest(uint32_t requestId,
 
     // Collect response from ECU
     responseLen = 0;
-    twai_message_t frame;
+    twai_message_t frame = {};
 
     if (!receiveFrame(frame, timeoutMs))
         return false;

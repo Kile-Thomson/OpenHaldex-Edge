@@ -70,8 +70,10 @@
 #define serialMonitorRefresh 1000 // Serial Monitor refresh rate in ms
 #define updateTriggersRefresh 500 // change IO refresh rate in ms
 
-// debugging macros
-#ifdef enableDebug
+// debugging macros. Must be #if, not #ifdef: enableDebug is ALWAYS defined
+// (as 0 or 1) by the blocks above, so #ifdef selected the live Serial.printf
+// variant even in release builds.
+#if enableDebug
 #define DEBUG(x, ...) Serial.printf(x "\n", ##__VA_ARGS__)
 #define DEBUG_(x, ...) Serial.printf(x, ##__VA_ARGS__)
 #else

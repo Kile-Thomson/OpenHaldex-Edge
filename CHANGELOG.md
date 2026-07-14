@@ -35,6 +35,28 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Firmware correctness
 
+- **Stock mode no longer mirrors engagement back as the lock command.** The
+  lock-target calculation returned the Haldex's own reported engagement as the
+  commanded target for Stock mode (both the base mode and a force-mode trigger
+  configured to Stock). Whenever that value was packed into transmitted frames
+  (standalone always; inline while editing), engagement 100% commanded 100%,
+  closing a positive feedback loop that latched the clutch at full lock until
+  FWD was selected or the unit power-cycled. Stock now commands zero forced
+  lock, and the inline gateway detects "effective mode is Stock" (base mode or
+  forced value) and forwards chassis frames untouched - true passthrough
+  instead of frame edits built from mirrored engagement.
+- **Standalone CAN frames no longer transmit uninitialized flag bits.** Around
+  40 frame builders declared the outgoing `twai_message_t` on the stack and set
+  only the identifier, length and data, leaving the flags word (extended-ID,
+  remote-request, single-shot, self-reception) as stack garbage. A stray RTR or
+  extended-ID bit would silently corrupt the keep-alive frames the Haldex
+  depends on. Every local frame is now zero-initialized at declaration.
+- **Debug printf calls no longer compile into release builds.** The `DEBUG()`
+  macros were gated with `#ifdef enableDebug`, but `enableDebug` is always
+  defined (as 0 or 1), so the live `Serial.printf` variant was selected even in
+  the release build - per-second status prints on a serial port that release
+  never opens, with every format string baked into flash. The gate is now
+  `#if enableDebug`, restoring the intended release behaviour.
 - **UDS::sendRequest capacity bug fixed.** The function zeroed the in/out
   `responseLen` before it was used as the copy bound, collapsing every bound to
   zero so every `readDataByIdentifier` returned zero bytes. Capacity is now

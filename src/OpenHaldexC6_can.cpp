@@ -27,7 +27,7 @@ void broadcastOpenHaldex(void *arg)
     xSemaphoreGive(stateMutex);
 
     // build up the 'OpenHaldex' frame for broadcasting back over CAN
-    twai_message_t broadcast_frame;
+    twai_message_t broadcast_frame = {};
     broadcast_frame.identifier = OPENHALDEX_BROADCAST_ID;
     broadcast_frame.extd = 0;
     broadcast_frame.rtr = 0;
@@ -709,8 +709,20 @@ void parseCAN_chs(void *arg)
           const openhaldex_mode_t modeSnapshot = state.mode;
           xSemaphoreGive(stateMutex);
 
-          // Edit the CAN frame, if not in STOCK mode (or if learn is active - learn must run regardless of mode)
-          if (modeSnapshot != MODE_STOCK || haldexLearnActive)
+          // Effective mode: an active force trigger's value overrides the base
+          // mode (get_forced_mode_value pairs each feature with its own flag, so
+          // a stray tcForceModeFlag with the TC feature disabled cannot trigger).
+          // When the EFFECTIVE mode is Stock - base mode Stock with no trigger,
+          // or a trigger whose configured value is Stock - the only correct
+          // behaviour is untouched passthrough. Editing frames in stock used to
+          // mirror received_haldex_engagement back as the command, closing a
+          // feedback loop that latched the clutch at 100% until FWD/power cycle.
+          const int forcedMode = get_forced_mode_value();
+          const bool stockEffective = (forcedMode >= 0) ? (forcedMode == 0)
+                                                        : (modeSnapshot == MODE_STOCK);
+
+          // Edit the CAN frame unless effective-stock (learn must run regardless of mode)
+          if (!stockEffective || haldexLearnActive)
           {
             if (haldexGeneration == 1 || haldexGeneration == 2 || haldexGeneration == 4 || haldexGeneration == 50 || haldexGeneration == 51 || haldexGeneration == 41)
             {
@@ -719,36 +731,11 @@ void parseCAN_chs(void *arg)
           }
           else
           {
+            // Stock passthrough: mirror the Haldex's reported engagement for
+            // telemetry only; the frame itself is forwarded untouched below.
             xSemaphoreTake(stateMutex, portMAX_DELAY);
             lock_target = received_haldex_engagement;
             xSemaphoreGive(stateMutex);
-
-            /*
-                        if (extBtnForceMode || tcForceMode || hazardForceMode)
-            {
-              if (extButtonForceModeFlag || tcForceModeFlag || hazardForceModeFlag) // if either flag is active, return the forced lock value, otherwise return 0
-              {
-                getLockData(rx_message_chs);
-              }
-            }
-          }
-            */
-
-            // Only force the lock when an *enabled* feature's own flag is active.
-            // Pair each feature with its matching flag - tcForceModeFlag in
-            // particular is driven straight off the car's ESP/ASR "passive" CAN
-            // bit and can be set even when the TC-force feature is disabled. If
-            // the flags were OR'd independently of their enables, a stray
-            // tcForceModeFlag would keep calling getLockData() after the hazard
-            // switch released, and get_lock_target_adjustment() would fall through
-            // to MODE_STOCK's default (return 0 / FWD) - leaving the unit stuck
-            // open instead of reverting to stock passthrough.
-            if ((extBtnForceMode && extButtonForceModeFlag) ||
-                (tcForceMode && tcForceModeFlag) ||
-                (hazardForceMode && hazardForceModeFlag))
-            {
-              getLockData(rx_message_chs);
-            }
           }
 
           // Optional brake/handbrake override (followBrake/followHandbrake +

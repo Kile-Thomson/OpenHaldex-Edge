@@ -198,15 +198,19 @@ void test_adjustment_mode_expert_enabled_uses_map(void)
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(40.0f, get_lock_target_adjustment(), "adjustment MODE_EXPERT map");
 }
 
-void test_adjustment_mode_stock_mirrors_engagement(void)
+void test_adjustment_mode_stock_commands_zero(void)
 {
-  // MODE_STOCK is a passthrough: the lock target mirrors the engagement the
-  // Haldex itself reports, it does not force the clutch open.
+  // MODE_STOCK must command zero forced lock and must NEVER mirror
+  // received_haldex_engagement back: the return value is packed into
+  // transmitted frames (standalone always, inline when editing), so mirroring
+  // engagement closes a positive feedback loop that latches the clutch at 100%
+  // (the stuck-at-100% field bug). Inline stock passthrough is handled by the
+  // caller skipping frame edits, not by this function.
   state.mode                 = MODE_STOCK;
+  received_haldex_engagement = 100;
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, get_lock_target_adjustment(), "adjustment MODE_STOCK never mirrors engagement");
   received_haldex_engagement = 37;
-  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(37.0f, get_lock_target_adjustment(), "adjustment MODE_STOCK passthrough");
-  received_haldex_engagement = 0;
-  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, get_lock_target_adjustment(), "adjustment MODE_STOCK engagement 0");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, get_lock_target_adjustment(), "adjustment MODE_STOCK commands zero");
 }
 
 // --- lock_enabled() == false branches (throttle gate fails) ---------------
@@ -243,11 +247,41 @@ void test_adjustment_7525_lock_disabled_is_zero(void)
 // mode switch; which trigger wins is picked by forceModesPriority (default 0 =
 // Hazard > TC > Ext). Each trigger carries its own force value 0..5.
 
-void test_force_ext_value0_stock_mirrors_engagement(void)
+void test_force_ext_value0_stock_commands_zero(void)
 {
+  // Force value 0 (Stock) commands zero lock - same never-mirror rule as
+  // MODE_STOCK above. The inline gateway detects force-Stock via
+  // get_forced_mode_value() and passes frames through untouched instead.
   extBtnForceMode = true; extButtonForceModeFlag = true; extBtnForceModeValue = 0;
   received_haldex_engagement = 42;
-  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(42.0f, get_lock_target_adjustment(), "force ext value=0 (stock passthrough)");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, get_lock_target_adjustment(), "force ext value=0 (stock) never mirrors engagement");
+}
+
+// --- get_forced_mode_value(): the effective-mode seam used by parseCAN_chs ---
+
+void test_forced_mode_value_none_active(void)
+{
+  // No trigger enabled -> -1 (no force mode applies).
+  TEST_ASSERT_EQUAL_INT_MESSAGE(-1, get_forced_mode_value(), "forced mode: none enabled");
+
+  // Enabled but flag not asserted -> still -1.
+  tcForceMode = true; tcForceModeFlag = false;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(-1, get_forced_mode_value(), "forced mode: enabled, flag off");
+
+  // Flag asserted but feature disabled (stray ESP 'passiv' bit) -> still -1.
+  tcForceMode = false; tcForceModeFlag = true;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(-1, get_forced_mode_value(), "forced mode: flag on, feature off");
+}
+
+void test_forced_mode_value_active_and_priority(void)
+{
+  extBtnForceMode = true; extButtonForceModeFlag = true; extBtnForceModeValue = 3;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(3, get_forced_mode_value(), "forced mode: ext value 3");
+
+  // Hazard (value 0 = Stock) beats Ext under default priority 0.
+  hazardForceMode = true; hazardForceModeFlag = true; hazardForceModeValue = 0;
+  forceModesPriority = 0;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, get_forced_mode_value(), "forced mode: hazard-stock wins priority 0");
 }
 
 void test_force_ext_value1_fwd_is_zero(void)
@@ -579,13 +613,15 @@ int main(int, char **)
   RUN_TEST(test_adjustment_mode_6040_enabled_is_40);
   RUN_TEST(test_adjustment_mode_7525_enabled_is_30);
   RUN_TEST(test_adjustment_mode_expert_enabled_uses_map);
-  RUN_TEST(test_adjustment_mode_stock_mirrors_engagement);
+  RUN_TEST(test_adjustment_mode_stock_commands_zero);
   RUN_TEST(test_adjustment_5050_lock_disabled_is_zero);
   RUN_TEST(test_adjustment_6040_lock_disabled_is_zero);
   RUN_TEST(test_adjustment_7525_lock_disabled_is_zero);
 
   // force-mode override branches
-  RUN_TEST(test_force_ext_value0_stock_mirrors_engagement);
+  RUN_TEST(test_force_ext_value0_stock_commands_zero);
+  RUN_TEST(test_forced_mode_value_none_active);
+  RUN_TEST(test_forced_mode_value_active_and_priority);
   RUN_TEST(test_force_ext_value1_fwd_is_zero);
   RUN_TEST(test_force_ext_value2_5050_is_100);
   RUN_TEST(test_force_ext_value3_6040_is_40);
