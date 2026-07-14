@@ -2,7 +2,7 @@
 #include <OpenHaldexC6_defs.h>
 
 // Current firmware version
-#define FW_VERSION "8.00.15" // update this with every firmware release AND change .html version query param to force cache refresh of web UI
+#define FW_VERSION "8.00.16" // update this with every firmware release AND change .html version query param to force cache refresh of web UI
 
 /*
 Version Control:
@@ -66,6 +66,7 @@ V8.00.12 - expert map library: removed the built-in preset templates (kept only 
 V8.00.13 - expert page: Restore Defaults now sits beside Apply below the 3D surface; corrected the "Restore Defaults" lock table to match the firmware's actual shipped default (it was applying a different table); dropped the redundant "Saved on device" heading from the Maps dropdown; collapsed the verbose expert instructions into a one-line lead plus an expandable so the grid sits higher on a phone
 V8.00.14 - Gen5 BPK (Fix Hunting) full-lock torque is now a user setting instead of a hardcoded 220 Nm: adjustable 100-500 Nm on the Settings page so a controller that never reaches full engagement can be dialled in (MQB signal max 509 Nm). Fixed the underlying uint8 math that capped BPK torque at 255 Nm regardless, and de-duplicated the standalone and CAN-passthrough Motor_11 packing into one host-tested function so the two modes can no longer drift. Also corrected the VAG no-learn-table fallback correction-factor formula (was over-delivering ~20% engagement)
 V8.00.15 - Software Update card on the Settings page: one upload slot with progress that takes the release's single merged image (firmware + web UI in one file, the same file used for USB flashing) as well as a bare firmware.bin or littlefs.bin. /ota/update classifies the file from its first bytes; a merged image is split by flash offset into the app slot and filesystem partition, so a full update is one file and no USB. Web UI is now an installable PWA (manifest, icons, service worker) for full-screen single-tap launch from a phone home screen
+V8.00.16 - full-screen toggle in the web UI header: uses the Fullscreen API, which works over plain http (PWA install needs a secure context, so Android Chrome only offers a shortcut); manifest gains display_override: fullscreen for installs made from a secure context
 */
 
 

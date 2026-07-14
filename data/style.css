@@ -126,6 +126,53 @@ header h1 .accent {
     color: var(--danger);
 }
 
+/* Fullscreen toggle in the header. Rendered footprint is compact so the badge
+   row keeps its space, but a transparent padding box extends the hit area to
+   ~44px for touch. Hidden until app.js confirms the Fullscreen API exists
+   (iPhone Safari has no page fullscreen at all). */
+.btn-fullscreen {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin: -8px -8px -8px 0;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.btn-fullscreen:active {
+    color: var(--text);
+}
+
+.btn-fullscreen:focus-visible {
+    outline: 2px solid var(--primary-light);
+    outline-offset: 2px;
+}
+
+.btn-fullscreen .fs-icon {
+    width: 20px;
+    height: 20px;
+}
+
+/* Icon swap: show "enter" arrows normally, "exit" arrows while fullscreen. */
+.btn-fullscreen .fs-icon-exit {
+    display: none;
+}
+
+.btn-fullscreen[aria-pressed="true"] .fs-icon-enter {
+    display: none;
+}
+
+.btn-fullscreen[aria-pressed="true"] .fs-icon-exit {
+    display: block;
+}
+
 /* Navigation. Mobile-first: a fixed bottom tab bar (thumb reach, native-app
    feel), switching to a conventional top tab row on wide screens. */
 .nav-tabs {

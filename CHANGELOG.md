@@ -343,6 +343,13 @@ limiting - are Forbes's own work and are not repeated here.
   Apple meta tags alone; Android Chrome may open as a browser tab over plain
   http (secure-context rule), where Samsung Internet is more lenient.
 
+- **Full-screen toggle in the header.** One tap hides the browser chrome using
+  the Fullscreen API, which - unlike PWA install - works over plain http, so an
+  unmodified phone gets the full-screen dashboard without any flags or install
+  step. The button hides itself where the API doesn't exist (iPhone Safari).
+  The manifest also declares `display_override: fullscreen`, so where the app
+  is installed from a secure context it launches truly full-screen.
+
 - **Plain-English help across the tuning UI.** The drive-mode drawer now
   describes what each mode actually does (Stock passes the factory engagement
   through, FWD holds the rear open, 50:50/60:40/75:25 hold progressively lighter

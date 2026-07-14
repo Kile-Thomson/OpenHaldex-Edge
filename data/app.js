@@ -185,6 +185,47 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
   });
 }
 
+// Header fullscreen toggle. The Fullscreen API works over plain http (unlike
+// PWA install, which needs a secure context), so this is the path to a
+// full-screen experience on an unmodified phone: one tap hides the browser
+// chrome. The button stays hidden where the API doesn't exist (iPhone Safari
+// has no page fullscreen).
+function initFullscreen() {
+  const btn = document.getElementById("fullscreenToggle");
+  if (!btn) return;
+
+  const root = document.documentElement;
+  const request = root.requestFullscreen || root.webkitRequestFullscreen;
+  if (!request) return; // leave the button hidden
+  btn.hidden = false;
+
+  const active = () =>
+    !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+  const sync = () => {
+    const on = active();
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.setAttribute("aria-label", on ? "Exit full screen" : "Enter full screen");
+    btn.title = on ? "Exit full screen" : "Full screen";
+  };
+
+  btn.addEventListener("click", () => {
+    if (active()) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+      // navigationUI:"hide" is ignored where unsupported; the promise rejects
+      // if the browser refuses (e.g. not a user gesture), which we swallow -
+      // the icon simply stays on "enter".
+      const p = request.call(root, { navigationUI: "hide" });
+      if (p && p.catch) p.catch(() => {});
+    }
+  });
+
+  document.addEventListener("fullscreenchange", sync);
+  document.addEventListener("webkitfullscreenchange", sync);
+  sync();
+}
+
 // once settings are stored, start applying data where required
 function initApp() {
   //initStoredSettings(); // old
@@ -201,6 +242,7 @@ function initApp() {
   initWifiSsid();
   initWifi();
   initOtaUpdate();
+  initFullscreen();
   guardScrollTaps(".toggle"); // stop scroll-flicks from flipping toggles
   guardTrackTaps(".slider", 24); // grab the thumb to move; a track tap does nothing
   guardTrackTaps(".slider-inline", 18);
