@@ -1223,26 +1223,22 @@ function initModeButtons() {
       mode: mode, // send just the mode change
     };
 
-    try {
-      const resp = await fetchJson("/api/mode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sendData),
-      });
-      if (!resp || resp.ok === false) {
-        // Failed on the module (or no response): drop the pending hold so the
-        // next poll snaps the highlight back to the real mode, and say why -
-        // a silently reverting button reads as a broken UI.
-        _pendingMode = null;
-        showNotification(
-          (resp && resp.error) ? resp.error : "Mode change failed - check connection",
-          "error"
-        );
-      }
-    } catch (error) {
-      console.log("Save failed: " + error.message);
+    // fetchJson never throws - transport and parse failures resolve to
+    // undefined, so the !resp branch below covers them.
+    const resp = await fetchJson("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sendData),
+    });
+    if (!resp || resp.ok === false) {
+      // Failed on the module (or no response): drop the pending hold so the
+      // next poll snaps the highlight back to the real mode, and say why -
+      // a silently reverting button reads as a broken UI.
       _pendingMode = null;
-      showNotification("Mode change failed - check connection", "error");
+      showNotification(
+        (resp && resp.error) ? resp.error : "Mode change failed - check connection",
+        "error"
+      );
     }
   }
 }

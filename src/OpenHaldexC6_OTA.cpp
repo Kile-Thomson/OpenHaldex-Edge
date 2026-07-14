@@ -217,6 +217,26 @@ static size_t mergedAppSrcStart = 0, mergedAppSrcEnd = 0;
 static size_t mergedFsSrcStart = 0, mergedFsSrcEnd = 0;
 static bool mergedFsUnmounted = false;
 
+// Best-effort web UI recovery after a failed filesystem update. LittleFS was
+// unmounted before the partition write started and setupWebServer() only
+// mounts at boot, so without this every failure path would leave the UI dead
+// until a power cycle. The partition may be partially erased or written, in
+// which case the mount fails - the HTTP API and the OTA endpoints themselves
+// stay up regardless, so the user can retry the upload without touching the
+// hardware (a retry unmounts again on its first chunk).
+static void otaRestoreFS()
+{
+  if (LittleFS.begin(false)) {
+#if enableDebug || detailedDebugWiFi
+    DEBUG("[OTA] LittleFS remounted after failed update");
+#endif
+  } else {
+#if enableDebug || detailedDebugWiFi
+    DEBUG("[OTA] LittleFS remount failed - partition needs a successful re-upload before the UI returns");
+#endif
+  }
+}
+
 void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
 
 // Erase the filesystem partition ahead of the write cursor in whole sectors -
@@ -344,6 +364,10 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
       if (werr != ESP_OK) {
         request->send(500, "text/plain", "OTA ERROR: Write failed");
         esp_ota_abort(otaHandle);
+        if (mergedFsUnmounted) {
+          otaRestoreFS();
+          mergedFsUnmounted = false;
+        }
         otaUpdateInProgress = false;
         uploadKind = OTA_KIND_INVALID;
         return;
@@ -363,6 +387,8 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
       if (werr != ESP_OK) {
         request->send(500, "text/plain", "OTA ERROR: Filesystem write failed");
         esp_ota_abort(otaHandle);
+        otaRestoreFS();
+        mergedFsUnmounted = false;
         otaUpdateInProgress = false;
         uploadKind = OTA_KIND_INVALID;
         return;
@@ -389,6 +415,12 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
         request->send(500, "text/plain", "OTA ERROR: End failed");
       }
       esp_ota_abort(otaHandle);
+      // Merged upload: the fs partition already holds the complete new image
+      // at this point, so the remount brings the (new) UI back on the old app.
+      if (mergedFsUnmounted) {
+        otaRestoreFS();
+        mergedFsUnmounted = false;
+      }
       otaUpdateInProgress = false;
       uploadKind = OTA_KIND_INVALID;
       return;
@@ -398,6 +430,10 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
     err = esp_ota_set_boot_partition(otaPartition);
     if (err != ESP_OK) {
       request->send(500, "text/plain", "OTA ERROR: Failed to set boot partition");
+      if (mergedFsUnmounted) {
+        otaRestoreFS();
+        mergedFsUnmounted = false;
+      }
       otaUpdateInProgress = false;
       uploadKind = OTA_KIND_INVALID;
       return;
@@ -480,6 +516,7 @@ void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t inde
 
     request->_tempObject = malloc(1);
     if (request->_tempObject == nullptr) {
+      otaRestoreFS(); // nothing written yet - the old filesystem mounts fine
       otaUpdateInProgress = false;
       request->send(500, "text/plain", "FS OTA ERROR: Out of memory");
       return;
@@ -489,23 +526,32 @@ void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t inde
     return;
   }
 
-  if (index + len > fsPartition->size) {
-    request->send(400, "text/plain", "FS OTA ERROR: Image larger than filesystem partition");
+  // Shared failure exit for the write phase: revoke the chunk-0 authorization
+  // so every later chunk of this failed upload no-ops, then try to bring the
+  // web UI back (the partition may be partially erased, so the mount can fail;
+  // the OTA endpoint still accepts a retry either way).
+  auto failFSUpdate = [&](int code, const char *msg) {
+    request->send(code, "text/plain", msg);
+    free(request->_tempObject);
+    request->_tempObject = nullptr;
+    otaRestoreFS();
     otaUpdateInProgress = false;
+  };
+
+  if (index + len > fsPartition->size) {
+    failFSUpdate(400, "FS OTA ERROR: Image larger than filesystem partition");
     return;
   }
 
   esp_err_t eraseErr = fsEraseAhead(index + len);
   if (eraseErr != ESP_OK) {
-    request->send(500, "text/plain", "FS OTA ERROR: Erase failed");
-    otaUpdateInProgress = false;
+    failFSUpdate(500, "FS OTA ERROR: Erase failed");
     return;
   }
 
   esp_err_t err = esp_partition_write(fsPartition, index, data, len);
   if (err != ESP_OK) {
-    request->send(500, "text/plain", "FS OTA ERROR: Write failed");
-    otaUpdateInProgress = false;
+    failFSUpdate(500, "FS OTA ERROR: Write failed");
     return;
   }
 

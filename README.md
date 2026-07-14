@@ -381,7 +381,7 @@ Enable **Analyzer Mode** in the Settings page to capture CAN frames.
 > Enabling Analyzer Mode disables active Haldex control and returns the device to OEM pass-through behaviour.
 
 > [!NOTE]
-> In this fork, host-to-device CAN injection via the analyzer port (GVRET transmit, SLCAN transmit) requires an OTA credential to be provisioned. Passive sniffing (receive only) is unaffected.
+> In this fork, host-to-device CAN injection via the analyzer port (GVRET transmit, SLCAN transmit) is refused until the WiFi AP password has been set - the secured AP is the single auth boundary. Passive sniffing (receive only) is unaffected.
 
 The analyzer interface is TCP-only (port 23) over the WiFi AP. Two wire
 protocols are available via the **Analyzer Protocol** select in Settings:

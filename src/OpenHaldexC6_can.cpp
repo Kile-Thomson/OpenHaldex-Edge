@@ -3,6 +3,32 @@
 #include <OpenHaldexC6_Analyzer.h>
 #include <OpenHaldexC6_UDS.h>
 
+// Every transmit in this file goes through this wrapper so a failed send
+// (TX queue still full after the 10 ms wait, driver stopped/bus-off) is
+// counted instead of vanishing. Counted, not logged per-frame: at bus speed
+// a wedged transmitter would flood the log. Failures that make it onto the
+// wire and error out already surface via TWAI_ALERT_TX_FAILED in the
+// bus-health monitor; these counters catch the call-site failures the driver
+// never sees. Increments race across the sender tasks, so treat the counts
+// as an order-of-magnitude diagnostic, not an exact tally.
+static volatile uint32_t canTxDropBus0 = 0;
+static volatile uint32_t canTxDropBus1 = 0;
+static void canTransmit(twai_handle_t bus, const twai_message_t *msg)
+{
+  if (twai_transmit_v2(bus, msg, (10 / portTICK_PERIOD_MS)) == ESP_OK)
+  {
+    return;
+  }
+  const bool isBus0 = (bus == twai_bus_0);
+  uint32_t drops = isBus0 ? ++canTxDropBus0 : ++canTxDropBus1;
+  // Log the first drop and every 256th after that.
+  if ((drops & 0xFF) == 1)
+  {
+    DEBUG("CAN - TX failed on bus %d (ID 0x%03X, %lu drops total)",
+          isBus0 ? 0 : 1, (unsigned)msg->identifier, (unsigned long)drops);
+  }
+}
+
 void broadcastOpenHaldex(void *arg)
 {
   while (1)
@@ -43,7 +69,7 @@ void broadcastOpenHaldex(void *arg)
     broadcast_frame.data[6] = (uint8_t)snapshot_mode;
     broadcast_frame.data[7] = (uint8_t)received_pedal_value;
 
-    twai_transmit_v2(twai_bus_0, &broadcast_frame, (10 / portTICK_PERIOD_MS));
+    canTransmit(twai_bus_0, &broadcast_frame);
 
     vTaskDelay(broadcastRefresh / portTICK_PERIOD_MS);
   }
@@ -56,7 +82,7 @@ static void transmitFrameCopy(twai_handle_t bus, const twai_message_t &src, twai
   scratch.extd = src.extd;
   scratch.rtr = src.rtr;
   scratch.data_length_code = src.data_length_code;
-  twai_transmit_v2(bus, &scratch, (10 / portTICK_PERIOD_MS));
+  canTransmit(bus, &scratch);
 }
 
 // Brake/handbrake override applied to chassis frames before forwarding to the
@@ -272,7 +298,7 @@ void parseCAN_chs(void *arg)
         lock_resp.data[5] = (uint8_t)received_haldex_engagement_raw; // applied engagement, raw
         lock_resp.data[6] = snapshot_mode;                           // live openhaldex_mode_t, so a mode write can be read back
         lock_resp.data[7] = 0xAA;                                    // ISO-TP padding
-        twai_transmit_v2(twai_bus_0, &lock_resp, (10 / portTICK_PERIOD_MS));
+        canTransmit(twai_bus_0, &lock_resp);
         continue; // consume - do NOT forward the request to Bus 1
       }
 
@@ -334,7 +360,7 @@ void parseCAN_chs(void *arg)
         slip_resp.data[5] = (uint8_t)slip[1];
         slip_resp.data[6] = (uint8_t)slip[2];
         slip_resp.data[7] = (uint8_t)slip[3];
-        twai_transmit_v2(twai_bus_0, &slip_resp, (10 / portTICK_PERIOD_MS));
+        canTransmit(twai_bus_0, &slip_resp);
         continue; // consume - do NOT forward the request to Bus 1
       }
 
@@ -385,7 +411,7 @@ void parseCAN_chs(void *arg)
           mode_resp.data[6] = 0xAA;
           mode_resp.data[7] = 0xAA;
         }
-        twai_transmit_v2(twai_bus_0, &mode_resp, (10 / portTICK_PERIOD_MS));
+        canTransmit(twai_bus_0, &mode_resp);
         continue; // consume - do NOT forward the request to Bus 1
       }
 
@@ -700,7 +726,7 @@ void parseCAN_chs(void *arg)
           tx_message_hdx.extd = rx_message_chs.extd;
           tx_message_hdx.rtr = rx_message_chs.rtr;
           tx_message_hdx.data_length_code = rx_message_chs.data_length_code;
-          twai_transmit_v2(twai_bus_1, &tx_message_hdx, (10 / portTICK_PERIOD_MS));
+          canTransmit(twai_bus_1, &tx_message_hdx);
           break;
         }
         continue;
@@ -773,7 +799,7 @@ void parseCAN_chs(void *arg)
           tx_message_hdx.extd = rx_message_chs.extd;
           tx_message_hdx.rtr = rx_message_chs.rtr;
           tx_message_hdx.data_length_code = rx_message_chs.data_length_code;
-          twai_transmit_v2(twai_bus_1, &tx_message_hdx, (10 / portTICK_PERIOD_MS));
+          canTransmit(twai_bus_1, &tx_message_hdx);
         }
       }
     } while (twai_receive_v2(twai_bus_0, &rx_message_chs, 0) == ESP_OK);
@@ -803,7 +829,7 @@ void parseCAN_hdx(void *arg)
       if (analyzerMode || analyzerSerial)
       {
         analyzerQueueFrame(rx_message_hdx, 1);
-        twai_transmit_v2(twai_bus_0, &rx_message_hdx, (10 / portTICK_PERIOD_MS));
+        canTransmit(twai_bus_0, &rx_message_hdx);
         continue;
       }
 
@@ -953,7 +979,7 @@ void parseCAN_hdx(void *arg)
         xQueueSend(udsRxQueue, &rx_message_hdx, 0);
       }
 
-      twai_transmit_v2(twai_bus_0, &rx_message_hdx, (10 / portTICK_PERIOD_MS));
+      canTransmit(twai_bus_0, &rx_message_hdx);
     } while (twai_receive_v2(twai_bus_1, &rx_message_hdx, 0) == ESP_OK);
   }
 }

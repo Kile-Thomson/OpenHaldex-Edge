@@ -120,6 +120,23 @@ limiting - are Forbes's own work and are not repeated here.
   correction-factor step now samples engagement across a short window and takes a
   median with a monotonic clamp against the previous step, rejecting a lone spike
   or CAN dropout without changing total learn duration.
+- **Web UI restored after a failed filesystem OTA.** Both filesystem update
+  paths (the merged image and a direct littlefs.bin upload) unmount LittleFS
+  before overwriting the partition, but every failure branch returned an HTTP
+  error and left it unmounted, killing the web UI until a power cycle. Every
+  failure path now attempts a remount (best effort - a partially-written
+  partition may not mount, but the HTTP API and a retry upload keep working
+  either way), and a failed littlefs.bin upload revokes its chunk
+  authorization so trailing chunks stop writing to the partition.
+- **UDS read endpoint validates the request CAN ID.** `/api/uds/read` rejected
+  a malformed response ID but let a malformed request ID parse to 0 and
+  transmit the UDS request on CAN ID 0x0. Both IDs are now validated.
+- **CAN transmit failures are counted instead of ignored.** Every gateway-path
+  transmit ignored its return value, so a send that failed at the call site
+  (TX queue full, driver stopped) vanished without a trace. Sends now go
+  through a wrapper that counts failures per bus and logs the first and every
+  256th in debug builds; driver-level TX errors were already surfaced via bus
+  alerts.
 
 ### Safety interlocks and fail-safes
 

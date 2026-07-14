@@ -1068,6 +1068,18 @@ void setupAPI()
                          return;
                      }
 
+                     // A malformed req parses to 0 via strtoul, which would
+                     // transmit the UDS request on CAN ID 0x0 - reject it the
+                     // same way as an invalid responseId.
+                     if (requestId == 0)
+                     {
+                         JsonDocument response;
+                         response["success"] = false;
+                         response["error"] = "Invalid request ID";
+                         sendJSON(request, 400, response);
+                         return;
+                     }
+
                      // One read at a time: udsWebRespId doubles as the busy flag,
                      // and two concurrent reads would fight over the queue.
                      if (udsWebRespId != 0)
