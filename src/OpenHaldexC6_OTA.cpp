@@ -215,7 +215,7 @@ static ota_upload_kind_t uploadKind = OTA_KIND_INVALID;
 // the app and filesystem segments sit (a merged image mirrors flash layout).
 static size_t mergedAppSrcStart = 0, mergedAppSrcEnd = 0;
 static size_t mergedFsSrcStart = 0, mergedFsSrcEnd = 0;
-static bool mergedFsUnmounted = false;
+static bool otaFsUnmounted = false;
 
 // Best-effort web UI recovery after a failed filesystem update. LittleFS was
 // unmounted before the partition write started and setupWebServer() only
@@ -235,6 +235,39 @@ static void otaRestoreFS()
     DEBUG("[OTA] LittleFS remount failed - partition needs a successful re-upload before the UI returns");
 #endif
   }
+}
+
+// The request that owns the in-progress upload. Concurrent uploads are
+// rejected with 409 at chunk 0, so at most one owner exists at a time.
+static AsyncWebServerRequest *otaOwnerRequest = nullptr;
+
+// Torn-upload janitor, registered via request->onDisconnect() when chunk 0
+// authorizes an upload. If the client vanishes mid-transfer no failure branch
+// ever runs, which would leave otaUpdateInProgress latched (blocking every
+// retry with 409 until a power cycle), the OTA handle open, and LittleFS
+// unmounted. A completed update never reaches this: the success path reboots,
+// and every failure path clears the flag before the request ends, so the
+// flag check makes this a no-op. The caller must verify ownership first -
+// a stale disconnect from an old connection can fire after a newer upload
+// has already been authorized.
+static void otaAbandonUpload()
+{
+  if (!otaUpdateInProgress) {
+    return;
+  }
+#if enableDebug || detailedDebugWiFi
+  DEBUG("[OTA] Upload connection dropped mid-transfer - releasing OTA state");
+#endif
+  if (uploadKind == OTA_KIND_APP || uploadKind == OTA_KIND_MERGED) {
+    esp_ota_abort(otaHandle);
+  }
+  if (otaFsUnmounted) {
+    otaRestoreFS();
+    otaFsUnmounted = false;
+  }
+  uploadKind = OTA_KIND_INVALID;
+  otaOwnerRequest = nullptr;
+  otaUpdateInProgress = false;
 }
 
 void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
@@ -260,6 +293,14 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
   // _tempObject with free() if the upload aborts. Network access is already gated
   // by the WiFi AP password (the single auth boundary).
   if (index == 0) {
+    // One upload at a time: a second concurrent upload would clobber the
+    // active one's partition pointers, offsets, and OTA handle. A torn
+    // upload releases this via the onDisconnect janitor below.
+    if (otaUpdateInProgress) {
+      request->send(409, "text/plain", "OTA ERROR: Another update is already in progress");
+      return;
+    }
+
     // SAFETY CHECK: block update if system is not in a safe state.
     if (!isSystemSafeForOTA()) {
       request->send(403, "text/plain", "OTA BLOCKED: System not in safe state. Vehicle must be stationary, CAN initialized, outputs safe, no faults.");
@@ -306,7 +347,7 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
       mergedAppSrcEnd = ota0->address + nextApp->size;
       mergedFsSrcStart = fsPart->address;
       mergedFsSrcEnd = fsPart->address + fsPart->size;
-      mergedFsUnmounted = false;
+      otaFsUnmounted = false;
       fsPartition = fsPart;
       fsErasedUpTo = 0;
     }
@@ -338,6 +379,16 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
       request->send(500, "text/plain", "OTA ERROR: Out of memory");
       return;
     }
+
+    // Release the OTA state if the client vanishes mid-transfer; the
+    // ownership check guards against a stale disconnect from an old
+    // connection firing after a newer upload has been authorized.
+    otaOwnerRequest = request;
+    request->onDisconnect([request]() {
+      if (request == otaOwnerRequest) {
+        otaAbandonUpload();
+      }
+    });
   } else {
     if (uploadKind == OTA_KIND_FS) {
       // Later chunks of a delegated littlefs.bin upload.
@@ -364,9 +415,9 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
       if (werr != ESP_OK) {
         request->send(500, "text/plain", "OTA ERROR: Write failed");
         esp_ota_abort(otaHandle);
-        if (mergedFsUnmounted) {
+        if (otaFsUnmounted) {
           otaRestoreFS();
-          mergedFsUnmounted = false;
+          otaFsUnmounted = false;
         }
         otaUpdateInProgress = false;
         uploadKind = OTA_KIND_INVALID;
@@ -378,9 +429,9 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
     // is served from this partition and it is rewritten in place.
     n = ota_region_overlap(index, len, mergedFsSrcStart, mergedFsSrcEnd, &srcOff, &dstOff);
     if (n > 0) {
-      if (!mergedFsUnmounted) {
+      if (!otaFsUnmounted) {
         LittleFS.end();
-        mergedFsUnmounted = true;
+        otaFsUnmounted = true;
       }
       esp_err_t werr = fsEraseAhead(dstOff + n);
       if (werr == ESP_OK) werr = esp_partition_write(fsPartition, dstOff, data + srcOff, n);
@@ -388,7 +439,7 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
         request->send(500, "text/plain", "OTA ERROR: Filesystem write failed");
         esp_ota_abort(otaHandle);
         otaRestoreFS();
-        mergedFsUnmounted = false;
+        otaFsUnmounted = false;
         otaUpdateInProgress = false;
         uploadKind = OTA_KIND_INVALID;
         return;
@@ -417,9 +468,9 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
       esp_ota_abort(otaHandle);
       // Merged upload: the fs partition already holds the complete new image
       // at this point, so the remount brings the (new) UI back on the old app.
-      if (mergedFsUnmounted) {
+      if (otaFsUnmounted) {
         otaRestoreFS();
-        mergedFsUnmounted = false;
+        otaFsUnmounted = false;
       }
       otaUpdateInProgress = false;
       uploadKind = OTA_KIND_INVALID;
@@ -430,9 +481,9 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
     err = esp_ota_set_boot_partition(otaPartition);
     if (err != ESP_OK) {
       request->send(500, "text/plain", "OTA ERROR: Failed to set boot partition");
-      if (mergedFsUnmounted) {
+      if (otaFsUnmounted) {
         otaRestoreFS();
-        mergedFsUnmounted = false;
+        otaFsUnmounted = false;
       }
       otaUpdateInProgress = false;
       uploadKind = OTA_KIND_INVALID;
@@ -482,6 +533,14 @@ void handleOTAUpdate(AsyncWebServerRequest *request, String filename, size_t ind
 
 void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
   if (index == 0) {
+    // One upload at a time - same guard as handleOTAUpdate. When this call
+    // is the delegated chunk 0 of a littlefs.bin sent to /ota/update, the
+    // flag has not been set yet, so delegation passes through unaffected.
+    if (otaUpdateInProgress) {
+      request->send(409, "text/plain", "FS OTA ERROR: Another update is already in progress");
+      return;
+    }
+
     // SAFETY CHECK: block update if system is not in a safe state.
     if (!isSystemSafeForOTA()) {
       request->send(403, "text/plain", "FS OTA BLOCKED: System not in safe state. Vehicle must be stationary, CAN initialized, outputs safe, no faults.");
@@ -509,6 +568,7 @@ void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t inde
     // From here until the post-update reboot, static file requests will fail;
     // the uploading client is told to stay on the page.
     LittleFS.end();
+    otaFsUnmounted = true;
 
 #if enableDebug || detailedDebugWiFi
     DEBUG("[OTA] Starting filesystem update to partition: %s (%u bytes)", fsPartition->label, (unsigned)fsPartition->size);
@@ -517,10 +577,20 @@ void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t inde
     request->_tempObject = malloc(1);
     if (request->_tempObject == nullptr) {
       otaRestoreFS(); // nothing written yet - the old filesystem mounts fine
+      otaFsUnmounted = false;
       otaUpdateInProgress = false;
       request->send(500, "text/plain", "FS OTA ERROR: Out of memory");
       return;
     }
+
+    // Same torn-upload janitor as handleOTAUpdate: bring the UI back and
+    // release the in-progress flag if the client vanishes mid-transfer.
+    otaOwnerRequest = request;
+    request->onDisconnect([request]() {
+      if (request == otaOwnerRequest) {
+        otaAbandonUpload();
+      }
+    });
   } else if (request->_tempObject == nullptr) {
     // First chunk was rejected (auth / safety / partition) -> ignore every later chunk.
     return;
@@ -535,6 +605,7 @@ void handleFSUpdate(AsyncWebServerRequest *request, String filename, size_t inde
     free(request->_tempObject);
     request->_tempObject = nullptr;
     otaRestoreFS();
+    otaFsUnmounted = false;
     otaUpdateInProgress = false;
   };
 

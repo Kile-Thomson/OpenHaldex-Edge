@@ -44,7 +44,9 @@ limiting - are Forbes's own work and are not repeated here.
   FWD was selected or the unit power-cycled. Stock now commands zero forced
   lock, and the inline gateway detects "effective mode is Stock" (base mode or
   forced value) and forwards chassis frames untouched - true passthrough
-  instead of frame edits built from mirrored engagement.
+  instead of frame edits built from mirrored engagement. The brake/handbrake
+  follow override is skipped under the same condition, so effective Stock is
+  a genuine passthrough even with a follow override enabled.
 - **Standalone CAN frames no longer transmit uninitialized flag bits.** Around
   40 frame builders declared the outgoing `twai_message_t` on the stack and set
   only the identifier, length and data, leaving the flags word (extended-ID,
@@ -127,7 +129,11 @@ limiting - are Forbes's own work and are not repeated here.
   failure path now attempts a remount (best effort - a partially-written
   partition may not mount, but the HTTP API and a retry upload keep working
   either way), and a failed littlefs.bin upload revokes its chunk
-  authorization so trailing chunks stop writing to the partition.
+  authorization so trailing chunks stop writing to the partition. Concurrent
+  uploads are rejected (409) while one is in progress, and a client that
+  vanishes mid-transfer triggers a disconnect cleanup that aborts the open
+  OTA handle, remounts the filesystem, and releases the in-progress flag -
+  previously a torn upload left all of that latched until a power cycle.
 - **UDS read endpoint validates the request CAN ID.** `/api/uds/read` rejected
   a malformed response ID but let a malformed request ID parse to 0 and
   transmit the UDS request on CAN ID 0x0. Both IDs are now validated.

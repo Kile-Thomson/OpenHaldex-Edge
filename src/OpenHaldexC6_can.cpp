@@ -783,7 +783,13 @@ void parseCAN_chs(void *arg)
           // Optional brake/handbrake override (followBrake/followHandbrake +
           // invertBrake/invertHandbrake). Changes rx_message_chs in place
           // before the copy so the Haldex sees the rewritten bit + valid CRC.
-          applyBrakeHandbrakeCANOverride(rx_message_chs);
+          // Same gate as the frame edits above: effective-Stock passthrough
+          // means the Haldex sees the chassis bus exactly as OEM, so the
+          // override is skipped too (unless a learn sweep is editing frames).
+          if (!stockEffective || haldexLearnActive)
+          {
+            applyBrakeHandbrakeCANOverride(rx_message_chs);
+          }
           }
           else
           {
