@@ -232,7 +232,13 @@ void parseCAN_chs(void *arg)
       // the normal gateway path below.
       if (udsWebRespId != 0 && udsWebRxQueue != nullptr && rx_message_chs.identifier == udsWebRespId)
       {
-        xQueueSend(udsWebRxQueue, &rx_message_chs, 0);
+        if (xQueueSend(udsWebRxQueue, &rx_message_chs, 0) != pdTRUE)
+        {
+          // Queue full: the web helper missed this frame and its read will
+          // time out with a clear error rather than hang - just make the
+          // drop visible in debug builds.
+          DEBUG("CAN - UDS web tap queue full, dropped frame 0x%03X", (unsigned)rx_message_chs.identifier);
+        }
       }
 
       tx_message_hdx.identifier = rx_message_chs.identifier;
@@ -760,7 +766,7 @@ void parseCAN_chs(void *arg)
           // mirror received_haldex_engagement back as the command, closing a
           // feedback loop that latched the clutch at 100% until FWD/power cycle.
           const int forcedMode = get_forced_mode_value();
-          const bool stockEffective = (forcedMode >= 0) ? (forcedMode == 0)
+          const bool stockEffective = (forcedMode >= 0) ? (forcedMode == MODE_STOCK)
                                                         : (modeSnapshot == MODE_STOCK);
 
           // Edit the CAN frame unless effective-stock (learn must run regardless of mode)
@@ -982,7 +988,12 @@ void parseCAN_hdx(void *arg)
       // Always fall through so the frame is forwarded to Bus 0 (keeps VCDS / passthrough working).
       if (udsMQBEnabled && udsRxQueue != nullptr && rx_message_hdx.identifier == 0x779)
       {
-        xQueueSend(udsRxQueue, &rx_message_hdx, 0);
+        if (xQueueSend(udsRxQueue, &rx_message_hdx, 0) != pdTRUE)
+        {
+          // Same as the web tap above: a dropped frame means one missed UDS
+          // response (the poller re-requests), so log it rather than block.
+          DEBUG("CAN - UDS MQB tap queue full, dropped frame 0x779");
+        }
       }
 
       canTransmit(twai_bus_0, &rx_message_hdx);
