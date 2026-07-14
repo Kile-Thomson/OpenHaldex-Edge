@@ -241,6 +241,7 @@
                     <option value="51">Generation 5 (0AY)</option>
                     <option value="41">Generation 4 - GM/SAAB</option>
                 </select>
+                <p class="hint">Must match the Haldex controller fitted to the car - it selects the CAN decode and command format. MQB cars (e.g. Mk3 TT, 8V S3, MQB Golf R) are Gen 5 (0CQ); the 0AY variant is the PQ-derived unit. Wrong generation means no lock control.</p>
 
                 <h3 class="subsection-title">Learn Haldex</h3>
                 <p class="hint">Sweeps correction factors 0–100% and records actual Haldex engagement at each step,
@@ -291,13 +292,13 @@
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Fix Hunting</span>
                     </label>
-                    <p class="hint">Enable only if the Haldex hunts at partial lock (e.g. 60/40 or 70/30) on a 554K controller.</p>
-                    <p class="hint">Full-lock torque ceiling</p>
+                    <p class="hint">Turn this on if the rear lock surges or won't hold steady at the part-lock modes (60:40, 75:25). Only the 554K Haldex controller needs it - leave it off otherwise.</p>
+                    <p class="hint" id="bpkCeilingLabel">Lock calibration</p>
                     <div class="slider-container" id="bpkCeilingContainer">
-                        <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider">
+                        <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider" aria-labelledby="bpkCeilingLabel">
                         <div class="slider-value"><span id="bpkCeilingValue">220</span> Nm</div>
                     </div>
-                    <p class="hint">Engine torque the spoofed Motor_11 frame claims at 100% lock. Raise this if full lock never reaches 100% engagement; the MQB signal maxes at 509 Nm. Only affects BPK packing (Fix Hunting on, or during a Learn).</p>
+                    <p class="hint">A per-car calibration number, NOT more lock and NOT your engine's torque. There is one correct value: the one where the lock you command matches what the Haldex actually delivers (1:1). Set it with the Learn - run a Learn and adjust this until the Sent vs Returned line sits on the 1:1 diagonal. Higher does not lock harder: too high and the coupling grabs early and slams shut; too low and it under-delivers. Once you have run a Learn this value applies whenever you drive - you do not need the Fix Hunting switch on for it to work.</p>
                 </div>
             </section>
 
@@ -368,6 +369,7 @@
                     <p class="hint">When multiple triggers are active simultaneously, the highest-priority one wins.</p>
 
                     <h3 class="subsection-title">Brake / Handbrake Outputs</h3>
+                    <p class="hint">Drive the controller's brake/handbrake output pins from the matching input. "Follow" mirrors the input; "Invert" flips it (output active when the input is released). Leave off unless your wiring uses these pins.</p>
                     <label class="toggle">
                         <input type="checkbox" id="followBrake">
                         <span class="toggle-slider"></span>
@@ -400,21 +402,25 @@
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Controller Disabled</span>
                     </label>
+                    <p class="hint">Hard passthrough. The unit forwards every chassis frame to the Haldex untouched - no mode, no lock map, no overrides. The kill-switch when you want the car fully stock without unplugging.</p>
                     <label class="toggle">
                         <input type="checkbox" id="isStandalone">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Standalone Mode</span>
                     </label>
+                    <p class="hint">For a car with no chassis CAN feeding the controller. It ignores incoming chassis frames and generates its own, so it can drive the Haldex on a bench or a stripped car. Stock mode is unavailable here (nothing to mirror).</p>
                     <label class="toggle">
                         <input type="checkbox" id="useCANifAvailable">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Use CAN if Available</span>
                     </label>
+                    <p class="hint">Standalone only. Still read real chassis CAN (speed, throttle) when it is present, so Expert mode's speed/throttle map works instead of running blind.</p>
                     <label class="toggle">
                         <input type="checkbox" id="broadcastOpenHaldexOverCAN">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Broadcast over CAN</span>
                     </label>
+                    <p class="hint">Emit OpenHaldex status on the bus and accept mode-change commands from another OpenHaldex or external controller over CAN. Leave off if nothing else on the bus talks to it.</p>
                     <label class="toggle">
                         <input type="checkbox" id="analyzerMode">
                         <span class="toggle-slider"></span>
@@ -782,12 +788,30 @@
                 </button>
             </div>
             <div class="mode-drawer-grid">
-                <button class="mode-btn" data-mode="0">Stock</button>
-                <button class="mode-btn" data-mode="1">FWD</button>
-                <button class="mode-btn" data-mode="2">50:50</button>
-                <button class="mode-btn" data-mode="3">60:40</button>
-                <button class="mode-btn" data-mode="4">75:25</button>
-                <button class="mode-btn" data-mode="5">Expert</button>
+                <button class="mode-btn" data-mode="0">
+                    <span class="mode-btn-name">Stock</span>
+                    <span class="mode-btn-desc">No intervention. Passes the factory Haldex engagement straight through - the car drives as if OpenHaldex was not fitted. Not available in Standalone.</span>
+                </button>
+                <button class="mode-btn" data-mode="1">
+                    <span class="mode-btn-name">FWD</span>
+                    <span class="mode-btn-desc">Holds the rear coupling fully open (zero lock). Front-wheel drive.</span>
+                </button>
+                <button class="mode-btn" data-mode="2">
+                    <span class="mode-btn-name">50:50</span>
+                    <span class="mode-btn-desc">Commands maximum lock whenever locking is allowed - the most aggressive rear engagement.</span>
+                </button>
+                <button class="mode-btn" data-mode="3">
+                    <span class="mode-btn-name">60:40</span>
+                    <span class="mode-btn-desc">Holds a moderate fixed lock target - lighter than 50:50.</span>
+                </button>
+                <button class="mode-btn" data-mode="4">
+                    <span class="mode-btn-name">75:25</span>
+                    <span class="mode-btn-desc">Holds a light fixed lock target - mostly front-biased.</span>
+                </button>
+                <button class="mode-btn" data-mode="5">
+                    <span class="mode-btn-name">Expert</span>
+                    <span class="mode-btn-desc">Follows your custom lock map (throttle vs speed) from the Expert tab instead of a fixed number. Needs CAN data.</span>
+                </button>
             </div>
         </aside>
 

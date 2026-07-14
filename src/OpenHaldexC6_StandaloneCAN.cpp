@@ -1849,7 +1849,9 @@ void Gen5_0CQ_frames10()
 
   // MQB Motor_11 (0x0A7, DLC 8) - engine torque demand/output broadcast.
   //
-  // Two packings, selected by the user-facing "Fix Hunting" toggle (fixHunting):
+  // Two packings. BPK is used when the "Fix Hunting" toggle is on, a learn is
+  // active, or a valid learn table exists (see motor11_use_bpk_packing below);
+  // V3 is used otherwise. The toggle is only one of the three BPK triggers:
   //   fixHunting == false (default): empirical V3 packing, b6/b7 lock-modulated
   //                                  0..0xFA. Confirmed working on 554C, 554D,
   //                                  554H, and 554K @ 100% lock.
@@ -1861,12 +1863,17 @@ void Gen5_0CQ_frames10()
   // The previous auto-detect logic was removed because the engagement-crossing
   // heuristic falsely flagged 554D as hunting. Mode is now strictly user-set
   // and persisted to EEPROM.
+  //
+  // Packing choice routes through the shared motor11_use_bpk_packing selector so
+  // this standalone path can never drift from the CAN-passthrough path: BPK when
+  // Fix Hunting is on, during a learn, or once a valid learn table exists (a
+  // learned table was measured under BPK, so it must be applied under BPK).
   frame.identifier = MOTOR_11; // MOTOR_11 0x0A7
   frame.extd = 0;
   frame.rtr = 0;
   frame.data_length_code = 8;
 
-  if (!fixHunting)
+  if (!motor11_use_bpk_packing(fixHunting, haldexLearnActive, haldexLearnTableValid))
   {
     // ---- V3 packing (default, working on 554C/D/H and 554K@100%) ----
     appliedTorque = get_lock_target_adjusted_value(0xFA, false);

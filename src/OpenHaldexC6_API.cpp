@@ -292,8 +292,33 @@ static void statusOutgoing(AsyncWebServerRequest *request)
         JsonObject uds = data["uds"].to<JsonObject>();
         uds["terminalVoltage"] = udsTerminalVoltage;
         uds["moduleTemp"] = udsModuleTemp;
-        uds["clutchTemp"] = udsClutchTemp;
-        uds["coolingFinTemp"] = udsCoolingFinTemp;
+        // The 0x2BF1/0x2BE4 temp scale is still being calibrated: the shared
+        // (rawLE - 22767)/100 decode is a disassembled guess pending a two-point
+        // solve against module temp (see HALDEX-KNOWLEDGE.md). Publish the decoded
+        // value as-is - the reading is valuable - and also expose the raw 16-bit
+        // wire value so the corrected scale can be locked from real captures.
+        // Publish null until the DID has decoded at least once this session so a
+        // capture client never mistakes the reset 0 for a real reading.
+        if (udsClutchTempValid)
+        {
+            uds["clutchTemp"] = udsClutchTemp;
+            uds["clutchTempRaw"] = udsClutchTempRaw;
+        }
+        else
+        {
+            uds["clutchTemp"] = nullptr;
+            uds["clutchTempRaw"] = nullptr;
+        }
+        if (udsCoolingFinTempValid)
+        {
+            uds["coolingFinTemp"] = udsCoolingFinTemp;
+            uds["coolingFinTempRaw"] = udsCoolingFinTempRaw;
+        }
+        else
+        {
+            uds["coolingFinTemp"] = nullptr;
+            uds["coolingFinTempRaw"] = nullptr;
+        }
         uds["clutchCurrent"] = udsClutchCurrent;
         uds["clutchPWM"] = udsClutchPWM;
         uds["clutchVoltage"] = udsClutchVoltage;

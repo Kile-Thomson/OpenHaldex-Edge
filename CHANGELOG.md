@@ -39,6 +39,14 @@ limiting - are Forbes's own work and are not repeated here.
   `responseLen` before it was used as the copy bound, collapsing every bound to
   zero so every `readDataByIdentifier` returned zero bytes. Capacity is now
   captured before it is zeroed, so the built-in ECU read returns real data.
+- **Haldex fin/clutch temp raw words exposed for calibration.** The 16-bit temp
+  DIDs (`0x2BE4` cooling fin, `0x2BF1` clutch) are decoded with a
+  `(rawLE - 22767) / 100` scale disassembled from the upstream binary that has
+  never been checked against a known temperature. The decoded reading still
+  displays, and the raw 16-bit wire words are now also exposed in the `/api` JSON
+  (`coolingFinTempRaw`, `clutchTempRaw`) so the true offset and scale can be
+  solved against live VCDS values once captured. The current scale is left in
+  place until real data replaces it - no second guess is stamped over it.
 - **ESP_10 (0x116) E2E checksum DataID corrected.** The `ID_SEQ_116` array was
   all `0x05`, a verbatim copy of the EPB_01/0x104 table, so the live pass-through
   and standalone generator both produced a wrong checksum for the ESP_10 frame.
@@ -146,6 +154,23 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Fixed
 
+- **Haldex temperatures could read a fake 0 before the first sample.** The UDS
+  clutch and cooling-fin temperatures (decoded and raw) are zero until the module
+  first answers, and were published to `/api` as `0` - indistinguishable from a
+  real 0 degC reading, which corrupted the raw-byte capture used to solve the
+  temperature scale. Each field now publishes as `null` until its DID has been
+  decoded at least once in the session, and reverts to `null` when the session
+  ends.
+- **A learned lock table could be applied to the wrong CAN frame.** A learning run
+  always runs under the DBC-correct BPK packing, so the table it builds is calibrated
+  against BPK frames. But when driving with Fix Hunting off the firmware sent the
+  legacy V3 frame while still applying that BPK-measured table - a mismatch that
+  made lock behave differently than it did during the Learn (worst case, stuck at
+  full lock). The frame selector now stays on BPK whenever a valid learn table
+  exists, regardless of the Fix Hunting switch, so what you calibrated is what you
+  drive. Users who have never done a learning run are unaffected and keep the V3 default.
+  The standalone CAN path now shares the same selector, so it can no longer drift
+  from the passthrough path.
 - **Map slots read "Empty slot" on Load, and you couldn't choose which slot to
   save into.** Two problems in the on-device tune slots. First, the saved-tune
   list and the Load action decided "is this slot used?" with two different NVS
@@ -185,6 +210,15 @@ limiting - are Forbes's own work and are not repeated here.
   so a tap arriving after the ghost window registers normally.
 
 ### Added
+
+- **Plain-English help across the tuning UI.** The drive-mode drawer now
+  describes what each mode actually does (Stock passes the factory engagement
+  through, FWD holds the rear open, 50:50/60:40/75:25 hold progressively lighter
+  fixed lock targets, Expert follows the throttle/speed map) instead of showing
+  bare labels. Added inline hints to the previously unexplained controls: Haldex
+  Generation, the brake/handbrake follow/invert outputs, and the Controller and
+  Connectivity toggles (Controller Disabled, Standalone Mode, Use CAN if
+  Available, Broadcast over CAN). Copy only - no behaviour change.
 
 - **Per-corner slip and drive-mode over the diagnostic channel.** OpenHaldex now
   answers three supplier-specific UDS DIDs on the Haldex address (0x70F request ->

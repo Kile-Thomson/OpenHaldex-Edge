@@ -53,6 +53,17 @@ static void udsDecodeDID(uint16_t did, const twai_message_t &frame)
     const int n = uds_parse_sf_rdbi(frame.data, frame.data_length_code, did, payload, sizeof(payload));
     if (n < 0) return;
 
+    // Capture the raw unscaled 16-bit wire value for the two temp DIDs before
+    // scaling. The (raw-22767)/100 scale is unvalidated and reads a physically
+    // impossible ~160 °C on the fin under load; exposing the raw lets us solve
+    // the real decode against a trusted reference. LE = payload[1]<<8 | payload[0].
+    if (n >= 2)
+    {
+        const uint16_t rawLE = (uint16_t)(((uint16_t)payload[1] << 8) | payload[0]);
+        if (did == 0x2BF1)      { udsClutchTempRaw = rawLE; udsClutchTempValid = true; }
+        else if (did == 0x2BE4) { udsCoolingFinTempRaw = rawLE; udsCoolingFinTempValid = true; }
+    }
+
     float value;
     if (!uds_scale_mqb_did(did, payload, (uint8_t)n, value)) return;
 
@@ -163,6 +174,10 @@ void udsMQBTask(void *arg)
         udsModuleTemp      = 0.0f;
         udsClutchTemp      = 0.0f;
         udsCoolingFinTemp = 0.0f;
+        udsClutchTempRaw   = 0;
+        udsCoolingFinTempRaw = 0;
+        udsClutchTempValid = false;
+        udsCoolingFinTempValid = false;
         udsClutchCurrent   = 0.0f;
         udsClutchPWM       = 0;
         udsClutchVoltage   = 0.0f;

@@ -18,7 +18,7 @@
 
 extern uint8_t learn_reduce_samples(const uint8_t *samples, uint8_t n, uint8_t prev_recorded);
 extern uint8_t lookup_learn_correction_factor(const uint8_t *table, uint8_t target);
-extern bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active);
+extern bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_table_valid);
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -158,30 +158,46 @@ void test_old_behaviour_would_have_collapsed(void)
 // --- Motor_11 packing selector: learn must force BPK ------------------------
 // V3 packing pins the torque fields at full, so a learn on V3 records a flat
 // ~100% table (the "sits at 100% regardless" symptom on the live MQB car). The
-// selector forces BPK whenever Fix Hunting is on OR a learn is active.
+// selector forces BPK whenever Fix Hunting is on, a learn is active, OR a valid
+// learn table exists (a learned table was measured under BPK, so it must be
+// applied under BPK - never against a V3 frame).
 
 void test_bpk_off_when_idle_and_toggle_off(void)
 {
-  // Normal driving, Fix Hunting off -> V3 packing (unchanged legacy behaviour).
-  TEST_ASSERT_FALSE_MESSAGE(motor11_use_bpk_packing(false, false), "idle + toggle off -> V3");
+  // Normal driving, Fix Hunting off, no table -> V3 packing (legacy default).
+  TEST_ASSERT_FALSE_MESSAGE(motor11_use_bpk_packing(false, false, false), "idle + toggle off + no table -> V3");
 }
 
 void test_bpk_on_when_toggle_on(void)
 {
   // User enabled Fix Hunting -> BPK, learn or not.
-  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(true, false), "toggle on -> BPK");
+  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(true, false, false), "toggle on -> BPK");
 }
 
 void test_learn_forces_bpk_even_with_toggle_off(void)
 {
-  // The fix: a learn scan uses BPK regardless of the toggle, so it can never
-  // silently record a flat 100% table.
-  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(false, true), "learn active -> BPK despite toggle off");
+  // A learn scan uses BPK regardless of the toggle, so it can never silently
+  // record a flat 100% table.
+  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(false, true, false), "learn active -> BPK despite toggle off");
 }
 
 void test_learn_and_toggle_both_on_still_bpk(void)
 {
-  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(true, true), "learn + toggle on -> BPK");
+  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(true, true, false), "learn + toggle on -> BPK");
+}
+
+void test_valid_table_forces_bpk_with_toggle_off(void)
+{
+  // The fix: once a table has been learned (measured under BPK), driving with
+  // Fix Hunting off must still use BPK so the calibration is applied against the
+  // frame it was measured against - not a V3 frame this mode would otherwise send.
+  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(false, false, true), "valid table -> BPK despite toggle off");
+}
+
+void test_no_table_toggle_off_stays_v3(void)
+{
+  // An untuned user (no learn table, Fix Hunting off) keeps the legacy V3 path.
+  TEST_ASSERT_FALSE_MESSAGE(motor11_use_bpk_packing(false, false, false), "no table + toggle off -> V3");
 }
 
 int main(int, char **)
@@ -210,6 +226,8 @@ int main(int, char **)
   RUN_TEST(test_bpk_on_when_toggle_on);
   RUN_TEST(test_learn_forces_bpk_even_with_toggle_off);
   RUN_TEST(test_learn_and_toggle_both_on_still_bpk);
+  RUN_TEST(test_valid_table_forces_bpk_with_toggle_off);
+  RUN_TEST(test_no_table_toggle_off_stays_v3);
 
   return UNITY_END();
 }
