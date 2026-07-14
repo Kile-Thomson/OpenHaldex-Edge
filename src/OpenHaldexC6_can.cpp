@@ -36,7 +36,9 @@ void broadcastOpenHaldex(void *arg)
     broadcast_frame.data[1] = isStandalone;
     broadcast_frame.data[2] = (uint8_t)received_haldex_engagement_raw;
     broadcast_frame.data[3] = (uint8_t)snapshot_lock_target;
-    broadcast_frame.data[4] = received_vehicle_speed;
+    // Speed is uint16 km/h but this byte is uint8: clamp instead of letting the
+    // implicit truncation wrap (256 km/h would broadcast as 0).
+    broadcast_frame.data[4] = (uint8_t)((received_vehicle_speed > 255) ? 255 : received_vehicle_speed);
     broadcast_frame.data[5] = snapshot_mode_override;
     broadcast_frame.data[6] = (uint8_t)snapshot_mode;
     broadcast_frame.data[7] = (uint8_t)received_pedal_value;
@@ -119,8 +121,14 @@ void setupCAN()
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();                                                          // accept all messages
 
   // g_config.intr_flags = ESP_INTR_FLAG_LOWMED;  //Optional - move canbus irq to free up the default level 1 IRQ it will take up.  Todo
-  g_config.tx_queue_len = 1024; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5, use this to increase if needed
-  g_config.rx_queue_len = 2048; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5, use this to increase if needed // 4096
+  // Queue depth = worst tolerable LATENCY, not throughput. At a fully loaded
+  // 500 kbit/s bus (~4000 fps) 128 frames is ~30 ms of backlog; the old
+  // 2048/1024 sizing burned ~140 KB of heap across both buses and, worse,
+  // meant a stalled parse task later replayed several SECONDS of stale
+  // chassis frames to the Haldex instead of dropping them. Real overruns now
+  // surface as RX_QUEUE_FULL alerts (already monitored in showHaldexState).
+  g_config.tx_queue_len = 64;  //<TWAI_GENERAL_CONFIG_DEFAULT default is 5
+  g_config.rx_queue_len = 128; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5
   // g_config.intr_flags = ESP_INTR_FLAG_IRAM;
 
   // Allow the TWAI power domain to be powered down during light sleep; the
@@ -192,6 +200,14 @@ void parseCAN_chs(void *arg)
     {
       lastCANChassisTick = millis();
       ++lpChassisFrameCount;
+
+      // /api/uds/read tap: copy frames matching the registered response ID to
+      // the web helper's queue. Copy, not consume - the frame continues down
+      // the normal gateway path below.
+      if (udsWebRespId != 0 && udsWebRxQueue != nullptr && rx_message_chs.identifier == udsWebRespId)
+      {
+        xQueueSend(udsWebRxQueue, &rx_message_chs, 0);
+      }
 
       tx_message_hdx.identifier = rx_message_chs.identifier;
 

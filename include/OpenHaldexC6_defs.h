@@ -64,6 +64,12 @@
 #define debugCANSleep 0             // set to 1 to skip the 5-min idle/60-s count and sleep after ~2 s with no clients
 #endif
 
+// Learn-sweep speed interlock: the sweep ramps the clutch to full lock over
+// ~30 s, which is only safe with the car stationary. Starting is refused and a
+// running sweep aborts above this speed (km/h). Standalone benches with no
+// chassis CAN read speed 0 and are unaffected.
+#define learnMaxSpeed 5
+
 // refresh rates
 #define eepRefresh 2000           // EEPROM save in ms
 #define broadcastRefresh 200      // broadcast data over CAN refresh rate in ms
@@ -366,6 +372,13 @@ extern uint8_t analyzerProtocol;
 // Requests go to 0x771 on Bus 1; responses come from 0x779 on Bus 1.
 extern bool udsMQBEnabled;       // enable flag (persisted)
 extern QueueHandle_t udsRxQueue; // parseCAN_hdx pushes 0x779 frames here
+// /api/uds/read helper: parseCAN_chs COPIES frames matching udsWebRespId into
+// udsWebRxQueue (the frame still flows through the normal gateway path). The
+// endpoint sets udsWebRespId for the duration of one read, then clears it.
+// This replaces the old direct twai_receive_v2 call in the web handler, which
+// raced parseCAN_chs for bus-0 frames and discarded whatever it won.
+extern QueueHandle_t udsWebRxQueue;
+extern volatile uint32_t udsWebRespId;
 extern float udsTerminalVoltage; // 0x0286: raw × 0.1 V
 extern float udsModuleTemp;      // 0x028D: raw − 55 °C  (1 byte, offset 55)
 extern float udsClutchTemp;      // 0x2BF1: LE16 (D6×256+D5 − 22767)/100 °C

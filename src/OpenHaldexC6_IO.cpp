@@ -277,6 +277,26 @@ void updateTriggers(void *arg)
     hasCANChassis = (lastCANChassisTick > 0) && ((now - (uint32_t)lastCANChassisTick) <= canHealthTimeoutMs); // 1000ms timeout for CAN health - if we haven't received a message in 1000ms, consider the CAN connection unhealthy
     hasCANHaldex = (lastCANHaldexTick > 0) && ((now - (uint32_t)lastCANHaldexTick) <= canHealthTimeoutMs);    // 1000ms timeout for CAN health - if we haven't received a message in 1000ms, consider the CAN connection unhealthy
 
+    // Fail safe on signal loss: parseCAN only ever overwrites these on frame
+    // arrival, so on bus loss they latch their last value forever. In
+    // standalone that means synthesizing lock from stale speed/throttle (and a
+    // stale ESP/hazard force flag holding a force mode on) indefinitely. Zero
+    // them once the health timeout declares the bus dead - speed/throttle 0
+    // fails the lock_enabled gates, so the commanded lock decays to open.
+    // lastCANChassisTick > 0 keeps the boot state (never seen a frame) as-is.
+    if (!hasCANChassis && lastCANChassisTick > 0)
+    {
+      received_vehicle_speed = 0;
+      received_pedal_value = 0;
+      tcForceModeFlag = false;
+      hazardForceModeFlag = false;
+      isABSValid = false;
+    }
+    if (!hasCANHaldex && lastCANHaldexTick > 0)
+    {
+      received_haldex_engagement = 0; // stale engagement would freeze telemetry and poison a running learn
+    }
+
     // Low-power WiFi management.
     // Standalone: Haldex bus fps. OEM: chassis bus fps.
     //

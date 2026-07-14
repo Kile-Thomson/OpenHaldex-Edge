@@ -740,6 +740,7 @@ async function saveLockTable() {
     }
   } catch (error) {
     console.error("Error saving map:", error);
+    showNotification("Failed to Save - check connection", "error");
   }
 }
 
@@ -1223,13 +1224,25 @@ function initModeButtons() {
     };
 
     try {
-      await fetchJson("/api/mode", {
+      const resp = await fetchJson("/api/mode", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(sendData),
       });
+      if (!resp || resp.ok === false) {
+        // Failed on the module (or no response): drop the pending hold so the
+        // next poll snaps the highlight back to the real mode, and say why -
+        // a silently reverting button reads as a broken UI.
+        _pendingMode = null;
+        showNotification(
+          (resp && resp.error) ? resp.error : "Mode change failed - check connection",
+          "error"
+        );
+      }
     } catch (error) {
       console.log("Save failed: " + error.message);
+      _pendingMode = null;
+      showNotification("Mode change failed - check connection", "error");
     }
   }
 }
@@ -1976,6 +1989,11 @@ function confirmEdit() {
 // end tune edit
 
 function restoreDefaults() {
+  // One tap away from Apply and it discards the whole in-editor tune - make
+  // sure it was meant. (The device tune is untouched until Apply is hit.)
+  if (!confirm("Replace the current editor tune with the factory default map? Your edits are lost unless already applied or saved to a slot.")) {
+    return;
+  }
   applyMapToEditor(defaultSpeedHeader, defaultThrottleHeader, defaultLock);
 }
 
@@ -2587,6 +2605,9 @@ function initLearn() {
         if (data.progress === 102) {
           statusText.textContent = "No Haldex CAN data recorded - check connection";
           statusText.style.color = "var(--danger)";
+        } else if (data.progress === 103) {
+          statusText.textContent = "Learn aborted - vehicle started moving. Stop the car and retry.";
+          statusText.style.color = "var(--danger)";
         } else if (data.tableValid) {
           statusText.textContent = "Learn complete \u2713 - calibration table active";
           statusText.style.color = "var(--success)";
@@ -2622,6 +2643,11 @@ function initLearn() {
   });
 
   btnClear.addEventListener("click", async () => {
+    // Destroys a calibration that takes a full stationary sweep to rebuild,
+    // and the button sits right under Learn/Cancel - confirm before wiping.
+    if (!confirm("Clear the learned calibration table? The controller reverts to the static factor until you run Learn again.")) {
+      return;
+    }
     await fetchJson("/api/learn/clear", { method: "POST" });
     statusText.textContent = "Learn data cleared - static factor active";
     statusText.style.color = "var(--text-dim)";

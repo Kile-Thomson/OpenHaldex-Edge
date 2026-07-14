@@ -7,7 +7,11 @@ namespace OpenHaldexC6
     class UDS
     {
     public:
-        explicit UDS(twai_handle_t canBus = twai_bus_0);
+        // With rxQueue set, responses are read from that queue (filled by a
+        // parse-task tap) instead of twai_receive_v2 - a direct bus read from
+        // anywhere but the owning parse task steals and discards gateway
+        // frames. Pass a queue whenever the target bus has a parse task.
+        explicit UDS(twai_handle_t canBus = twai_bus_0, QueueHandle_t rxQueue = nullptr);
 
         // requestId: ECU request listener, usually 0x7E0 (physical) for VW
         // responseId: ECU response source, usually 0x7E8 for VW
@@ -39,6 +43,7 @@ namespace OpenHaldexC6
         bool receiveFrame(twai_message_t &frame, uint32_t timeoutMs);
 
         twai_handle_t _canBus;
+        QueueHandle_t _rxQueue;
     };
 
     // Known VW-DSG and Haldex USAGE constants (for reference).

@@ -121,6 +121,61 @@ limiting - are Forbes's own work and are not repeated here.
   median with a monotonic clamp against the previous step, rejecting a lone spike
   or CAN dropout without changing total learn duration.
 
+### Safety interlocks and fail-safes
+
+- **Learn sweep speed interlock.** The learn sweep ramps the clutch to full
+  lock over ~30 seconds and could previously be started (and would keep
+  running) at any road speed. Starting is now refused above 5 km/h, and a
+  running sweep aborts itself if the car moves off, without publishing the
+  partial table. The web UI reports why.
+- **Stale CAN inputs now fail safe.** Speed, throttle, the ESP/hazard
+  force-mode flags, ABS validity and reported engagement were only ever
+  overwritten by frame arrival, so on chassis or Haldex bus loss they latched
+  their last value indefinitely - in standalone that meant synthesizing lock
+  from stale data forever, including a stale force-mode flag holding a forced
+  mode on. Once the existing 1-second CAN health timeout declares a bus dead,
+  those inputs are zeroed; zero speed/throttle fails the lock-enable gates, so
+  the commanded lock decays to open.
+- **`/api/uds/read` no longer steals frames from the CAN gateway.** The
+  diagnostic read helper called `twai_receive` directly from the web handler -
+  a second consumer racing the gateway parse task for every bus-0 frame, with
+  each frame it won consumed and never forwarded, while blocking the web
+  server task for up to 2 seconds. Responses are now tapped (copied) out of
+  the normal parse path into a dedicated queue, the gateway keeps every frame,
+  concurrent reads are rejected, and the wait is bounded at 300 ms.
+- **CAN driver queues resized from seconds of backlog to ~30 ms.** The TWAI
+  queues were 2048 RX / 1024 TX per bus (~140 KB of heap) - deep enough that a
+  stalled parse task would later replay several seconds of stale chassis
+  frames to the Haldex instead of dropping them. Now 128 RX / 64 TX; real
+  overruns surface through the existing RX_QUEUE_FULL alert monitoring.
+- **Speed byte in the OpenHaldex CAN broadcast clamps instead of wrapping.**
+  The 0x6B0 status broadcast truncated the 16-bit vehicle speed to its low
+  byte, so 256 km/h read as 0 to any consumer (gauge, external display). It
+  now clamps at 255.
+- **Every API POST path now answers.** The mode handler never sent an HTTP
+  response at all, and the settings/tune handlers returned silently on invalid
+  input, leaving the client hanging until TCP timeout - visible as random UI
+  freezes on a weak AP link. All paths now return explicit success or a 4xx
+  with an error message, and the UI shows a toast instead of silently
+  snapping the mode highlight back.
+
+### Web UI safety and accessibility
+
+- **Destructive actions confirm first.** Clear Learn Data (which destroys a
+  calibration that takes a full sweep to rebuild, and sits directly under the
+  Learn/Cancel buttons) and Restore Defaults (adjacent to Apply) both asked no
+  questions; each now requires a confirmation, and Clear Learn Data is styled
+  as a danger button.
+- **Settings toggles are reachable by keyboard and screen reader.** The
+  toggle checkboxes were `display:none`, removing every settings switch -
+  including Disable Controller - from the tab order and the accessibility
+  tree. They now use the visually-hidden pattern with a visible focus ring,
+  and the touch target meets the 44px minimum.
+- **Service worker never caches `/ota/`.** The updater polls `/ota/health` to
+  detect the post-flash reboot; a cached response would report the module up
+  while it was still flashing. `/ota/*` now always goes to the network, like
+  `/api/*`.
+
 ### Concurrency and persistence
 
 - **Shared control state guarded with a mutex.** Cross-task globals (drive state,

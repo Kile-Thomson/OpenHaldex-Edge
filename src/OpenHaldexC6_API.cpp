@@ -433,6 +433,10 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
     if (deserializeJson(data, body) != DeserializationError::Ok)
     {
         DEBUG("Invalid JSON");
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Invalid JSON";
+        sendJSON(request, 400, resp);
         return;
     }
 
@@ -718,30 +722,55 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
 // manage mode (saved from Web, handled here): ESP sends, this handles
 static void modeIncoming(AsyncWebServerRequest *request, const String &body)
 {
+    // Every path must respond: ESPAsyncWebServer holds the connection open
+    // until we do, and a silent return shows up as a hung request / frozen UI
+    // on the client (the mode highlight snapping back with no explanation).
     JsonDocument data;
     if (deserializeJson(data, body) != DeserializationError::Ok)
     {
         DEBUG("Invalid JSON");
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Invalid JSON";
+        sendJSON(request, 400, resp);
         return;
     }
 
-    if (data["mode"].is<uint8_t>())
+    if (!data["mode"].is<uint8_t>())
     {
-        if (!disableController)
-        {
-            xSemaphoreTake(stateMutex, portMAX_DELAY);
-            if (isStandalone && (openhaldex_mode_t)data["mode"] == 0)
-            {
-                state.mode = (openhaldex_mode_t)lastMode;
-            }
-            else
-            {
-                state.mode = (openhaldex_mode_t)data["mode"];
-            }
-            lastMode = state.mode;
-            xSemaphoreGive(stateMutex);
-        }
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Missing or invalid 'mode'";
+        sendJSON(request, 400, resp);
+        return;
     }
+
+    if (disableController)
+    {
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Controller is disabled";
+        sendJSON(request, 409, resp);
+        return;
+    }
+
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    if (isStandalone && (openhaldex_mode_t)data["mode"] == 0)
+    {
+        state.mode = (openhaldex_mode_t)lastMode;
+    }
+    else
+    {
+        state.mode = (openhaldex_mode_t)data["mode"];
+    }
+    lastMode = state.mode;
+    const uint8_t applied = (uint8_t)state.mode;
+    xSemaphoreGive(stateMutex);
+
+    JsonDocument resp;
+    resp["ok"] = true;
+    resp["mode"] = applied;
+    sendJSON(request, 200, resp);
 }
 
 // manage tune (saved from Web, handled here): ESP sends, this handles
@@ -751,6 +780,10 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
     if (deserializeJson(data, body) != DeserializationError::Ok)
     {
         DEBUG("Invalid JSON");
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Invalid JSON";
+        sendJSON(request, 400, resp);
         return;
     }
 
@@ -761,6 +794,10 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
     if (speedArrayJSON.size() != speedArrayCount || throttleArrayJSON.size() != throttleArrayCount)
     {
         DEBUG("Invalid Array Length");
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Invalid axis array length";
+        sendJSON(request, 400, resp);
         return;
     }
 
@@ -796,6 +833,10 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
         !is_strictly_ascending_u16(stagedSpeed, speedArrayCount))
     {
         DEBUG("Non-ascending tune axis");
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Axis values must be strictly ascending";
+        sendJSON(request, 400, resp);
         return;
     }
 
@@ -806,6 +847,10 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
         if (throttleRow.size() != speedArrayCount)
         {
             DEBUG("Invalid lock array");
+            JsonDocument resp;
+            resp["ok"] = false;
+            resp["error"] = "Invalid lock table row length";
+            sendJSON(request, 400, resp);
             return;
         }
         for (uint8_t speed = 0; speed < speedArrayCount; speed++)
@@ -1014,11 +1059,54 @@ void setupAPI()
                      uint32_t responseId = strtoul(resP->value().c_str(), nullptr, 16);
                      uint16_t did = (uint16_t)strtoul(didP->value().c_str(), nullptr, 16);
 
-                     OpenHaldexC6::UDS uds;
+                     if (responseId == 0)
+                     {
+                         JsonDocument response;
+                         response["success"] = false;
+                         response["error"] = "Invalid response ID";
+                         sendJSON(request, 400, response);
+                         return;
+                     }
+
+                     // One read at a time: udsWebRespId doubles as the busy flag,
+                     // and two concurrent reads would fight over the queue.
+                     if (udsWebRespId != 0)
+                     {
+                         JsonDocument response;
+                         response["success"] = false;
+                         response["error"] = "UDS read already in progress";
+                         sendJSON(request, 429, response);
+                         return;
+                     }
+
+                     if (udsWebRxQueue == nullptr)
+                     {
+                         udsWebRxQueue = xQueueCreate(8, sizeof(twai_message_t));
+                     }
+                     if (udsWebRxQueue == nullptr)
+                     {
+                         JsonDocument response;
+                         response["success"] = false;
+                         response["error"] = "Out of memory";
+                         sendJSON(request, 500, response);
+                         return;
+                     }
+
+                     // Responses arrive via the parseCAN_chs tap (a copy - the
+                     // gateway path still forwards the frame), so this never
+                     // steals frames from the bridge. The 300 ms timeout bounds
+                     // how long this handler can hold the async_tcp task; UDS
+                     // single-frame replies land well inside it.
+                     xQueueReset(udsWebRxQueue);
+                     udsWebRespId = responseId;
+
+                     OpenHaldexC6::UDS uds(twai_bus_0, udsWebRxQueue);
                      uint8_t buffer[256];
                      size_t bufferLen = sizeof(buffer);
+                     const bool ok = uds.readDataByIdentifier(requestId, responseId, did, buffer, bufferLen, 300);
+                     udsWebRespId = 0;
 
-                     if (!uds.readDataByIdentifier(requestId, responseId, did, buffer, bufferLen))
+                     if (!ok)
                      {
                          JsonDocument response;
                          response["success"] = false;
@@ -1167,6 +1255,17 @@ void setupAPI()
                          JsonDocument resp;
                          resp["ok"]    = false;
                          resp["error"] = "No Haldex CAN data available";
+                         sendJSON(request, 200, resp);
+                         return;
+                     }
+                     // Speed interlock: the sweep ramps to full lock; refuse to
+                     // start it in a moving car. The sweep also aborts itself if
+                     // the car moves off mid-learn (see haldexLearnTask).
+                     if (received_vehicle_speed > learnMaxSpeed)
+                     {
+                         JsonDocument resp;
+                         resp["ok"]    = false;
+                         resp["error"] = "Vehicle is moving - learn needs the car stationary";
                          sendJSON(request, 200, resp);
                          return;
                      }

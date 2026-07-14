@@ -151,6 +151,8 @@ bool analyzerSerial = false; // Serial GVRET (SavvyCAN Serial Connection)
 // UDS MQB diagnostic polling (Gen 5 only)
 bool udsMQBEnabled = false;
 QueueHandle_t udsRxQueue = nullptr;
+QueueHandle_t udsWebRxQueue = nullptr; // /api/uds/read responses, tapped (copied) from parseCAN_chs
+volatile uint32_t udsWebRespId = 0;    // response ID /api/uds/read waits for; 0 = no read in flight
 float udsTerminalVoltage = 0.0f;
 float udsModuleTemp = 0.0f;
 float udsClutchTemp = 0.0f;

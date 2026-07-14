@@ -185,8 +185,8 @@ void udsMQBTask(void *arg)
     }
 }
 
-UDS::UDS(twai_handle_t canBus)
-    : _canBus(canBus)
+UDS::UDS(twai_handle_t canBus, QueueHandle_t rxQueue)
+    : _canBus(canBus), _rxQueue(rxQueue)
 {
 }
 
@@ -255,6 +255,15 @@ bool UDS::sendFlowControl(uint32_t canId, uint8_t flowStatus, uint8_t blockSize,
 
 bool UDS::receiveFrame(twai_message_t &frame, uint32_t timeoutMs)
 {
+    // Queue mode: frames are routed here by a parse task (already filtered to
+    // the response ID). Reading the bus directly would make this a second
+    // twai_receive consumer racing the gateway parse task for every frame -
+    // whatever this side won was consumed and never forwarded.
+    if (_rxQueue != nullptr)
+    {
+        return xQueueReceive(_rxQueue, &frame, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+    }
+
     uint32_t start = millis();
     while ((millis() - start) < timeoutMs)
     {

@@ -5,9 +5,10 @@
 // pick up firmware UI updates as soon as it is reachable again.
 //
 // Strategy:
-//   - /api/* and any non-GET request: never touched. Live CAN/telemetry and all
-//     control POSTs must always hit the network - a cached dashboard would be a
-//     dangerously stale view of a moving vehicle.
+//   - /api/*, /ota/* and any non-GET request: never touched. Live CAN/telemetry
+//     and all control POSTs must always hit the network - a cached dashboard
+//     would be a dangerously stale view of a moving vehicle, and a cached
+//     /ota/health would lie to the post-flash reboot-waiter.
 //   - Everything else (the HTML/CSS/JS/icon shell): network-first. A fresh copy
 //     from the module wins and refreshes the cache; if the fetch fails we fall
 //     back to the last cached copy so the UI still loads and can report the
@@ -48,6 +49,11 @@ self.addEventListener("fetch", (event) => {
   // Only handle same-origin GETs; leave API traffic and control POSTs to network.
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/")) return;
+  // /ota/* must never be served from cache: the updater polls /ota/health to
+  // detect the post-flash reboot, and a cached 200 would report the module up
+  // while it is still flashing; /ota/info and /ota/check must reflect the
+  // firmware actually running, not the one that was.
+  if (url.pathname.startsWith("/ota/")) return;
 
   event.respondWith(
     fetch(req)
