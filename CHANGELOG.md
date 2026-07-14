@@ -347,8 +347,8 @@ limiting - are Forbes's own work and are not repeated here.
   the Fullscreen API, which - unlike PWA install - works over plain http, so an
   unmodified phone gets the full-screen dashboard without any flags or install
   step. The button hides itself where the API doesn't exist (iPhone Safari).
-  The manifest also declares `display_override: fullscreen`, so where the app
-  is installed from a secure context it launches truly full-screen.
+  The manifest also declares `display_override: fullscreen`, so when the app
+  is installed from a secure context, supported browsers open it full-screen.
 
 - **Plain-English help across the tuning UI.** The drive-mode drawer now
   describes what each mode actually does (Stock passes the factory engagement
