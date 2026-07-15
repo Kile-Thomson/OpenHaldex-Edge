@@ -18,8 +18,8 @@ limiting - are Forbes's own work and are not repeated here.
   literal in source and prints it to the serial log. It is removed and flashing
   fails closed (HTTP 503) until a credential is provisioned - on first power-up
   the device redirects to a `/setup` page where you set your own password, which
-  is stored to NVS. Credentials are rotatable via the authenticated
-  `POST /ota/credential`. There is no build-time or compiled-in credential path:
+  is stored to NVS. The password is rotatable from the WiFi Access Point card on
+  the Diagnostics tab (`POST /api/wifi`). There is no build-time or compiled-in credential path:
   the only way to set a password is at runtime, so no build step is required.
 - **State-changing endpoints require authentication.** In V8.00.2 the mode,
   settings, tune and learn endpoints (and host-to-device CAN injection on the
@@ -431,13 +431,16 @@ limiting - are Forbes's own work and are not repeated here.
   visible from any phone. The slot library uses its own NVS namespace and never
   touches the settings handle. Replaces the earlier phone-side file
   export/import.
-- **Gen5 BPK full-lock torque is now a setting.** The "Fix Hunting" (BPK)
-  Motor_11 packing mapped 100% lock to a hardcoded 220 Nm of spoofed engine
-  torque, so a controller that never reached full engagement had no way to ask
-  for more. It is now an adjustable "Full-lock torque ceiling" on the Settings
-  page, 100-500 Nm (MQB signal max 509 Nm), default 220 so existing behaviour is
-  unchanged. The underlying packing math was widened from 8-bit (which silently
-  capped torque at 255 Nm) to the full signal range, and the standalone and
+- **Gen5 BPK lock calibration is now a per-car setting.** The "Fix Hunting"
+  (BPK) Motor_11 packing baked in one fixed calibration value for the 100%-lock
+  point, so a car whose Haldex under- or over-responded to the commanded lock
+  had no way to correct it. It is now an adjustable "Lock calibration" on the
+  Settings page (range 100-500, default unchanged so existing behaviour is
+  preserved). It is a calibration constant, not a strength dial: there is one
+  correct value per car, found by running a Learn and adjusting until commanded
+  lock matches delivered lock (the Sent vs Returned trace on the 1:1 diagonal) -
+  higher does not lock harder. The underlying packing math was widened past its
+  old 8-bit cap to the full MQB signal range, and the standalone and
   CAN-passthrough copies of the Motor_11 packing were de-duplicated into one
   host-tested function so the two paths can no longer drift.
 - **Dashboard wakes for a USB host on the bench.** A USB host on the USB
