@@ -10,7 +10,17 @@
     <meta http-equiv="Expires" content="0">
 
     <title>OpenHaldex-C6</title>
-    <link rel="stylesheet" href="style.css?v=8.00.14">
+
+    <!-- PWA: installable, full-screen standalone launch from the home screen. -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="OpenHaldex">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+
+    <link rel="stylesheet" href="style.css?v=8.00.16">
 </head>
 
 <body>
@@ -22,6 +32,19 @@
                 <span class="status-badge" id="canStatus">CAN --</span>
                 <span class="status-badge" id="modeStatus">Mode --</span>
             </div>
+            <button class="btn-fullscreen" id="fullscreenToggle" aria-pressed="false"
+                aria-label="Enter full screen" title="Full screen" hidden>
+                <svg class="fs-icon fs-icon-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/>
+                    <path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+                </svg>
+                <svg class="fs-icon fs-icon-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/>
+                    <path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>
+                </svg>
+            </button>
         </header>
 
         <nav class="nav-tabs">
@@ -284,7 +307,7 @@
                 <div class="learn-controls">
                     <button class="btn-secondary" id="learnStart">Learn Haldex</button>
                     <button class="btn-secondary" id="learnCancel" style="display:none;">Cancel</button>
-                    <button class="btn-secondary" id="learnClear">Clear Learn Data</button>
+                    <button class="btn-danger" id="learnClear">Clear Learn Data</button>
                 </div>
                 <div class="toggle-group" style="margin-top: 12px;">
                     <label class="toggle">
@@ -488,6 +511,47 @@
                         </div>
                     </div>
                 </div>
+            </section>
+
+            <section class="card" id="otaSection">
+                <h2>Software Update</h2>
+                <div class="diag-grid">
+                    <div class="diag-item">
+                        <span class="diag-label">Firmware:</span>
+                        <span class="diag-value" id="otaVersion">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Built:</span>
+                        <span class="diag-value" id="otaBuild">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Running slot:</span>
+                        <span class="diag-value" id="otaPartition">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Update state:</span>
+                        <span class="diag-value" id="otaSafeState">--</span>
+                    </div>
+                </div>
+                <p class="hint" id="otaSafeReason">Updates are blocked unless the car is stationary with no CAN faults. On a bench with no CAN connected they are always allowed.</p>
+
+                <h3 class="subsection-title">Update</h3>
+                <p class="hint">Upload one file from a release: <strong>the merged .bin</strong> updates everything - firmware and this web UI - in a single go. A bare firmware.bin or littlefs.bin also works if you only need one half; the module works out which it got. Settings and the learn table are kept. Firmware goes to the spare slot and rolls back automatically if the new build fails its safety checks.</p>
+                <p class="hint">Stay on this page and keep the module powered during the upload. It reboots when the update finishes and this page reloads itself.</p>
+                <div class="wifi-password-row">
+                    <input type="file" id="otaFile" accept=".bin" class="ota-file" aria-label="Update file">
+                </div>
+                <div class="wifi-controls">
+                    <button class="btn-secondary" id="otaUpload">Upload &amp; Install</button>
+                </div>
+
+                <div class="learn-progress-wrap" id="otaProgressWrap" style="display:none;">
+                    <div class="learn-progress-bar">
+                        <div class="learn-progress-fill" id="otaProgressFill"></div>
+                    </div>
+                    <span class="learn-progress-label" id="otaProgressLabel">0%</span>
+                </div>
+                <p class="hint" id="otaResult" role="status" aria-live="polite"></p>
             </section>
         </div>
 
@@ -815,7 +879,7 @@
             </div>
         </aside>
 
-        <script src="./app.js?v=8.00.14" type="text/javascript"></script>
+        <script src="./app.js?v=8.00.16" type="text/javascript"></script>
         <!-- add version query param to force cache refresh on updates-->
     </div>
 </body>

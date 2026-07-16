@@ -23,7 +23,7 @@ static void loadSettingsFrom(Preferences &src)
   disableOnboardButton = src.getBool("dsbOnboardBtn", false);            // load disable onboard button
   disableExternalButton = src.getBool("dsbExtBtn", false);               // load disable external button
   fixHunting = src.getBool("fixHunting", false);                         // load Motor_11 BPK-mode toggle
-  bpkCeilingNm = src.getUShort("bpkCeilNm", 220);                        // load BPK full-lock torque ceiling (Nm)
+  bpkCeilingNm = src.getUShort("bpkCeilNm", 220);                        // load BPK per-car lock calibration (Nm)
   canSleepEnabled = src.getBool("canSleepEn", true);                     // load CAN-wake light sleep enable
   canSleepAggressive = src.getBool("canSleepAggr", false);               // load aggressive CAN sleep enable
   lpWakeThresholdFps = src.getUShort("lpWakeFps", 1100);                 // load LP wake threshold (fps)
@@ -96,7 +96,7 @@ static void persistSettingsToPref()
   pref.putBool("dsbOnboardBtn", disableOnboardButton);       // save disable onboard button
   pref.putBool("dsbExtBtn", disableExternalButton);          // save disable external button
   pref.putBool("fixHunting", fixHunting);                    // save Motor_11 BPK-mode toggle
-  pref.putUShort("bpkCeilNm", bpkCeilingNm);                 // save BPK full-lock torque ceiling (Nm)
+  pref.putUShort("bpkCeilNm", bpkCeilingNm);                 // save BPK per-car lock calibration (Nm)
   pref.putBool("canSleepEn", canSleepEnabled);               // save CAN-wake light sleep enable
   pref.putBool("canSleepAggr", canSleepAggressive);          // save aggressive CAN sleep enable
   pref.putUShort("lpWakeFps", lpWakeThresholdFps);           // save LP wake threshold (fps)
@@ -294,7 +294,7 @@ void writeEEP(void *arg) // task function to periodically write preferences
     pref.putBool("dsbOnboardBtn", disableOnboardButton);       // write disable onboard button
     pref.putBool("dsbExtBtn", disableExternalButton);          // write disable external button
     pref.putBool("fixHunting", fixHunting);                    // write Motor_11 BPK-mode toggle
-    pref.putUShort("bpkCeilNm", bpkCeilingNm);                 // write BPK full-lock torque ceiling (Nm)
+    pref.putUShort("bpkCeilNm", bpkCeilingNm);                 // write BPK per-car lock calibration (Nm)
     pref.putBool("canSleepEn", canSleepEnabled);               // write CAN-wake light sleep enable
     pref.putBool("canSleepAggr", canSleepAggressive);          // write aggressive CAN sleep enable
     pref.putUShort("lpWakeFps", lpWakeThresholdFps);           // write LP wake threshold (fps)

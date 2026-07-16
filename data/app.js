@@ -172,6 +172,60 @@ var currentLock = [
 // this is possible a hack, but I can't think of a better way to do it(!)
 document.addEventListener("DOMContentLoaded", initStoredSettings);
 
+// Register the service worker so the app installs as a full-screen PWA and can
+// still open its shell when the module is briefly unreachable. Service workers
+// only run in a secure context (https or localhost); over plain http to the
+// module's LAN IP the registration rejects, so guard it and swallow the failure
+// rather than throw an uncaught error on every load.
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}
+
+// Header fullscreen toggle. The Fullscreen API works over plain http (unlike
+// PWA install, which needs a secure context), so this is the path to a
+// full-screen experience on an unmodified phone: one tap hides the browser
+// chrome. The button stays hidden where the API doesn't exist (iPhone Safari
+// has no page fullscreen).
+function initFullscreen() {
+  const btn = document.getElementById("fullscreenToggle");
+  if (!btn) return;
+
+  const root = document.documentElement;
+  const request = root.requestFullscreen || root.webkitRequestFullscreen;
+  if (!request) return; // leave the button hidden
+  btn.hidden = false;
+
+  const active = () =>
+    !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+  const sync = () => {
+    const on = active();
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.setAttribute("aria-label", on ? "Exit full screen" : "Enter full screen");
+    btn.title = on ? "Exit full screen" : "Full screen";
+  };
+
+  btn.addEventListener("click", () => {
+    if (active()) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+      // navigationUI:"hide" is ignored where unsupported; the promise rejects
+      // if the browser refuses (e.g. not a user gesture), which we swallow -
+      // the icon simply stays on "enter".
+      const p = request.call(root, { navigationUI: "hide" });
+      if (p && p.catch) p.catch(() => {});
+    }
+  });
+
+  document.addEventListener("fullscreenchange", sync);
+  document.addEventListener("webkitfullscreenchange", sync);
+  sync();
+}
+
 // once settings are stored, start applying data where required
 function initApp() {
   //initStoredSettings(); // old
@@ -187,7 +241,8 @@ function initApp() {
   initLearn();
   initWifiSsid();
   initWifi();
-  //initOtaPage(); todo - currently just old OTA page, would like to incorporate the styling across
+  initOtaUpdate();
+  initFullscreen();
   guardScrollTaps(".toggle"); // stop scroll-flicks from flipping toggles
   guardTrackTaps(".slider", 24); // grab the thumb to move; a track tap does nothing
   guardTrackTaps(".slider-inline", 18);
@@ -727,6 +782,7 @@ async function saveLockTable() {
     }
   } catch (error) {
     console.error("Error saving map:", error);
+    showNotification("Failed to Save - check connection", "error");
   }
 }
 
@@ -1042,8 +1098,10 @@ function initNavigation() {
     });
   }
 
-  // BPK full-lock torque ceiling slider. Save on release (change), not on every
-  // input tick, so dragging doesn't stream torque-ceiling changes at a live car.
+  // BPK lock-calibration slider (per-car; the Nm the spoof frame claims at full
+  // command, not a strength dial - higher does not lock harder). Save on release
+  // (change), not on every input tick, so dragging doesn't stream calibration
+  // changes at a live car.
   const bpkCeilingRange = document.getElementById("bpkCeilingRange");
   const bpkCeilingValue = document.getElementById("bpkCeilingValue");
   if (bpkCeilingRange) {
@@ -1209,14 +1267,22 @@ function initModeButtons() {
       mode: mode, // send just the mode change
     };
 
-    try {
-      await fetchJson("/api/mode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sendData),
-      });
-    } catch (error) {
-      console.log("Save failed: " + error.message);
+    // fetchJson never throws - transport and parse failures resolve to
+    // undefined, so the !resp branch below covers them.
+    const resp = await fetchJson("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sendData),
+    });
+    if (!resp || resp.ok === false) {
+      // Failed on the module (or no response): drop the pending hold so the
+      // next poll snaps the highlight back to the real mode, and say why -
+      // a silently reverting button reads as a broken UI.
+      _pendingMode = null;
+      showNotification(
+        (resp && resp.error) ? resp.error : "Mode change failed - check connection",
+        "error"
+      );
     }
   }
 }
@@ -1963,6 +2029,11 @@ function confirmEdit() {
 // end tune edit
 
 function restoreDefaults() {
+  // One tap away from Apply and it discards the whole in-editor tune - make
+  // sure it was meant. (The device tune is untouched until Apply is hit.)
+  if (!confirm("Replace the current editor tune with the factory default map? Your edits are lost unless already applied or saved to a slot.")) {
+    return;
+  }
   applyMapToEditor(defaultSpeedHeader, defaultThrottleHeader, defaultLock);
 }
 
@@ -2574,6 +2645,9 @@ function initLearn() {
         if (data.progress === 102) {
           statusText.textContent = "No Haldex CAN data recorded - check connection";
           statusText.style.color = "var(--danger)";
+        } else if (data.progress === 103) {
+          statusText.textContent = "Learn aborted - vehicle started moving. Stop the car and retry.";
+          statusText.style.color = "var(--danger)";
         } else if (data.tableValid) {
           statusText.textContent = "Learn complete \u2713 - calibration table active";
           statusText.style.color = "var(--success)";
@@ -2609,6 +2683,11 @@ function initLearn() {
   });
 
   btnClear.addEventListener("click", async () => {
+    // Destroys a calibration that takes a full stationary sweep to rebuild,
+    // and the button sits right under Learn/Cancel - confirm before wiping.
+    if (!confirm("Clear the learned calibration table? The controller reverts to the static factor until you run Learn again.")) {
+      return;
+    }
     await fetchJson("/api/learn/clear", { method: "POST" });
     statusText.textContent = "Learn data cleared - static factor active";
     statusText.style.color = "var(--text-dim)";
@@ -2798,4 +2877,150 @@ function showNotification(message, type = "success") {
     notification.style.opacity = "0";
     setTimeout(() => notification.remove(), 300);
   }, 3000);
+}
+
+// Software Update card (Settings tab): live version/safe-state info from
+// /ota/info + /ota/check, then firmware and web-UI (LittleFS image) uploads
+// with real progress via XHR. The device reboots itself after a successful
+// upload; we poll /ota/health until it comes back and then reload.
+function initOtaUpdate() {
+  const version      = document.getElementById("otaVersion");
+  const build        = document.getElementById("otaBuild");
+  const slot         = document.getElementById("otaPartition");
+  const safeState    = document.getElementById("otaSafeState");
+  const safeReason   = document.getElementById("otaSafeReason");
+  const fileInput    = document.getElementById("otaFile");
+  const uploadBtn    = document.getElementById("otaUpload");
+  const progressWrap = document.getElementById("otaProgressWrap");
+  const progressFill = document.getElementById("otaProgressFill");
+  const progressLbl  = document.getElementById("otaProgressLabel");
+  const result       = document.getElementById("otaResult");
+  if (!fileInput || !uploadBtn || !progressWrap || !result) return;
+
+  async function refreshInfo() {
+    const info = await fetchJson("/ota/info");
+    if (info) {
+      version.textContent = info.version || "--";
+      build.textContent = info.appDate ? info.appDate + " " + (info.appTime || "") : "--";
+      slot.textContent = info.partition || "--";
+    }
+    const check = await fetchJson("/ota/check");
+    if (check) {
+      safeState.textContent = check.allowed ? "Ready" : "Blocked";
+      safeState.style.color = check.allowed ? "var(--success)" : "var(--danger)";
+      if (check.reason) safeReason.textContent = check.reason;
+    }
+  }
+
+  refreshInfo();
+  // The safe-state can change (car starts moving, CAN fault) - refresh whenever
+  // the user lands on the Settings tab rather than polling continuously.
+  document.querySelectorAll('.nav-tab[data-page="settings"]').forEach((tab) => {
+    tab.addEventListener("click", refreshInfo);
+  });
+
+  function setProgress(pct) {
+    progressFill.style.width = pct + "%";
+    progressLbl.textContent = pct + "%";
+  }
+
+  // fetch() has no upload progress, so uploads go through XMLHttpRequest.
+  function uploadBin(url, fieldName, file) {
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", url);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      xhr.onload = () => resolve({ ok: xhr.status === 200, text: xhr.responseText || "" });
+      xhr.onerror = () => resolve({ ok: false, text: "Connection lost during upload" });
+      const form = new FormData();
+      form.append(fieldName, file, file.name);
+      xhr.send(form);
+    });
+  }
+
+  async function waitForReboot() {
+    result.textContent = "Update sent - module is rebooting. Waiting for it to come back...";
+    const start = Date.now();
+    while (Date.now() - start < 120000) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const resp = await fetch("/ota/health", { cache: "no-store" });
+        if (resp.ok) {
+          result.textContent = "Module is back - reloading...";
+          location.reload();
+          return;
+        }
+      } catch (e) {
+        // still down - keep waiting
+      }
+    }
+    result.textContent = "Module did not come back within 2 minutes. Check its power and WiFi, then reload this page.";
+    uploadBtn.disabled = false;
+  }
+
+  // Mirror of the firmware's upload classifier, used only for the status label
+  // and to reject an obviously wrong file before wasting an upload. The
+  // firmware re-checks server-side and is authoritative. A littlefs image has
+  // "littlefs" at byte 8; ESP firmware/bootloader images start with 0xE9, and a
+  // merged full-flash image is far larger than one firmware slot.
+  async function classifyFile(file) {
+    try {
+      const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+      if (head.length >= 16 &&
+          String.fromCharCode.apply(null, Array.from(head.slice(8, 16))) === "littlefs") {
+        return "web UI";
+      }
+      if (head[0] === 0xe9) {
+        return file.size > 0x1a0000 ? "full package (firmware + web UI)" : "firmware";
+      }
+      return null;
+    } catch (e) {
+      return "update"; // can't sniff (old browser) - let the module decide
+    }
+  }
+
+  async function runUpload() {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      showNotification("Choose a .bin file first", "error");
+      return;
+    }
+    const kindLabel = await classifyFile(file);
+    if (!kindLabel) {
+      showNotification("That file is not a firmware, web-UI, or merged update image", "error");
+      return;
+    }
+    // Pre-flight the safe-state gate so a blocked update fails with a reason
+    // instead of dying mid-upload.
+    const check = await fetchJson("/ota/check");
+    if (!check) {
+      showNotification("Failed to reach device", "error");
+      return;
+    }
+    if (!check.allowed) {
+      showNotification(check.reason || "Module not in a safe state for updates", "error");
+      refreshInfo();
+      return;
+    }
+
+    uploadBtn.disabled = true;
+    progressWrap.style.display = "";
+    setProgress(0);
+    result.textContent = "Uploading " + kindLabel + ": " + file.name + " (do not close this page or power the module off)";
+
+    const res = await uploadBin("/ota/update", "update", file);
+    if (res.ok) {
+      setProgress(100);
+      await waitForReboot();
+    } else {
+      result.textContent = res.text || "Upload failed";
+      showNotification(res.text || "Upload failed", "error");
+      uploadBtn.disabled = false;
+      refreshInfo();
+    }
+  }
+
+  uploadBtn.addEventListener("click", runUpload);
 }

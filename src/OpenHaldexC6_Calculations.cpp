@@ -175,69 +175,83 @@ static float get_expert_lock_target()
   return int(v);            // return lock target as an integer percentage (0-100)
 }
 
+// Which force-mode value applies right now: 0..5 (Stock/FWD/5050/6040/7525/Expert)
+// when an enabled trigger's flag is active, or -1 when no force mode applies.
+// Priority between simultaneous triggers is user-configurable via
+// forceModesPriority (0-5 covering all 6 orderings of TC/Hazards/External).
+// Exposed so the inline gateway (parseCAN_chs) can detect "effective mode is
+// Stock" and pass frames through untouched instead of editing them.
+int get_forced_mode_value()
+{
+  if (!(extBtnForceMode || tcForceMode || hazardForceMode))
+  {
+    return -1;
+  }
+
+  struct TriggerCheck
+  {
+    bool enabled;
+    bool flag;
+    uint8_t value;
+  };
+  const TriggerCheck triggers[3] = {
+      {tcForceMode, tcForceModeFlag, tcForceModeValue},                // index 0 = TC
+      {hazardForceMode, hazardForceModeFlag, hazardForceModeValue},    // index 1 = Hazard
+      {extBtnForceMode, extButtonForceModeFlag, extBtnForceModeValue}, // index 2 = Ext
+  };
+
+  // Each row is [first, second, third] trigger index in priority order. 0=TC, 1=Hazard, 2=Ext. 6 rows cover all 6 options.
+  static const uint8_t priorityOrders[6][3] = {
+      {1, 0, 2}, // 0: Hazard > TC > Ext (default)
+      {0, 1, 2}, // 1: TC > Hazard > Ext
+      {1, 2, 0}, // 2: Hazard > Ext > TC
+      {0, 2, 1}, // 3: TC > Ext > Hazard
+      {2, 0, 1}, // 4: Ext > TC > Hazard
+      {2, 1, 0}, // 5: Ext > Hazard > TC
+  };
+
+  const uint8_t pri = (forceModesPriority < 6) ? forceModesPriority : 0;
+
+  for (uint8_t i = 0; i < 3; i++)
+  {
+    const uint8_t idx = priorityOrders[pri][i];
+    if (triggers[idx].enabled && triggers[idx].flag)
+    {
+      return triggers[idx].value;
+    }
+  }
+  return -1;
+}
+
 float get_lock_target_adjustment()
 {
+  // The return value is a torque COMMAND: standalone packs it into the frames it
+  // synthesizes, and the inline gateway packs it into edited chassis frames. It
+  // must therefore never mirror received_haldex_engagement back - engagement 100
+  // commanding 100 closes a positive feedback loop that latches the clutch shut
+  // (the stuck-at-100% field bug). Stock as a command is zero forced lock; true
+  // stock PASSTHROUGH is the caller's job (parseCAN_chs skips frame edits
+  // entirely when the effective mode is Stock).
   // const MODE_NAMES = ['Stock', 'FWD', '50:50', '60:40', '75:25', 'Expert']; // mode names as Strings
-  if (extBtnForceMode || tcForceMode || hazardForceMode) // if any force-mode trigger is enabled
+  const int forced = get_forced_mode_value();
+  if (forced >= 0)
   {
-    // Determine which trigger is active and pick its configured mode value.
-    // Priority is user-configurable via forceModesPriority (0-5 covering all 6 orderings of TC/Hazards/External).
-    struct TriggerCheck
+    switch (forced)
     {
-      bool enabled;
-      bool flag;
-      uint8_t value;
-    };
-    const TriggerCheck triggers[3] = {
-        {tcForceMode, tcForceModeFlag, tcForceModeValue},                // index 0 = TC
-        {hazardForceMode, hazardForceModeFlag, hazardForceModeValue},    // index 1 = Hazard
-        {extBtnForceMode, extButtonForceModeFlag, extBtnForceModeValue}, // index 2 = Ext
-    };
-
-    // Each row is [first, second, third] trigger index in priority order. 0=TC, 1=Hazard, 2=Ext. 6 rows cover all 6 options.
-    static const uint8_t priorityOrders[6][3] = {
-        {1, 0, 2}, // 0: Hazard > TC > Ext (default)
-        {0, 1, 2}, // 1: TC > Hazard > Ext
-        {1, 2, 0}, // 2: Hazard > Ext > TC
-        {0, 2, 1}, // 3: TC > Ext > Hazard
-        {2, 0, 1}, // 4: Ext > TC > Hazard
-        {2, 1, 0}, // 5: Ext > Hazard > TC
-    };
-
-    uint8_t fmv = 0; // force mode value (0=Stock, 1=FWD, 2=50:50, 3=60:40, 4=75:25, 5=Expert)
-    bool anyActive = false;
-    const uint8_t pri = (forceModesPriority < 6) ? forceModesPriority : 0;
-
-    for (uint8_t i = 0; i < 3; i++)
-    {
-      const uint8_t idx = priorityOrders[pri][i];
-      if (triggers[idx].enabled && triggers[idx].flag)
-      {
-        fmv = triggers[idx].value;
-        anyActive = true;
-        break;
-      }
-    }
-
-    if (anyActive)
-    {
-      switch (fmv)
-      {
-      case 0:
-        return received_haldex_engagement; // stock -> passthrough (mirror actual engagement, don't force open)
-      case 1:
-        return 0; // FWD
-      case 2:
-        return 100; // 50:50
-      case 3:
-        return 40; // 60:40
-      case 4:
-        return 30; // 75:25
-      case 5:
-        return get_expert_lock_target(); // Expert
-      default:
-        return 0; // error - zero lock
-      }
+    case 0:
+      return 0; // Stock -> no forced lock (passthrough is handled by the caller)
+    case 1:
+      return 0; // FWD
+    case 2:
+      return 100; // 50:50
+    case 3:
+      return 40; // 60:40
+    case 4:
+      return 30; // 75:25
+    case 5:
+      return get_expert_lock_target(); // Expert
+    default:
+      return 0; // error - zero lock
     }
   }
 
@@ -245,7 +259,7 @@ float get_lock_target_adjustment()
   switch (state.mode)
   {
   case MODE_STOCK:
-    return received_haldex_engagement; // stock -> passthrough (mirror actual engagement, never force FWD)
+    return 0; // Stock -> no forced lock. In standalone there is nothing to pass through, so Stock behaves as an open clutch; inline stock never reaches here (parseCAN_chs forwards frames untouched).
 
   case MODE_FWD:
     return 0; // zero lock
@@ -1030,7 +1044,7 @@ void getLockData(twai_message_t &rx_message_chs)
     switch (rx_message_chs.identifier)
     {
       /*
-            twai_message_t frame;
+            twai_message_t frame = {};
             frame.identifier = ESP_18; // 0x135.  Fixed response, no changes
             frame.extd = 0;
             frame.rtr = 0;

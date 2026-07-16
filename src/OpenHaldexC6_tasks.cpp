@@ -21,11 +21,21 @@ void haldexLearnTask(void *arg)
   const uint8_t  sampleCount = 8;   // samples spread across the window below
   const uint32_t sampleGapMs = 18;  // 8 * 18 = 144 ms window -> ~300 ms/CF total
   uint8_t prevRecorded = 0;
+  bool speedAborted = false;
 
   for (uint16_t cf = 0; cf <= 100; cf++)
   {
     if (haldexLearnCancel)
     {
+      break;
+    }
+
+    // Live speed interlock: the sweep commands up to full lock, which is only
+    // safe stationary. If the car moves off mid-learn, abort without
+    // publishing the partial table. Step 103 tells the UI why.
+    if (received_vehicle_speed > learnMaxSpeed)
+    {
+      speedAborted = true;
       break;
     }
 
@@ -45,7 +55,11 @@ void haldexLearnTask(void *arg)
     haldexLearnTable[cf] = prevRecorded;
   }
 
-  if (!haldexLearnCancel)
+  if (speedAborted)
+  {
+    haldexLearnStep = 103; // 103 = aborted: vehicle started moving (table stays invalid)
+  }
+  else if (!haldexLearnCancel)
   {
     // Publish the finished table and the valid flag together under the lock so
     // the hot path never sees a valid flag pointing at a half-scanned table

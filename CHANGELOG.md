@@ -18,8 +18,8 @@ limiting - are Forbes's own work and are not repeated here.
   literal in source and prints it to the serial log. It is removed and flashing
   fails closed (HTTP 503) until a credential is provisioned - on first power-up
   the device redirects to a `/setup` page where you set your own password, which
-  is stored to NVS. Credentials are rotatable via the authenticated
-  `POST /ota/credential`. There is no build-time or compiled-in credential path:
+  is stored to NVS. The password is rotatable from the WiFi Access Point card on
+  the Diagnostics tab (`POST /api/wifi`). There is no build-time or compiled-in credential path:
   the only way to set a password is at runtime, so no build step is required.
 - **State-changing endpoints require authentication.** In V8.00.2 the mode,
   settings, tune and learn endpoints (and host-to-device CAN injection on the
@@ -35,6 +35,30 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Firmware correctness
 
+- **Stock mode no longer mirrors engagement back as the lock command.** The
+  lock-target calculation returned the Haldex's own reported engagement as the
+  commanded target for Stock mode (both the base mode and a force-mode trigger
+  configured to Stock). Whenever that value was packed into transmitted frames
+  (standalone always; inline while editing), engagement 100% commanded 100%,
+  closing a positive feedback loop that latched the clutch at full lock until
+  FWD was selected or the unit power-cycled. Stock now commands zero forced
+  lock, and the inline gateway detects "effective mode is Stock" (base mode or
+  forced value) and forwards chassis frames untouched - true passthrough
+  instead of frame edits built from mirrored engagement. The brake/handbrake
+  follow override is skipped under the same condition, so effective Stock is
+  a genuine passthrough even with a follow override enabled.
+- **Standalone CAN frames no longer transmit uninitialized flag bits.** Around
+  40 frame builders declared the outgoing `twai_message_t` on the stack and set
+  only the identifier, length and data, leaving the flags word (extended-ID,
+  remote-request, single-shot, self-reception) as stack garbage. A stray RTR or
+  extended-ID bit would silently corrupt the keep-alive frames the Haldex
+  depends on. Every local frame is now zero-initialized at declaration.
+- **Debug printf calls no longer compile into release builds.** The `DEBUG()`
+  macros were gated with `#ifdef enableDebug`, but `enableDebug` is always
+  defined (as 0 or 1), so the live `Serial.printf` variant was selected even in
+  the release build - per-second status prints on a serial port that release
+  never opens, with every format string baked into flash. The gate is now
+  `#if enableDebug`, restoring the intended release behaviour.
 - **UDS::sendRequest capacity bug fixed.** The function zeroed the in/out
   `responseLen` before it was used as the copy bound, collapsing every bound to
   zero so every `readDataByIdentifier` returned zero bytes. Capacity is now
@@ -98,6 +122,82 @@ limiting - are Forbes's own work and are not repeated here.
   correction-factor step now samples engagement across a short window and takes a
   median with a monotonic clamp against the previous step, rejecting a lone spike
   or CAN dropout without changing total learn duration.
+- **Web UI restored after a failed filesystem OTA.** Both filesystem update
+  paths (the merged image and a direct littlefs.bin upload) unmount LittleFS
+  before overwriting the partition, but every failure branch returned an HTTP
+  error and left it unmounted, killing the web UI until a power cycle. Every
+  failure path now attempts a remount (best effort - a partially-written
+  partition may not mount, but the HTTP API and a retry upload keep working
+  either way), and a failed littlefs.bin upload revokes its chunk
+  authorization so trailing chunks stop writing to the partition. Concurrent
+  uploads are rejected (409) while one is in progress, and a client that
+  vanishes mid-transfer triggers a disconnect cleanup that aborts the open
+  OTA handle, remounts the filesystem, and releases the in-progress flag -
+  previously a torn upload left all of that latched until a power cycle.
+- **UDS read endpoint validates the request CAN ID.** `/api/uds/read` rejected
+  a malformed response ID but let a malformed request ID parse to 0 and
+  transmit the UDS request on CAN ID 0x0. Both IDs are now validated.
+- **CAN transmit failures are counted instead of ignored.** Every gateway-path
+  transmit ignored its return value, so a send that failed at the call site
+  (TX queue full, driver stopped) vanished without a trace. Sends now go
+  through a wrapper that counts failures per bus and logs the first and every
+  256th in debug builds; driver-level TX errors were already surfaced via bus
+  alerts.
+
+### Safety interlocks and fail-safes
+
+- **Learn sweep speed interlock.** The learn sweep ramps the clutch to full
+  lock over ~30 seconds and could previously be started (and would keep
+  running) at any road speed. Starting is now refused above 5 km/h, and a
+  running sweep aborts itself if the car moves off, without publishing the
+  partial table. The web UI reports why.
+- **Stale CAN inputs now fail safe.** Speed, throttle, the ESP/hazard
+  force-mode flags, ABS validity and reported engagement were only ever
+  overwritten by frame arrival, so on chassis or Haldex bus loss they latched
+  their last value indefinitely - in standalone that meant synthesizing lock
+  from stale data forever, including a stale force-mode flag holding a forced
+  mode on. Once the existing 1-second CAN health timeout declares a bus dead,
+  those inputs are zeroed; zero speed/throttle fails the lock-enable gates, so
+  the commanded lock decays to open.
+- **`/api/uds/read` no longer steals frames from the CAN gateway.** The
+  diagnostic read helper called `twai_receive` directly from the web handler -
+  a second consumer racing the gateway parse task for every bus-0 frame, with
+  each frame it won consumed and never forwarded, while blocking the web
+  server task for up to 2 seconds. Responses are now tapped (copied) out of
+  the normal parse path into a dedicated queue, the gateway keeps every frame,
+  concurrent reads are rejected, and the wait is bounded at 300 ms.
+- **CAN driver queues resized from seconds of backlog to ~30 ms.** The TWAI
+  queues were 2048 RX / 1024 TX per bus (~140 KB of heap) - deep enough that a
+  stalled parse task would later replay several seconds of stale chassis
+  frames to the Haldex instead of dropping them. Now 128 RX / 64 TX; real
+  overruns surface through the existing RX_QUEUE_FULL alert monitoring.
+- **Speed byte in the OpenHaldex CAN broadcast clamps instead of wrapping.**
+  The 0x6B0 status broadcast truncated the 16-bit vehicle speed to its low
+  byte, so 256 km/h read as 0 to any consumer (gauge, external display). It
+  now clamps at 255.
+- **Every API POST path now answers.** The mode handler never sent an HTTP
+  response at all, and the settings/tune handlers returned silently on invalid
+  input, leaving the client hanging until TCP timeout - visible as random UI
+  freezes on a weak AP link. All paths now return explicit success or a 4xx
+  with an error message, and the UI shows a toast instead of silently
+  snapping the mode highlight back.
+
+### Web UI safety and accessibility
+
+- **Destructive actions confirm first.** Clear Learn Data (which destroys a
+  calibration that takes a full sweep to rebuild, and sits directly under the
+  Learn/Cancel buttons) and Restore Defaults (adjacent to Apply) both asked no
+  questions; each now requires a confirmation, and Clear Learn Data is styled
+  as a danger button.
+- **Settings toggles are reachable by keyboard and screen reader.** The
+  toggle checkboxes were `display:none`, removing every settings switch -
+  including Disable Controller - from the tab order and the accessibility
+  tree. They now use the visually-hidden pattern with a visible focus ring,
+  and the touch target meets the 44px minimum.
+- **Service worker never caches `/ota/`.** The updater polls `/ota/health` to
+  detect the post-flash reboot; a cached response would report the module up
+  while it was still flashing. `/ota/*` now always goes to the network, like
+  `/api/*`.
 
 ### Concurrency and persistence
 
@@ -211,6 +311,45 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Added
 
+- **Software Update card with single-file OTA.** The Settings tab now has a
+  Software Update section: current firmware version/build/slot, the live
+  safe-state gate with its blocking reason, and one upload-with-progress slot.
+  It takes the release's single merged image - the same file used for USB
+  flashing - and updates firmware and web UI in one upload, so an end user
+  handles exactly one file. `POST /ota/update` classifies the upload from its
+  first bytes: a merged image is split by flash offset (app segment to the
+  spare OTA slot, filesystem segment to the LittleFS partition; the
+  bootloader, partition table and NVS regions are skipped, so settings and the
+  learn table survive), while a bare `firmware.bin` or `littlefs.bin` still
+  works for partial updates (`POST /ota/updatefs` remains as the explicit
+  filesystem endpoint). The firmware path keeps the dual-slot OTA semantics
+  (write to spare slot, reboot, auto-rollback on failed safety checks), and
+  everything sits behind the same safe-state gate. Wrong-file guards check
+  real image magics: filesystem writes require the littlefs superblock magic,
+  and an ESP image too big for the app slot but too short to be a merged image
+  is rejected as truncated. The classification and merged-image chunk routing
+  live in a host-tested pure header (`OpenHaldexC6_OTARoute.h`). Previously
+  the OTA endpoints existed but nothing in the UI linked to them - updating
+  meant knowing to type `/update` into the address bar, and the web UI itself
+  could not be updated over the air at all.
+
+- **Installable PWA.** The web UI can be added to a phone home screen and
+  launched full-screen with one tap: web app manifest, generated icon set
+  (including maskable and Apple touch icons), and a service worker. The service
+  worker never caches `/api/*` or POSTs - live telemetry and control always hit
+  the device - and serves the HTML/CSS/JS shell network-first so a UI update is
+  picked up the moment the module is reachable, with the cached shell as a
+  fallback when it briefly is not. iOS Safari gets full standalone from the
+  Apple meta tags alone; Android Chrome may open as a browser tab over plain
+  http (secure-context rule), where Samsung Internet is more lenient.
+
+- **Full-screen toggle in the header.** One tap hides the browser chrome using
+  the Fullscreen API, which - unlike PWA install - works over plain http, so an
+  unmodified phone gets the full-screen dashboard without any flags or install
+  step. The button hides itself where the API doesn't exist (iPhone Safari).
+  The manifest also declares `display_override: fullscreen`, so when the app
+  is installed from a secure context, supported browsers open it full-screen.
+
 - **Plain-English help across the tuning UI.** The drive-mode drawer now
   describes what each mode actually does (Stock passes the factory engagement
   through, FWD holds the rear open, 50:50/60:40/75:25 hold progressively lighter
@@ -292,13 +431,16 @@ limiting - are Forbes's own work and are not repeated here.
   visible from any phone. The slot library uses its own NVS namespace and never
   touches the settings handle. Replaces the earlier phone-side file
   export/import.
-- **Gen5 BPK full-lock torque is now a setting.** The "Fix Hunting" (BPK)
-  Motor_11 packing mapped 100% lock to a hardcoded 220 Nm of spoofed engine
-  torque, so a controller that never reached full engagement had no way to ask
-  for more. It is now an adjustable "Full-lock torque ceiling" on the Settings
-  page, 100-500 Nm (MQB signal max 509 Nm), default 220 so existing behaviour is
-  unchanged. The underlying packing math was widened from 8-bit (which silently
-  capped torque at 255 Nm) to the full signal range, and the standalone and
+- **Gen5 BPK lock calibration is now a per-car setting.** The "Fix Hunting"
+  (BPK) Motor_11 packing baked in one fixed calibration value for the 100%-lock
+  point, so a car whose Haldex under- or over-responded to the commanded lock
+  had no way to correct it. It is now an adjustable "Lock calibration" on the
+  Settings page (range 100-500, default unchanged so existing behaviour is
+  preserved). It is a calibration constant, not a strength dial: there is one
+  correct value per car, found by running a Learn and adjusting until commanded
+  lock matches delivered lock (the Sent vs Returned trace on the 1:1 diagonal) -
+  higher does not lock harder. The underlying packing math was widened past its
+  old 8-bit cap to the full MQB signal range, and the standalone and
   CAN-passthrough copies of the Motor_11 packing were de-duplicated into one
   host-tested function so the two paths can no longer drift.
 - **Dashboard wakes for a USB host on the bench.** A USB host on the USB

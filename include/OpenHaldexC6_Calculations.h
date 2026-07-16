@@ -12,6 +12,15 @@ extern volatile uint8_t haldexLearnCF;
 
 float get_lock_target_adjustment();
 
+// Which force-mode value applies right now: 0..5 (Stock/FWD/5050/6040/7525/
+// Expert) when an enabled force trigger's flag is active (priority picked by
+// forceModesPriority), or -1 when no force mode applies. Used by
+// get_lock_target_adjustment and by the inline gateway to detect "effective
+// mode is Stock", which must mean untouched passthrough - never frame edits
+// built from mirrored engagement (the stuck-at-100% feedback loop). Pure logic
+// over the force-mode globals, host-testable.
+int get_forced_mode_value();
+
 // Slew one step of the lock-target rate limiter. Ramp times are milliseconds for
 // a full 0<->100 travel: rising transitions take engage_ms, falling transitions
 // take release_ms. 0 ms = instant in that direction (rising 0 is the historical
@@ -112,9 +121,9 @@ bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_tab
 // opendbc MQB K-matrix (see vault "OpenHaldex - MQB Motor_11 Torque Spoof
 // Verified Against opendbc"). `command` is the lock-modulated demand byte
 // (get_lock_target_adjusted_value(0xFE,false)); it is remapped onto
-// [BPK_FLOOR .. ceil_nm] Nm. `ceil_nm` is the tunable full-lock torque the frame
-// claims at full command (higher = more aggressive lock), clamped to the 509 Nm
-// signal maximum. `ist_nm`/`solf_nm` carry the slew-limited previous values in
+// [BPK_FLOOR .. ceil_nm] Nm. `ceil_nm` is the per-car lock calibration: the Nm the
+// frame claims at full command (not a strength dial - higher does not lock harder,
+// it shifts the calibration), clamped to the 509 Nm signal maximum. `ist_nm`/`solf_nm` carry the slew-limited previous values in
 // and the new values out, so the CALLER owns the ramp state across cycles (kept
 // out of the function so it stays pure and host-testable). out[0] is left 0 for
 // the caller to fill with the E2E CRC. No Arduino/TWAI symbols.

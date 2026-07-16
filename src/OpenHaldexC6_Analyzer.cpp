@@ -41,7 +41,7 @@ static const uint32_t kAnalyzerPollDelayMs = 1;
 static const size_t kAnalyzerQueueDepth = 8;
 
 struct AnalyzerFrame {
-  twai_message_t frame;
+  twai_message_t frame = {};
   uint8_t bus;       // 0 = chassis, 1 = haldex
   uint32_t timestamp;
 };

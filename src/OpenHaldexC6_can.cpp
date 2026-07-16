@@ -3,6 +3,32 @@
 #include <OpenHaldexC6_Analyzer.h>
 #include <OpenHaldexC6_UDS.h>
 
+// Every transmit in this file goes through this wrapper so a failed send
+// (TX queue still full after the 10 ms wait, driver stopped/bus-off) is
+// counted instead of vanishing. Counted, not logged per-frame: at bus speed
+// a wedged transmitter would flood the log. Failures that make it onto the
+// wire and error out already surface via TWAI_ALERT_TX_FAILED in the
+// bus-health monitor; these counters catch the call-site failures the driver
+// never sees. Increments race across the sender tasks, so treat the counts
+// as an order-of-magnitude diagnostic, not an exact tally.
+static volatile uint32_t canTxDropBus0 = 0;
+static volatile uint32_t canTxDropBus1 = 0;
+static void canTransmit(twai_handle_t bus, const twai_message_t *msg)
+{
+  if (twai_transmit_v2(bus, msg, (10 / portTICK_PERIOD_MS)) == ESP_OK)
+  {
+    return;
+  }
+  const bool isBus0 = (bus == twai_bus_0);
+  uint32_t drops = isBus0 ? ++canTxDropBus0 : ++canTxDropBus1;
+  // Log the first drop and every 256th after that.
+  if ((drops & 0xFF) == 1)
+  {
+    DEBUG("CAN - TX failed on bus %d (ID 0x%03X, %lu drops total)",
+          isBus0 ? 0 : 1, (unsigned)msg->identifier, (unsigned long)drops);
+  }
+}
+
 void broadcastOpenHaldex(void *arg)
 {
   while (1)
@@ -27,7 +53,7 @@ void broadcastOpenHaldex(void *arg)
     xSemaphoreGive(stateMutex);
 
     // build up the 'OpenHaldex' frame for broadcasting back over CAN
-    twai_message_t broadcast_frame;
+    twai_message_t broadcast_frame = {};
     broadcast_frame.identifier = OPENHALDEX_BROADCAST_ID;
     broadcast_frame.extd = 0;
     broadcast_frame.rtr = 0;
@@ -36,12 +62,14 @@ void broadcastOpenHaldex(void *arg)
     broadcast_frame.data[1] = isStandalone;
     broadcast_frame.data[2] = (uint8_t)received_haldex_engagement_raw;
     broadcast_frame.data[3] = (uint8_t)snapshot_lock_target;
-    broadcast_frame.data[4] = received_vehicle_speed;
+    // Speed is uint16 km/h but this byte is uint8: clamp instead of letting the
+    // implicit truncation wrap (256 km/h would broadcast as 0).
+    broadcast_frame.data[4] = (uint8_t)((received_vehicle_speed > 255) ? 255 : received_vehicle_speed);
     broadcast_frame.data[5] = snapshot_mode_override;
     broadcast_frame.data[6] = (uint8_t)snapshot_mode;
     broadcast_frame.data[7] = (uint8_t)received_pedal_value;
 
-    twai_transmit_v2(twai_bus_0, &broadcast_frame, (10 / portTICK_PERIOD_MS));
+    canTransmit(twai_bus_0, &broadcast_frame);
 
     vTaskDelay(broadcastRefresh / portTICK_PERIOD_MS);
   }
@@ -54,7 +82,7 @@ static void transmitFrameCopy(twai_handle_t bus, const twai_message_t &src, twai
   scratch.extd = src.extd;
   scratch.rtr = src.rtr;
   scratch.data_length_code = src.data_length_code;
-  twai_transmit_v2(bus, &scratch, (10 / portTICK_PERIOD_MS));
+  canTransmit(bus, &scratch);
 }
 
 // Brake/handbrake override applied to chassis frames before forwarding to the
@@ -119,8 +147,14 @@ void setupCAN()
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();                                                          // accept all messages
 
   // g_config.intr_flags = ESP_INTR_FLAG_LOWMED;  //Optional - move canbus irq to free up the default level 1 IRQ it will take up.  Todo
-  g_config.tx_queue_len = 1024; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5, use this to increase if needed
-  g_config.rx_queue_len = 2048; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5, use this to increase if needed // 4096
+  // Queue depth = worst tolerable LATENCY, not throughput. At a fully loaded
+  // 500 kbit/s bus (~4000 fps) 128 frames is ~30 ms of backlog; the old
+  // 2048/1024 sizing burned ~140 KB of heap across both buses and, worse,
+  // meant a stalled parse task later replayed several SECONDS of stale
+  // chassis frames to the Haldex instead of dropping them. Real overruns now
+  // surface as RX_QUEUE_FULL alerts (already monitored in showHaldexState).
+  g_config.tx_queue_len = 64;  //<TWAI_GENERAL_CONFIG_DEFAULT default is 5
+  g_config.rx_queue_len = 128; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5
   // g_config.intr_flags = ESP_INTR_FLAG_IRAM;
 
   // Allow the TWAI power domain to be powered down during light sleep; the
@@ -193,6 +227,20 @@ void parseCAN_chs(void *arg)
       lastCANChassisTick = millis();
       ++lpChassisFrameCount;
 
+      // /api/uds/read tap: copy frames matching the registered response ID to
+      // the web helper's queue. Copy, not consume - the frame continues down
+      // the normal gateway path below.
+      if (udsWebRespId != 0 && udsWebRxQueue != nullptr && rx_message_chs.identifier == udsWebRespId)
+      {
+        if (xQueueSend(udsWebRxQueue, &rx_message_chs, 0) != pdTRUE)
+        {
+          // Queue full: the web helper missed this frame and its read will
+          // time out with a clear error rather than hang - just make the
+          // drop visible in debug builds.
+          DEBUG("CAN - UDS web tap queue full, dropped frame 0x%03X", (unsigned)rx_message_chs.identifier);
+        }
+      }
+
       tx_message_hdx.identifier = rx_message_chs.identifier;
 
       // Gen41 Haldex-originated Bus0 heartbeats - capture presence & timestamp.
@@ -256,7 +304,7 @@ void parseCAN_chs(void *arg)
         lock_resp.data[5] = (uint8_t)received_haldex_engagement_raw; // applied engagement, raw
         lock_resp.data[6] = snapshot_mode;                           // live openhaldex_mode_t, so a mode write can be read back
         lock_resp.data[7] = 0xAA;                                    // ISO-TP padding
-        twai_transmit_v2(twai_bus_0, &lock_resp, (10 / portTICK_PERIOD_MS));
+        canTransmit(twai_bus_0, &lock_resp);
         continue; // consume - do NOT forward the request to Bus 1
       }
 
@@ -318,7 +366,7 @@ void parseCAN_chs(void *arg)
         slip_resp.data[5] = (uint8_t)slip[1];
         slip_resp.data[6] = (uint8_t)slip[2];
         slip_resp.data[7] = (uint8_t)slip[3];
-        twai_transmit_v2(twai_bus_0, &slip_resp, (10 / portTICK_PERIOD_MS));
+        canTransmit(twai_bus_0, &slip_resp);
         continue; // consume - do NOT forward the request to Bus 1
       }
 
@@ -369,7 +417,7 @@ void parseCAN_chs(void *arg)
           mode_resp.data[6] = 0xAA;
           mode_resp.data[7] = 0xAA;
         }
-        twai_transmit_v2(twai_bus_0, &mode_resp, (10 / portTICK_PERIOD_MS));
+        canTransmit(twai_bus_0, &mode_resp);
         continue; // consume - do NOT forward the request to Bus 1
       }
 
@@ -684,7 +732,7 @@ void parseCAN_chs(void *arg)
           tx_message_hdx.extd = rx_message_chs.extd;
           tx_message_hdx.rtr = rx_message_chs.rtr;
           tx_message_hdx.data_length_code = rx_message_chs.data_length_code;
-          twai_transmit_v2(twai_bus_1, &tx_message_hdx, (10 / portTICK_PERIOD_MS));
+          canTransmit(twai_bus_1, &tx_message_hdx);
           break;
         }
         continue;
@@ -709,8 +757,20 @@ void parseCAN_chs(void *arg)
           const openhaldex_mode_t modeSnapshot = state.mode;
           xSemaphoreGive(stateMutex);
 
-          // Edit the CAN frame, if not in STOCK mode (or if learn is active - learn must run regardless of mode)
-          if (modeSnapshot != MODE_STOCK || haldexLearnActive)
+          // Effective mode: an active force trigger's value overrides the base
+          // mode (get_forced_mode_value pairs each feature with its own flag, so
+          // a stray tcForceModeFlag with the TC feature disabled cannot trigger).
+          // When the EFFECTIVE mode is Stock - base mode Stock with no trigger,
+          // or a trigger whose configured value is Stock - the only correct
+          // behaviour is untouched passthrough. Editing frames in stock used to
+          // mirror received_haldex_engagement back as the command, closing a
+          // feedback loop that latched the clutch at 100% until FWD/power cycle.
+          const int forcedMode = get_forced_mode_value();
+          const bool stockEffective = (forcedMode >= 0) ? (forcedMode == MODE_STOCK)
+                                                        : (modeSnapshot == MODE_STOCK);
+
+          // Edit the CAN frame unless effective-stock (learn must run regardless of mode)
+          if (!stockEffective || haldexLearnActive)
           {
             if (haldexGeneration == 1 || haldexGeneration == 2 || haldexGeneration == 4 || haldexGeneration == 50 || haldexGeneration == 51 || haldexGeneration == 41)
             {
@@ -719,42 +779,23 @@ void parseCAN_chs(void *arg)
           }
           else
           {
+            // Stock passthrough: mirror the Haldex's reported engagement for
+            // telemetry only; the frame itself is forwarded untouched below.
             xSemaphoreTake(stateMutex, portMAX_DELAY);
             lock_target = received_haldex_engagement;
             xSemaphoreGive(stateMutex);
-
-            /*
-                        if (extBtnForceMode || tcForceMode || hazardForceMode)
-            {
-              if (extButtonForceModeFlag || tcForceModeFlag || hazardForceModeFlag) // if either flag is active, return the forced lock value, otherwise return 0
-              {
-                getLockData(rx_message_chs);
-              }
-            }
-          }
-            */
-
-            // Only force the lock when an *enabled* feature's own flag is active.
-            // Pair each feature with its matching flag - tcForceModeFlag in
-            // particular is driven straight off the car's ESP/ASR "passive" CAN
-            // bit and can be set even when the TC-force feature is disabled. If
-            // the flags were OR'd independently of their enables, a stray
-            // tcForceModeFlag would keep calling getLockData() after the hazard
-            // switch released, and get_lock_target_adjustment() would fall through
-            // to MODE_STOCK's default (return 0 / FWD) - leaving the unit stuck
-            // open instead of reverting to stock passthrough.
-            if ((extBtnForceMode && extButtonForceModeFlag) ||
-                (tcForceMode && tcForceModeFlag) ||
-                (hazardForceMode && hazardForceModeFlag))
-            {
-              getLockData(rx_message_chs);
-            }
           }
 
           // Optional brake/handbrake override (followBrake/followHandbrake +
           // invertBrake/invertHandbrake). Changes rx_message_chs in place
           // before the copy so the Haldex sees the rewritten bit + valid CRC.
-          applyBrakeHandbrakeCANOverride(rx_message_chs);
+          // Same gate as the frame edits above: effective-Stock passthrough
+          // means the Haldex sees the chassis bus exactly as OEM, so the
+          // override is skipped too (unless a learn sweep is editing frames).
+          if (!stockEffective || haldexLearnActive)
+          {
+            applyBrakeHandbrakeCANOverride(rx_message_chs);
+          }
           }
           else
           {
@@ -770,7 +811,7 @@ void parseCAN_chs(void *arg)
           tx_message_hdx.extd = rx_message_chs.extd;
           tx_message_hdx.rtr = rx_message_chs.rtr;
           tx_message_hdx.data_length_code = rx_message_chs.data_length_code;
-          twai_transmit_v2(twai_bus_1, &tx_message_hdx, (10 / portTICK_PERIOD_MS));
+          canTransmit(twai_bus_1, &tx_message_hdx);
         }
       }
     } while (twai_receive_v2(twai_bus_0, &rx_message_chs, 0) == ESP_OK);
@@ -800,7 +841,7 @@ void parseCAN_hdx(void *arg)
       if (analyzerMode || analyzerSerial)
       {
         analyzerQueueFrame(rx_message_hdx, 1);
-        twai_transmit_v2(twai_bus_0, &rx_message_hdx, (10 / portTICK_PERIOD_MS));
+        canTransmit(twai_bus_0, &rx_message_hdx);
         continue;
       }
 
@@ -947,10 +988,15 @@ void parseCAN_hdx(void *arg)
       // Always fall through so the frame is forwarded to Bus 0 (keeps VCDS / passthrough working).
       if (udsMQBEnabled && udsRxQueue != nullptr && rx_message_hdx.identifier == 0x779)
       {
-        xQueueSend(udsRxQueue, &rx_message_hdx, 0);
+        if (xQueueSend(udsRxQueue, &rx_message_hdx, 0) != pdTRUE)
+        {
+          // Same as the web tap above: a dropped frame means one missed UDS
+          // response (the poller re-requests), so log it rather than block.
+          DEBUG("CAN - UDS MQB tap queue full, dropped frame 0x779");
+        }
       }
 
-      twai_transmit_v2(twai_bus_0, &rx_message_hdx, (10 / portTICK_PERIOD_MS));
+      canTransmit(twai_bus_0, &rx_message_hdx);
     } while (twai_receive_v2(twai_bus_1, &rx_message_hdx, 0) == ESP_OK);
   }
 }

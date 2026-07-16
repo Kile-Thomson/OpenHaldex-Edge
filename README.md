@@ -39,7 +39,7 @@ The firmware runs on an **ESP32-C6** and reads CAN bus messages from the vehicle
 
 This fork tracks Forbes Automotive's **V8.00.2** firmware and builds directly on it. Same hardware, same modes, same wiring. Most of the driving features - the MQB live-data readout over UDS, hazard force-open, lock-release rate limiting and the low-power sleep system - are Forbes's own work and ship in the V8.00.2 base this fork starts from. Full credit for the platform and its reverse-engineering belongs to them.
 
-What this fork adds on top is a focused security, correctness and testing pass, plus two optional driving features. Every item below was checked against the V8.00.2 source before it was listed here, so the list reflects what actually differs from the current upstream, not an older release. The change-by-change breakdown is in [CHANGELOG.md](CHANGELOG.md).
+What this fork adds on top is a focused security, correctness and testing pass, a handful of optional driving features, over-the-air updates from the browser, and a reworked web UI. Every item below was checked against the V8.00.2 source before it was listed here, so the list reflects what actually differs from the current upstream, not an older release. The change-by-change breakdown is in [CHANGELOG.md](CHANGELOG.md).
 
 ### Security hardening
 
@@ -62,6 +62,11 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 - **Optional steering-gain reduction.** Off by default. Winds lock back as steering angle increases, so the rear axle isn't fighting the front through tight corners and car parks. The angle is decoded from the MQB LWI_01 (0x086) frame; you choose where the reduction starts, where it bottoms out, and the minimum it can drop to. If the steering signal goes stale or is flagged faulty the reduction switches itself off and behaviour returns to normal. The live angle and applied gain show on the Diagnostics page so you can confirm the reading on your car before turning it on.
 - **Working lock-rate sliders, in real time units.** The base firmware's lock-release rate slider and enable toggle were sent by the web UI but ignored by the firmware, so they did nothing. This fork makes them work and adds a separate engage rate, so both lock-up and release can be slewed instead of snapping on and off. Both are now set in milliseconds for a full 0-100% sweep (0 = instant) rather than the awkward percent-per-second unit, so a rate reads as the time the change takes.
 - **Per-corner slip and drive-mode over the diagnostic bus.** OpenHaldex answers three supplier-specific UDS DIDs on the Haldex address, the same channel that already carries clutch temps and PWM, so a tester on the OBD port (such as the Rokketek gauge) can read lock and geometry-compensated per-corner wheel slip and set the drive mode, even though the car's gateway won't forward the passive broadcasts that far. Slip is each wheel's real speed against what the steering geometry predicts, so a straight launch and a mid-corner break-loose both read as true slip. The four slip values are also on the web dashboard JSON. Geometry constants are Audi TT Mk3 defaults and want on-car calibration.
+- **Per-car lock calibration for Gen5.** The BPK packing used to bake in one fixed calibration value, so a car whose Haldex under- or over-responded to the lock command had no way to correct it. It is now an adjustable per-car number: run a Learn and nudge it until the lock you command matches what the Haldex actually delivers (the Sent vs Returned line sitting on the 1:1 diagonal). It is not a strength dial - higher does not lock harder, it just shifts the calibration, and there is one correct value per car. Default is unchanged, so nothing moves unless you tune it. Under the hood the packing math was widened past its old 8-bit cap, and the standalone and passthrough copies were merged into one host-tested function so they can't drift apart.
+
+### Updates
+
+- **Update over the air, one file, from the browser.** A Software Update card on the Settings page shows the current version, the live safe-state gate and its blocking reason, and a single upload slot with progress. Feed it the release's merged image - the same file used for a USB flash - and it updates both the firmware and the web UI in one go, splitting the image by flash offset and skipping the bootloader, partition table and NVS so your settings and learn table survive. In the base firmware the OTA endpoints existed but nothing in the UI linked to them, and the web UI could not be updated over the air at all. Every update stays behind the same safety gate (car stationary, buses healthy, no temperature fault) and the firmware path keeps dual-slot auto-rollback.
 
 ### Web interface
 
@@ -69,6 +74,10 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 - **Live lock-response trace.** A rolling 15-second strip chart under the gauge plots what you asked the lock to do against what it actually did, so coupling lag and the effect of the rate limits read at a glance while tuning. It clears on a dropped link, so a reconnect never draws a line across the outage.
 - **Connection-status badge.** A live/reconnecting/offline badge in the header. A dropped access-point link used to leave the last gauge values frozen on screen looking current; the badge now flips to reconnecting after the first missed poll and offline after three, so stale numbers can't be mistaken for live data while driving.
 - **Expert map curve view.** The Expert editor draws the lock surface as curves below the 7x7 grid - lock against speed, or lock against throttle - so the table of numbers reads as shapes while you tune. It is read-only and doesn't change what's written to the Haldex.
+- **Learn calibration chart.** Once your Haldex has a learned table, the Learn section plots it - commanded correction factor against measured engagement, with a 1:1 reference line - so where your unit over- or under-responds reads at a glance. Render-only from data the device already returns; no extra load on the module.
+- **Install it like an app, full-screen.** The web UI is an installable PWA (manifest, icon set, service worker) so it can go on a phone home screen and open full-screen. A full-screen toggle in the header also works over plain http with no install step, for a clean dashboard on an unmodified phone. Live telemetry and control always hit the device - the service worker never caches the API or POSTs.
+- **On-device saved tune slots.** Five named map slots persist in the device's own storage with list/save/load/delete, so a tune saved from one phone is visible from any phone. Replaces the earlier phone-side file export/import.
+- **Plain-English help throughout.** The drive-mode drawer describes what each mode actually does, and the previously bare controls (Haldex generation, brake/handbrake follow, the controller and connectivity toggles) now carry inline hints. Copy only - no behaviour change.
 
 ### Built and tested
 
@@ -227,13 +236,13 @@ data[7] = pedal_value
 
 There is no default password and no build step - you do not compile or flash anything to set one.
 
-On a fresh or factory-reset device, connect to the access point, open `192.168.1.1`, and the device sends you straight to a short setup page. Enter a password and confirm it (8-63 characters). That password is stored on the device and from then on is required for firmware updates and every setting-changing action. The setup page closes for good and the main UI loads.
+On a fresh or factory-reset device, connect to the access point, open `192.168.1.1`, and the device sends you straight to a short setup page. Enter a password and confirm it (8-63 characters). That becomes the **WiFi AP (WPA2) password** - the single auth boundary: anyone who can join the AP can use the UI and flash updates, anyone who cannot, cannot. The AP restarts secured and the main UI loads.
 
-Until you set it, flashing and all state-changing calls are **refused** (HTTP 503) - the device never runs with an empty or default credential.
+Until you set it, the AP runs open so you can reach the setup page - and while it is open, host-to-device CAN injection over the analyzer port is refused and the dashboard keeps redirecting to setup.
 
-**Changing it later.** Once set, rotate the password with an authenticated `POST /ota/credential`. The setup page does not reopen.
+**Changing it later.** Rotate the password from the WiFi Access Point card on the Diagnostics tab (or `POST /api/wifi`). Long-pressing the mode button resets the AP back to open.
 
-**The WiFi access point is open by default** so you can reach the setup page on first connection. Removing the committed password and requiring a login for every control action are what keep the CAN bus safe on an open AP - passive sniffing is harmless, and nothing can change the car's behaviour without the password.
+**The WiFi access point is open by default** so you can reach the setup page on first connection. Removing the committed password and refusing CAN injection until the AP is secured are what keep the CAN bus safe - passive sniffing is harmless, and nothing can change the car's behaviour until the network itself is locked.
 
 ---
 
@@ -332,19 +341,42 @@ pio run -e esp32c6-release
 
 **OTA update:**
 
-Once the device has an OTA credential provisioned, you can flash over WiFi. The
-device accepts an authenticated HTTP upload to `/ota/update` (it does not speak
-the espota protocol, so PlatformIO's `--upload-port <ip>` will not work):
+The easiest path is the **Software Update** card on the Settings tab of the web
+UI: it shows the current version and safe-state, and has a single upload slot
+with progress. Give it the release's merged image (the same single file used
+for USB flashing) and it updates the firmware and the web UI in one go - the
+device splits the image by flash offset and skips the bootloader, partition
+table and NVS regions, so settings and the learn table are kept. A bare
+`firmware.bin` or `littlefs.bin` works too when only one half changed. Access
+is gated by the WiFi AP password - anyone on the AP can update; there is no
+separate HTTP login.
+
+From the command line, the device accepts an HTTP upload to `/ota/update`
+(merged image, firmware, or LittleFS image - it classifies the file from its
+first bytes) or `/ota/updatefs` (explicitly the web-UI LittleFS image). It
+does not speak the espota protocol, so PlatformIO's `--upload-port <ip>` will
+not work:
 
 ```sh
-pio run -e esp32c6
-curl -u admin:your-ota-secret \
-  -F "firmware=@.pio/build/esp32c6/firmware.bin" \
+# everything in one file
+curl -F "update=@.pio/build/esp32c6-release/firmware-merged.bin" \
   http://192.168.1.1/ota/update
+
+# or just one half
+pio run -e esp32c6
+curl -F "update=@.pio/build/esp32c6/firmware.bin" \
+  http://192.168.1.1/ota/update
+
+pio run -e esp32c6 -t buildfs
+curl -F "filesystem=@.pio/build/esp32c6/littlefs.bin" \
+  http://192.168.1.1/ota/updatefs
 ```
 
-The update is refused unless the safety checks pass (vehicle stationary, buses
-healthy, no Haldex temperature fault); check `GET /ota/check` first.
+Any update is refused unless the safety checks pass (vehicle stationary,
+buses healthy, no Haldex temperature fault); check `GET /ota/check` first. A
+filesystem or merged update briefly takes the web UI offline and reboots the
+module when it completes; if a filesystem upload fails partway the firmware is
+untouched, so recovery is just re-uploading the image.
 
 For a ready-to-flash binary of this fork, see [Pre-built release binary](#pre-built-release-binary) above. For official, supported firmware, use the upstream build from [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater); note the upstream binary does not include the security and correctness fixes in this fork.
 
@@ -358,17 +390,17 @@ Enable **Analyzer Mode** in the Settings page to capture CAN frames.
 > Enabling Analyzer Mode disables active Haldex control and returns the device to OEM pass-through behaviour.
 
 > [!NOTE]
-> In this fork, host-to-device CAN injection via the analyzer port (GVRET transmit, SLCAN transmit) requires an OTA credential to be provisioned. Passive sniffing (receive only) is unaffected.
+> In this fork, host-to-device CAN injection via the analyzer port (GVRET transmit) is refused until the WiFi AP password has been set - the secured AP is the single auth boundary. Passive sniffing (receive only) is unaffected.
 
-The analyzer interface is TCP-only (port 23) over the WiFi AP. Two wire
-protocols are available via the **Analyzer Protocol** select in Settings:
-GVRET for SavvyCAN (both buses) and LAWICEL/SLCAN for CANHacker-style tools
-(chassis bus only).
+The analyzer speaks the GVRET protocol for SavvyCAN, over the WiFi AP (TCP
+port 23) or over the USB serial port. Pick the transport with the **SavvyCAN
+via WiFi** and **SavvyCAN via Serial** toggles in the Settings page; both buses
+are captured.
 
 ### SavvyCAN (GVRET)
 
 1. Connect to the OpenHaldex WiFi AP.
-2. In Settings, enable **Turn on SavvyCAN** and set Analyzer Protocol to GVRET.
+2. In Settings, enable **SavvyCAN via WiFi**.
 3. In SavvyCAN: **Connection > Add New Device Connection > Network Connection (GVRET)**
 4. IP: `192.168.1.1`, Port: `23`, speed: `500000`
 

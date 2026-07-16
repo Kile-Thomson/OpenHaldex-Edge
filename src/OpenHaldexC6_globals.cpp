@@ -135,7 +135,7 @@ bool disableOnboardButton = false;
 bool disableExternalButton = false;
 
 bool fixHunting = false; // when true, Motor_11 uses BPK packing instead of V3
-uint16_t bpkCeilingNm = 220; // BPK full-lock torque ceiling (Nm); default preserves inherited behaviour
+uint16_t bpkCeilingNm = 220; // BPK per-car lock calibration (Nm claimed at 100% command); default preserves inherited behaviour
 
 bool canSleepEnabled = true;
 bool canSleepAggressive = false; // opt-in: transceiver standby + DFS floor 10MHz + low WiFi TX power
@@ -151,6 +151,8 @@ bool analyzerSerial = false; // Serial GVRET (SavvyCAN Serial Connection)
 // UDS MQB diagnostic polling (Gen 5 only)
 bool udsMQBEnabled = false;
 QueueHandle_t udsRxQueue = nullptr;
+QueueHandle_t udsWebRxQueue = nullptr; // /api/uds/read responses, tapped (copied) from parseCAN_chs
+volatile uint32_t udsWebRespId = 0;    // response ID /api/uds/read waits for; 0 = no read in flight
 float udsTerminalVoltage = 0.0f;
 float udsModuleTemp = 0.0f;
 float udsClutchTemp = 0.0f;

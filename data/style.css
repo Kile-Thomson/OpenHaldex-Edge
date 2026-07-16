@@ -126,6 +126,53 @@ header h1 .accent {
     color: var(--danger);
 }
 
+/* Fullscreen toggle in the header. The 44px box is the touch target; the
+   negative margins pull the header layout in so the badge row keeps its
+   space while the full box stays clickable. Hidden until app.js confirms
+   the Fullscreen API exists (iPhone Safari has no page fullscreen at all). */
+.btn-fullscreen {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    margin: -10px -10px -10px 0;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.btn-fullscreen:active {
+    color: var(--text);
+}
+
+.btn-fullscreen:focus-visible {
+    outline: 2px solid var(--primary-light);
+    outline-offset: 2px;
+}
+
+.btn-fullscreen .fs-icon {
+    width: 20px;
+    height: 20px;
+}
+
+/* Icon swap: show "enter" arrows normally, "exit" arrows while fullscreen. */
+.btn-fullscreen .fs-icon-exit {
+    display: none;
+}
+
+.btn-fullscreen[aria-pressed="true"] .fs-icon-enter {
+    display: none;
+}
+
+.btn-fullscreen[aria-pressed="true"] .fs-icon-exit {
+    display: block;
+}
+
 /* Navigation. Mobile-first: a fixed bottom tab bar (thumb reach, native-app
    feel), switching to a conventional top tab row on wide screens. */
 .nav-tabs {
@@ -890,11 +937,28 @@ header h1 .accent {
     align-items: center;
     cursor: pointer;
     user-select: none;
-    min-height: 28px;
+    min-height: 44px; /* 44px minimum touch target - these get hit in a car */
 }
 
+/* Visually hidden, NOT display:none: the checkbox must stay in the tab order
+   and visible to screen readers (display:none removes it from both, which made
+   every settings toggle - including Disable Controller - keyboard/SR
+   unreachable). */
 .toggle input {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip-path: inset(50%);
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+/* Keyboard focus lands on the hidden input - surface it on the slider. */
+.toggle input:focus-visible+.toggle-slider {
+    box-shadow: var(--focus-ring);
 }
 
 .toggle-slider {
@@ -980,8 +1044,36 @@ header h1 .accent {
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
+/* Destructive actions (Clear Learn Data): same footprint as btn-secondary but
+   visibly not a routine button, so it can't be mistaken for Learn/Cancel above it. */
+.btn-danger {
+    width: 100%;
+    padding: 1rem;
+    border-radius: var(--radius-md);
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.2s, border-color 0.2s, background 0.2s;
+    min-height: 48px;
+    background: var(--surface-light);
+    color: var(--danger);
+    border: 2px solid var(--danger);
+}
+
+.btn-danger:hover {
+    background: var(--danger);
+    color: #fff;
+    transform: translateY(-2px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.btn-danger:active {
+    transform: translateY(0);
+}
+
 .btn-primary:focus-visible,
 .btn-secondary:focus-visible,
+.btn-danger:focus-visible,
 .mode-btn:focus-visible,
 .nav-tab:focus-visible {
     outline: none;
@@ -1784,6 +1876,29 @@ button,
     color: var(--text);
     font-size: 1rem;
     transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+/* Software Update card: .bin pickers for firmware / web-UI uploads */
+.ota-file {
+    flex: 1;
+    min-width: 0;
+    padding: 0.6rem;
+    background: var(--surface-light);
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-dim);
+    font-size: 0.9rem;
+}
+
+.ota-file::file-selector-button {
+    margin-right: 0.75rem;
+    padding: 0.4rem 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 0.9rem;
+    cursor: pointer;
 }
 
 .input-wifi-password::placeholder {
