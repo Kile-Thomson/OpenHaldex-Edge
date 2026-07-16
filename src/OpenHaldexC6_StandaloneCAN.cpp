@@ -1891,7 +1891,8 @@ void Gen5_0CQ_frames10()
   {
     // ---- BPK packing (Fix Hunting toggle on; needed for 554K @ partial lock) ----
     // Shared DBC-correct packer (see bpk_pack_motor11); bpkCeilingNm is the
-    // user-tunable full-lock torque. Slew state is owned here so it persists
+    // per-car lock calibration (Nm claimed at full command; not a strength dial).
+    // Slew state is owned here so it persists
     // across cycles. appliedTorque mirrors the pre-remap command byte as before.
     static uint16_t prevIstNm = 0, prevSolfNm = 0;
     uint8_t command = get_lock_target_adjusted_value(0xFE, false);

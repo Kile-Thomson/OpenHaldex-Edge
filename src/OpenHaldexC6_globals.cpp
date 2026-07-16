@@ -135,7 +135,7 @@ bool disableOnboardButton = false;
 bool disableExternalButton = false;
 
 bool fixHunting = false; // when true, Motor_11 uses BPK packing instead of V3
-uint16_t bpkCeilingNm = 220; // BPK full-lock torque ceiling (Nm); default preserves inherited behaviour
+uint16_t bpkCeilingNm = 220; // BPK per-car lock calibration (Nm claimed at 100% command); default preserves inherited behaviour
 
 bool canSleepEnabled = true;
 bool canSleepAggressive = false; // opt-in: transceiver standby + DFS floor 10MHz + low WiFi TX power

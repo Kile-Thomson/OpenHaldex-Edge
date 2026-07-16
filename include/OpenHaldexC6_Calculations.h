@@ -121,9 +121,9 @@ bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_tab
 // opendbc MQB K-matrix (see vault "OpenHaldex - MQB Motor_11 Torque Spoof
 // Verified Against opendbc"). `command` is the lock-modulated demand byte
 // (get_lock_target_adjusted_value(0xFE,false)); it is remapped onto
-// [BPK_FLOOR .. ceil_nm] Nm. `ceil_nm` is the tunable full-lock torque the frame
-// claims at full command (higher = more aggressive lock), clamped to the 509 Nm
-// signal maximum. `ist_nm`/`solf_nm` carry the slew-limited previous values in
+// [BPK_FLOOR .. ceil_nm] Nm. `ceil_nm` is the per-car lock calibration: the Nm the
+// frame claims at full command (not a strength dial - higher does not lock harder,
+// it shifts the calibration), clamped to the 509 Nm signal maximum. `ist_nm`/`solf_nm` carry the slew-limited previous values in
 // and the new values out, so the CALLER owns the ramp state across cycles (kept
 // out of the function so it stays pure and host-testable). out[0] is left 0 for
 // the caller to fill with the E2E CRC. No Arduino/TWAI symbols.

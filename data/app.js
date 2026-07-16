@@ -1098,8 +1098,10 @@ function initNavigation() {
     });
   }
 
-  // BPK full-lock torque ceiling slider. Save on release (change), not on every
-  // input tick, so dragging doesn't stream torque-ceiling changes at a live car.
+  // BPK lock-calibration slider (per-car; the Nm the spoof frame claims at full
+  // command, not a strength dial - higher does not lock harder). Save on release
+  // (change), not on every input tick, so dragging doesn't stream calibration
+  // changes at a live car.
   const bpkCeilingRange = document.getElementById("bpkCeilingRange");
   const bpkCeilingValue = document.getElementById("bpkCeilingValue");
   if (bpkCeilingRange) {
