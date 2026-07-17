@@ -244,7 +244,8 @@ void parseCAN_chs(void *arg)
       // tool goes quiet, at which point live polling resumes on its own.
       if (is_external_diag_request_id(rx_message_chs.identifier))
       {
-        externalDiagLastMs = millis();
+        // Normalize so the stamp is never 0 (0 is the "never seen" sentinel).
+        externalDiagLastMs = external_diag_stamp(millis());
       }
 
       // /api/uds/read tap: copy frames matching the registered response ID to

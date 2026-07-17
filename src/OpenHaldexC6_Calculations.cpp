@@ -1793,9 +1793,17 @@ bool is_external_diag_request_id(uint32_t can_id)
   return can_id == 0x7DFu || (can_id >= 0x700u && can_id <= 0x71Fu);
 }
 
+// Reserve 0 as the "never seen" sentinel: millis() returns 0 at boot and every
+// rollover, so map only that single tick to 1 (<=1 ms error) before storing.
+uint32_t external_diag_stamp(uint32_t now_ms)
+{
+  return now_ms == 0u ? 1u : now_ms;
+}
+
 // True while a tester was seen within timeout_ms. last_seen_ms == 0 means never
-// seen. (uint32_t)(now - last) is wrap-safe, so a millis() rollover during the
-// window still reports the correct elapsed time.
+// seen (never written as a real stamp - see external_diag_stamp). (uint32_t)(now
+// - last) is wrap-safe, so a millis() rollover during the window still reports
+// the correct elapsed time.
 bool external_diag_active(uint32_t last_seen_ms, uint32_t now_ms, uint32_t timeout_ms)
 {
   return last_seen_ms != 0 && (uint32_t)(now_ms - last_seen_ms) < timeout_ms;

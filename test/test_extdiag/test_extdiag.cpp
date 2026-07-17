@@ -21,6 +21,7 @@
 
 // Real functions under test (src/OpenHaldexC6_Calculations.cpp).
 extern bool is_external_diag_request_id(uint32_t can_id);
+extern uint32_t external_diag_stamp(uint32_t now_ms);
 extern bool external_diag_active(uint32_t last_seen_ms, uint32_t now_ms, uint32_t timeout_ms);
 
 void setUp(void) {}
@@ -120,6 +121,38 @@ void test_timeout_constant_is_expected(void)
 }
 
 // ===========================================================================
+// external_diag_stamp(now_ms) - keep 0 reserved as the "never seen" sentinel.
+// millis() returns 0 at boot and every rollover; a raw 0 stored as last_seen
+// would be misread as "never seen" and the scanner pause would never engage.
+// ===========================================================================
+
+void test_stamp_maps_zero_to_one(void)
+{
+  // The one millis() value that collides with the sentinel is normalized to 1.
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, external_diag_stamp(0u),
+                                   "stamp(0) must be 1, never 0");
+}
+
+void test_stamp_passes_through_nonzero(void)
+{
+  // Every other reading is stored unchanged (no skew on normal timestamps).
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, external_diag_stamp(1u), "stamp(1) == 1");
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(1234u, external_diag_stamp(1234u), "stamp(1234) == 1234");
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(0xFFFFFFFFu, external_diag_stamp(0xFFFFFFFFu),
+                                   "stamp(UINT32_MAX) unchanged");
+}
+
+void test_request_recorded_at_time_zero_stays_active(void)
+{
+  // Regression: a tester request seen at millis() == 0 must still pause polling.
+  // The stamp site stores external_diag_stamp(0) == 1, and the predicate then
+  // reports active while inside the window - it is NOT dropped as "never seen".
+  const uint32_t stored = external_diag_stamp(0u);
+  TEST_ASSERT_TRUE_MESSAGE(external_diag_active(stored, 100u, EXTERNAL_DIAG_TIMEOUT_MS),
+                           "request at t=0 (stored as 1) -> active 100 ms later");
+}
+
+// ===========================================================================
 
 int main(int, char **)
 {
@@ -137,6 +170,10 @@ int main(int, char **)
   RUN_TEST(test_past_window_is_not_active);
   RUN_TEST(test_millis_rollover_still_active);
   RUN_TEST(test_timeout_constant_is_expected);
+
+  RUN_TEST(test_stamp_maps_zero_to_one);
+  RUN_TEST(test_stamp_passes_through_nonzero);
+  RUN_TEST(test_request_recorded_at_time_zero_stays_active);
 
   return UNITY_END();
 }
