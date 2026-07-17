@@ -14,19 +14,22 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Security
 
-- **Committed OTA password removed.** V8.00.2 has a hardcoded `OTA_PASSWORD`
-  literal in source and prints it to the serial log. It is removed and flashing
-  fails closed (HTTP 503) until a credential is provisioned - on first power-up
-  the device redirects to a `/setup` page where you set your own password, which
-  is stored to NVS. The password is rotatable from the WiFi Access Point card on
-  the Diagnostics tab (`POST /api/wifi`). There is no build-time or compiled-in credential path:
-  the only way to set a password is at runtime, so no build step is required.
-- **State-changing endpoints require authentication.** In V8.00.2 the mode,
-  settings, tune and learn endpoints (and host-to-device CAN injection on the
-  analyzer port) accept commands from any client on the AP. They now require the
-  provisioned password; the web UI sends it automatically and reports a clear
-  wrong-password (401) or not-provisioned (503) message instead of silently
-  failing. Passive analyzer sniffing is unaffected.
+- **Committed OTA password removed.** V8.00.2 carries a hardcoded `OTA_PASSWORD`
+  literal in source and prints it to the serial log. This fork removes it. There
+  is no compiled-in credential and no build step to set one: on first power-up the
+  device redirects to a `/setup` page where you set your own WiFi AP password
+  (WPA2, 8-63 characters), stored to NVS. It is rotatable later from the WiFi
+  Access Point card on the Diagnostics tab (`POST /api/wifi`).
+- **The WiFi AP password is the single auth boundary.** There is no per-endpoint
+  HTTP login. The mode, settings, tune and learn endpoints, plus host-to-device
+  CAN injection on the analyzer port, are reachable by anyone associated with the
+  AP - the same transport model as V8.00.2. What changed is that the committed
+  password is gone, so the AP itself is the gate: until you set a WPA2 password
+  the AP stays open only to reach `/setup`, and while it is open the dashboard and
+  every other route redirect to setup and analyzer-port CAN injection is refused
+  outright. Once the password is set the AP restarts secured, and joining it is
+  the boundary for the UI, the endpoints and OTA flashing alike. Passive analyzer
+  sniffing is receive-only and transmits nothing to the bus.
 - **HTTP body buffer allocation corrected.** The request body buffer was
   allocated with `new String()` but ESPAsyncWebServer frees `_tempObject` with
   `free()`, which is undefined behaviour on a mid-body abort. It is now a
