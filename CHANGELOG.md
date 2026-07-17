@@ -12,6 +12,12 @@ limiting - are Forbes's own work and are not repeated here.
 
 ## Unreleased
 
+## v8.00.16 - 2026-07-18
+
+First tagged release of this fork. Everything below is the delta over Forbes
+Automotive's OpenHaldex-C6 V8.00.2 base, shipped as a single merged flashable
+image (`openhaldex-c6-v8.00.16-merged.bin`).
+
 ### Security
 
 - **Committed OTA password removed.** V8.00.2 carries a hardcoded `OTA_PASSWORD`
