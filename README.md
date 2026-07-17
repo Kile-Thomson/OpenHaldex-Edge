@@ -14,7 +14,7 @@
 > **This is a personal, non-commercial firmware fork** of [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6). It exists for three reasons:
 >
 > 1. **Firmware stability:** fix confirmed bugs before adding anything new.
-> 2. **Security hardening:** close unauthenticated surfaces and remove committed credentials.
+> 2. **Security hardening:** put the WiFi access point behind a password you set on the device, and gate CAN injection behind it.
 > 3. **A host-runnable test suite:** pin wire-byte correctness so changes can't silently break CAN behaviour.
 >
 > **This repo contains firmware source only.** Hardware design files, Gerbers, BOM, enclosure STLs, and pre-built binaries all live in the upstream project. If you want supported hardware or a ready-to-flash binary, go to [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6) and [forbes-automotive.com](https://forbes-automotive.com/).
@@ -43,30 +43,31 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 
 ### Security hardening
 
-- **No committed default password.** The base firmware carries a flashing password in its source (and prints it to the serial log). This fork removes it: on first power-up you set your own password on the device, and until you do, over-the-air flashing and every setting-changing action are refused outright.
-- **Authenticated control surface.** The state-changing endpoints (mode, settings, tune, learn) and host-to-device CAN injection on the analyzer port now require that password. Passive sniffing still works freely; the web app sends the password for you and tells you clearly if it is wrong instead of silently failing to apply a change.
+- **No default password; you set your own on the device.** Nothing is committed in source and there is no build step. On first power-up the access point runs open just long enough to reach the setup page, where you choose a WPA2 password (8-63 characters).
+- **Joining the WiFi AP is the single gate.** Once the password is set, being on the AP is the one auth boundary: anyone on the network has full control, anyone who cannot join has none. There is no separate HTTP login to manage.
+- **CAN injection stays closed until the AP is secured.** Host-to-device CAN injection over the analyzer port is refused while the AP is still open, so the car's behaviour cannot change until the network itself is locked. Passive sniffing (receive only) always works.
 
 ### Correctness fixes
 
-- **Recovers from a CAN fault on its own.** A bus-off event left the controller stopped until you pulled power - the base firmware's bus-health check only ran under a debug flag and had no recovery path. It now detects the recovery and brings each bus back by itself, no restart needed.
-- **Corrected Gen5 checksum.** The Gen5 ESP_10 (0x116) frame carried the wrong E2E checksum DataID - a verbatim copy of another frame's table. The correct value is now used. (Still to be confirmed against a real Gen5 unit on the bench.)
-- **Diagnostic reads return real data.** The built-in ECU read returned empty every time because of a response-buffer bug; it now returns the actual response.
+- **Recovers from a CAN fault on its own.** After a bus-off event the controller detects the recovery and brings each bus back by itself, no power cycle needed.
+- **Corrected Gen5 checksum.** The Gen5 ESP_10 (0x116) frame now uses the correct E2E checksum DataID. (Still to be confirmed against a real Gen5 unit on the bench.)
+- **Diagnostic reads return real data.** The built-in ECU read returns the full response rather than an empty buffer.
 
 ### Robustness under the hood
 
 - **Won't trip over itself under load.** Data that the CAN tasks read and write concurrently is now guarded by a mutex.
-- **Settings survive a reboot correctly.** Storage is consolidated onto one flash namespace (with a one-time migration from the old layout), fixing a case where only the last-written setting persisted and first-run seeding was dead.
+- **Settings survive a reboot correctly.** Storage is consolidated onto one flash namespace, with a one-time migration from the old layout, so every setting persists and first-run defaults seed correctly.
 
 ### Added driving features
 
 - **Optional steering-gain reduction.** Off by default. Winds lock back as steering angle increases, so the rear axle isn't fighting the front through tight corners and car parks. The angle is decoded from the MQB LWI_01 (0x086) frame; you choose where the reduction starts, where it bottoms out, and the minimum it can drop to. If the steering signal goes stale or is flagged faulty the reduction switches itself off and behaviour returns to normal. The live angle and applied gain show on the Diagnostics page so you can confirm the reading on your car before turning it on.
-- **Working lock-rate sliders, in real time units.** The base firmware's lock-release rate slider and enable toggle were sent by the web UI but ignored by the firmware, so they did nothing. This fork makes them work and adds a separate engage rate, so both lock-up and release can be slewed instead of snapping on and off. Both are now set in milliseconds for a full 0-100% sweep (0 = instant) rather than the awkward percent-per-second unit, so a rate reads as the time the change takes.
+- **Lock-rate sliders wired through, in real time units.** The lock-release rate slider and enable toggle are honoured end to end, and a separate engage rate is added, so both lock-up and release can be slewed instead of snapping on and off. Both are set in milliseconds for a full 0-100% sweep (0 = instant), so a rate reads as the time the change takes.
 - **Per-corner slip and drive-mode over the diagnostic bus.** OpenHaldex answers three supplier-specific UDS DIDs on the Haldex address, the same channel that already carries clutch temps and PWM, so a tester on the OBD port (such as the Rokketek gauge) can read lock and geometry-compensated per-corner wheel slip and set the drive mode, even though the car's gateway won't forward the passive broadcasts that far. Slip is each wheel's real speed against what the steering geometry predicts, so a straight launch and a mid-corner break-loose both read as true slip. The four slip values are also on the web dashboard JSON. Geometry constants are Audi TT Mk3 defaults and want on-car calibration.
-- **Per-car lock calibration for Gen5.** The BPK packing used to bake in one fixed calibration value, so a car whose Haldex under- or over-responded to the lock command had no way to correct it. It is now an adjustable per-car number: run a Learn and nudge it until the lock you command matches what the Haldex actually delivers (the Sent vs Returned line sitting on the 1:1 diagonal). It is not a strength dial - higher does not lock harder, it just shifts the calibration, and there is one correct value per car. Default is unchanged, so nothing moves unless you tune it. Under the hood the packing math was widened past its old 8-bit cap, and the standalone and passthrough copies were merged into one host-tested function so they can't drift apart.
+- **Per-car lock calibration for Gen5.** The BPK packing calibration value is now adjustable per car, so a car whose Haldex under- or over-responds to the lock command can be dialled in to match. Run a Learn and nudge it until the lock you command matches what the Haldex actually delivers (the Sent vs Returned line sitting on the 1:1 diagonal). It is not a strength dial - higher does not lock harder, it just shifts the calibration, and there is one correct value per car. Default is unchanged, so nothing moves unless you tune it. Under the hood the packing math was widened past its old 8-bit cap, and the standalone and passthrough copies were merged into one host-tested function so they can't drift apart.
 
 ### Updates
 
-- **Update over the air, one file, from the browser.** A Software Update card on the Settings page shows the current version, the live safe-state gate and its blocking reason, and a single upload slot with progress. Feed it the release's merged image - the same file used for a USB flash - and it updates both the firmware and the web UI in one go, splitting the image by flash offset and skipping the bootloader, partition table and NVS so your settings and learn table survive. In the base firmware the OTA endpoints existed but nothing in the UI linked to them, and the web UI could not be updated over the air at all. Every update stays behind the same safety gate (car stationary, buses healthy, no temperature fault) and the firmware path keeps dual-slot auto-rollback.
+- **Update over the air, one file, from the browser.** A Software Update card on the Settings page shows the current version, the live safe-state gate and its blocking reason, and a single upload slot with progress. Feed it the release's merged image - the same file used for a USB flash - and it updates both the firmware and the web UI in one go, splitting the image by flash offset and skipping the bootloader, partition table and NVS so your settings and learn table survive. This fork builds a UI on top of the existing OTA endpoints and extends over-the-air updates to cover the web UI itself. Every update stays behind the same safety gate (car stationary, buses healthy, no temperature fault) and the firmware path keeps dual-slot auto-rollback.
 
 ### Web interface
 
@@ -242,7 +243,7 @@ Until you set it, the AP runs open so you can reach the setup page - and while i
 
 **Changing it later.** Rotate the password from the WiFi Access Point card on the Diagnostics tab (or `POST /api/wifi`). Long-pressing the mode button resets the AP back to open.
 
-**The WiFi access point is open by default** so you can reach the setup page on first connection. Removing the committed password and refusing CAN injection until the AP is secured are what keep the CAN bus safe - passive sniffing is harmless, and nothing can change the car's behaviour until the network itself is locked.
+**The WiFi access point is open by default** so you can reach the setup page on first connection. Securing the AP behind a password you set, and refusing CAN injection until it is secured, are what keep the CAN bus safe - passive sniffing is harmless, and nothing can change the car's behaviour until the network itself is locked.
 
 ---
 
@@ -314,7 +315,7 @@ esptool.py --chip esp32c6 write_flash 0x0 openhaldex-c6-<tag>-merged.bin
 
 Or drag it into a browser flasher such as [ESP Web Tools](https://web.esptool.js.org/). `SHA256SUMS.txt` is attached so you can verify the download. The separate `app` and `littlefs` binaries are also attached for partial or OTA updates.
 
-> These binaries are a non-commercial fork build, distributed free of charge under the [FASL v1.0](LICENSE.md); the changes over upstream V8.00.2 are in [CHANGELOG.md](CHANGELOG.md). For official, supported firmware use the upstream project - see [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater). Note the upstream binary does not include the security and correctness fixes in this fork.
+> These binaries are a non-commercial fork build, distributed free of charge under the [FASL v1.0](LICENSE.md); the changes over upstream V8.00.2 are in [CHANGELOG.md](CHANGELOG.md). For official, supported firmware use the upstream project - see [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater). The upstream binary is the official, supported build; this fork's build adds the changes listed in the CHANGELOG.
 
 ### Build and flash via USB
 
@@ -378,7 +379,7 @@ filesystem or merged update briefly takes the web UI offline and reboots the
 module when it completes; if a filesystem upload fails partway the firmware is
 untouched, so recovery is just re-uploading the image.
 
-For a ready-to-flash binary of this fork, see [Pre-built release binary](#pre-built-release-binary) above. For official, supported firmware, use the upstream build from [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater); note the upstream binary does not include the security and correctness fixes in this fork.
+For a ready-to-flash binary of this fork, see [Pre-built release binary](#pre-built-release-binary) above. For official, supported firmware, use the upstream build from [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater); this fork's build adds the changes listed in the [CHANGELOG](CHANGELOG.md).
 
 ---
 
