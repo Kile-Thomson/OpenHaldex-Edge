@@ -337,7 +337,7 @@ void updateTriggers(void *arg)
 
       const bool noClients = (WiFi.softAPgetStationNum() == 0) && (WiFi.getMode() != WIFI_OFF);
       // Standalone: Haldex fps >= fixed 50 fps threshold.
-      // OEM: chassis fps >= lpWakeThresholdFps (UI slider, default 50).
+      // OEM: chassis fps >= lpWakeThresholdFps (UI slider, default 1100).
       // Decision lives in the pure lpCanActive() seam (include/OpenHaldexC6_lowpower.h)
       // so the shipped logic is pinned by the native Unity test.
       const bool canActive = lpCanActive(isStandalone, lpHaldexFps, lpChassisFps, lpWakeThresholdFps);
