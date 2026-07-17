@@ -21,6 +21,9 @@ src.zip
 EDGE-AUDIT.md
 UPSTREAM-BUG-REPORT.md
 
+# Local-only reverse-engineering notes, not for remote
+HALDEX-KNOWLEDGE.md
+
 # Local UI dev helpers (not firmware): mock server, CDP render/verify scripts,
 # and generated screenshots.
 tools/
