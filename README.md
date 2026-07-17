@@ -243,7 +243,7 @@ Until you set it, the AP runs open so you can reach the setup page - and while i
 
 **Changing it later.** Rotate the password from the WiFi Access Point card on the Diagnostics tab (or `POST /api/wifi`). Long-pressing the mode button resets the AP back to open.
 
-**The WiFi access point is open by default** so you can reach the setup page on first connection. Securing the AP behind a password you set, and refusing CAN injection until it is secured, are what keep the CAN bus safe - passive sniffing is harmless, and nothing can change the car's behaviour until the network itself is locked.
+**The WiFi access point is open by default** so you can reach the setup page on first connection. Securing the AP behind a password you set, and refusing CAN injection until it is secured, are what keep the CAN bus safe: passive sniffing is receive-only and transmits nothing to the bus, so nothing can change the car's behaviour until the network itself is locked.
 
 ---
 
