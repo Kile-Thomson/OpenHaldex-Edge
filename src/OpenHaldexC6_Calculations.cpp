@@ -1784,6 +1784,23 @@ bool can_alerts_indicate_recovered(uint32_t alerts, uint32_t recovered_mask)
   return (alerts & recovered_mask) != 0;
 }
 
+// Pure external-diagnostic-tool predicates - see the header for the rationale.
+// is_external_diag_request_id matches the reserved ISO/VAG tester request ids;
+// our own polling transmits on Bus 1, so any of these inbound on Bus 0 is a
+// foreign scan tool. No TWAI symbols, so both run in the native suite.
+bool is_external_diag_request_id(uint32_t can_id)
+{
+  return can_id == 0x7DFu || (can_id >= 0x700u && can_id <= 0x71Fu);
+}
+
+// True while a tester was seen within timeout_ms. last_seen_ms == 0 means never
+// seen. (uint32_t)(now - last) is wrap-safe, so a millis() rollover during the
+// window still reports the correct elapsed time.
+bool external_diag_active(uint32_t last_seen_ms, uint32_t now_ms, uint32_t timeout_ms)
+{
+  return last_seen_ms != 0 && (uint32_t)(now_ms - last_seen_ms) < timeout_ms;
+}
+
 // HTTP request-body buffer ownership. Pure <cstdlib>/<cstring> logic,
 // no Arduino/Async symbols, so the malloc-owned single-block contract is pinned
 // by the env:native suite. See include/OpenHaldexC6_Calculations.h.

@@ -93,8 +93,11 @@ void udsMQBTask(void *arg)
     while (1)
     {
         // Gen5 covers both MQB (50) and 0AY PQ-derived 0AY (51) - both use the same UDS stack.
-        if (!udsMQBEnabled || !hasCANHaldex || (haldexGeneration != 50 && haldexGeneration != 51) || analyzerMode || analyzerSerial)
+        if (!udsMQBEnabled || externalDiagActive() || !hasCANHaldex || (haldexGeneration != 50 && haldexGeneration != 51) || analyzerMode || analyzerSerial)
         {
+            // externalDiagActive(): a real scan tool is on the bus - stay quiet
+            // so we don't fight it over the diagnostic session; resume once it
+            // goes idle for EXTERNAL_DIAG_TIMEOUT_MS.
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
@@ -122,7 +125,7 @@ void udsMQBTask(void *arg)
         uint32_t lastTP = millis();
         uint8_t  didIdx = 0;
 
-        while (udsMQBEnabled && hasCANHaldex && (haldexGeneration == 50 || haldexGeneration == 51) && !analyzerMode && !analyzerSerial)
+        while (udsMQBEnabled && !externalDiagActive() && hasCANHaldex && (haldexGeneration == 50 || haldexGeneration == 51) && !analyzerMode && !analyzerSerial)
         {
             if ((millis() - lastTP) >= 375U)
             {

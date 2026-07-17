@@ -57,6 +57,7 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 
 - **Won't trip over itself under load.** Data that the CAN tasks read and write concurrently is now guarded by a mutex.
 - **Settings survive a reboot correctly.** Storage is consolidated onto one flash namespace, with a one-time migration from the old layout, so every setting persists and first-run defaults seed correctly.
+- **Steps aside for a plugged-in scan tool.** If a real scanner (VCDS, ODIS or a generic OBD tool) starts talking to the chassis bus, the controller pauses its own live-data polling so the two don't collide over the diagnostic session, then picks back up on its own a few seconds after the tool goes quiet. The dashboard shows when it has stepped aside. Forbes added the same coexistence upstream in V8.00.3; here the detection and timeout logic are pinned by the host test suite.
 
 ### Added driving features
 

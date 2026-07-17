@@ -368,6 +368,16 @@ extern uint16_t lpWakeThresholdFps; // runtime wake threshold (fps), adjustable 
 #define ANALYZER_PROTOCOL_LAWICEL 1
 extern uint8_t analyzerProtocol;
 
+// External-diagnostic auto-pause. When a real scan tool (VCDS/ODIS/OBD) is seen
+// addressing the chassis bus, our own UDS polling backs off so the two don't
+// collide over the diagnostic session; it resumes once the tool goes quiet.
+// externalDiagLastMs is the last time such a request was seen on Bus 0 (0 =
+// never); externalDiagActive() wraps the host-tested external_diag_active()
+// predicate with the live clock, and API/UDS callers use it.
+#define EXTERNAL_DIAG_TIMEOUT_MS 4000u
+extern volatile uint32_t externalDiagLastMs;
+bool externalDiagActive();
+
 // UDS MQB diagnostic polling (Gen 5 only)
 // Requests go to 0x771 on Bus 1; responses come from 0x779 on Bus 1.
 extern bool udsMQBEnabled;       // enable flag (persisted)

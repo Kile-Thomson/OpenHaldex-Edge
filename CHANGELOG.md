@@ -314,6 +314,19 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Added
 
+- **Live diagnostics step aside for an external scan tool.** When a real scanner
+  (VCDS, ODIS or a generic OBD tool) starts addressing the chassis bus, the
+  device auto-pauses its own MQB UDS polling so the two don't fight over the
+  diagnostic session, then resumes on its own once the tool goes quiet for four
+  seconds. Detection watches Bus 0 for the reserved ISO/VAG tester request ids
+  (`0x7DF` OBD functional, and the `0x700`-`0x71F` physical-tester range); our
+  own polling transmits on Bus 1, so any of those seen inbound is a foreign tool.
+  The live-data API exposes `diagToolActive` so the UI can show why the readout
+  paused. The match and the timeout window are host-tested pure predicates
+  (`is_external_diag_request_id`, `external_diag_active`). Forbes independently
+  added the same coexistence in upstream V8.00.3; this is the equivalent on the
+  V8.00.2 base with the decision logic pinned by the native test suite.
+
 - **Software Update card with single-file OTA.** The Settings tab now has a
   Software Update section: current firmware version/build/slot, the live
   safe-state gate with its blocking reason, and one upload-with-progress slot.

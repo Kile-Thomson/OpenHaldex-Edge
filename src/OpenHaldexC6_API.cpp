@@ -384,6 +384,7 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["analyzerMode"] = analyzerMode;
     data["analyzerSerial"] = analyzerSerial;
     data["udsMQBEnabled"] = udsMQBEnabled;
+    data["diagToolActive"] = externalDiagActive(); // external scanner seen -> our live polling auto-paused
 
     data["followBrake"] = followBrake;
     data["invertBrake"] = invertBrake;
