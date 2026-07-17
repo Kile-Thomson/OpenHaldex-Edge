@@ -24,6 +24,9 @@ UPSTREAM-BUG-REPORT.md
 # Local-only reverse-engineering notes, not for remote
 HALDEX-KNOWLEDGE.md
 
+# Dropbox sync-ignore config (local only, never committed)
+.dropboxignore
+
 # Local UI dev helpers (not firmware): mock server, CDP render/verify scripts,
 # and generated screenshots.
 tools/
