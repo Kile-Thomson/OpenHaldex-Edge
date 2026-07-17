@@ -25,7 +25,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-ESP32--C6-blue)
 ![Hardware](https://img.shields.io/badge/hardware-Haldex%20Gen1%20%7C%20Gen2%20%7C%20Gen4%20%7C%20Gen5-green)
-![Last commit](https://img.shields.io/github/last-commit/Kile-Thomson/OpenHaldex-C6-Edge)
+![Last commit](https://img.shields.io/github/last-commit/Kile-Thomson/OpenHaldex-Edge)
 
 </p>
 
@@ -307,7 +307,7 @@ You can either flash a pre-built release binary or build from source with Platfo
 
 ### Pre-built release binary
 
-Each tagged release on this fork's [Releases page](https://github.com/Kile-Thomson/OpenHaldex-C6-Edge/releases) attaches a single merged image, `openhaldex-c6-<tag>-merged.bin`. It bundles the bootloader, partition table, firmware and the LittleFS web UI, so it is a complete flash-from-scratch build - no separate filesystem upload needed. Flash it at offset `0x0`:
+Each tagged release on this fork's [Releases page](https://github.com/Kile-Thomson/OpenHaldex-Edge/releases) attaches a single merged image, `openhaldex-c6-<tag>-merged.bin`. It bundles the bootloader, partition table, firmware and the LittleFS web UI, so it is a complete flash-from-scratch build - no separate filesystem upload needed. Flash it at offset `0x0`:
 
 ```sh
 esptool.py --chip esp32c6 write_flash 0x0 openhaldex-c6-<tag>-merged.bin
