@@ -286,6 +286,10 @@ static void statusOutgoing(AsyncWebServerRequest *request)
     data["busFailure"] = isBusFailure;
     data["lastChassisMs"] = lastCANChassisTick > 0 ? (millis() - lastCANChassisTick) : 0;
     data["lastHaldexMs"] = lastCANHaldexTick > 0 ? (millis() - lastCANHaldexTick) : 0;
+    // Live state, not a setting: reported here (not in settingsOutgoing) and
+    // outside the udsMQBEnabled gate so the UI can show a scanner is present even
+    // when our own polling is disabled. true -> live UDS polling is auto-paused.
+    data["diagToolActive"] = externalDiagActive();
 
     if (haldexOk && udsMQBEnabled)
     {

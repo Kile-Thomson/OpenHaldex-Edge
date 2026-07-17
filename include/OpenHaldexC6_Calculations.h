@@ -207,6 +207,28 @@ bool wifi_password_provisioned(const char* ap_pw);
 bool can_alerts_indicate_failure(uint32_t alerts, uint32_t failure_mask);
 bool can_alerts_indicate_recovered(uint32_t alerts, uint32_t recovered_mask);
 
+// External-diagnostic-tool detection. Pure integer logic, no Arduino/TWAI
+// symbols, so the auto-pause decision that keeps our UDS polling off a busy
+// diagnostic bus is host-testable.
+// is_external_diag_request_id: true when a chassis-bus (Bus 0) CAN id is an
+// ISO/VAG diagnostic tester request - 0x7DF (OBD-II functional request) or the
+// 0x700-0x71F physical-tester range. Our own UDS polling transmits on Bus 1, so
+// any of these seen inbound on Bus 0 means a real scan tool (VCDS/ODIS/OBD) is
+// on the bus. TP2.0 setup id 0x200 is deliberately excluded: this fork does not
+// run TP2.0, and 0x200 sits in the normal MQB broadcast-data id region where it
+// would false-trigger.
+bool is_external_diag_request_id(uint32_t can_id);
+// external_diag_stamp: normalize a millis() reading for storage so 0 stays
+// reserved as the "never seen" sentinel. millis() legitimately returns 0 at boot
+// and at every 32-bit rollover; a raw 0 stored as last_seen would be misread as
+// "never seen". Maps only the single 0 tick to 1 (<=1 ms error); all other
+// values pass through. The stamp site must use this before writing last_seen_ms.
+uint32_t external_diag_stamp(uint32_t now_ms);
+// external_diag_active: true while a tester was seen within timeout_ms.
+// last_seen_ms == 0 means never seen (never a real stamp - see external_diag_stamp).
+// Uses wrap-safe unsigned subtraction so it survives the millis() rollover.
+bool external_diag_active(uint32_t last_seen_ms, uint32_t now_ms, uint32_t timeout_ms);
+
 // NVS init policy. Pure decision over two booleans - no Arduino/NVS symbols -
 // so the readEEP first-run/migrate/seed branch lives in one host-testable place.
 // Given whether the canonical namespace is already seeded and whether the

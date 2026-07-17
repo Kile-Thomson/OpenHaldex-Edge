@@ -201,6 +201,16 @@ void setupCAN()
   }
 }
 
+// True while an external diagnostic tool was recently seen addressing the
+// chassis bus. Wraps the host-tested external_diag_active() predicate with the
+// live millis() clock. Used to auto-pause our UDS polling so we don't collide
+// with a real scanner (VCDS/ODIS/OBD); resets once the tool goes quiet for
+// EXTERNAL_DIAG_TIMEOUT_MS.
+bool externalDiagActive()
+{
+  return external_diag_active(externalDiagLastMs, millis(), EXTERNAL_DIAG_TIMEOUT_MS);
+}
+
 void parseCAN_chs(void *arg)
 {
   // Interrupt-driven receive: block on the TWAI driver's RX queue (signalled
@@ -226,6 +236,17 @@ void parseCAN_chs(void *arg)
     {
       lastCANChassisTick = millis();
       ++lpChassisFrameCount;
+
+      // External diagnostic-tool detection (auto-pause of live polling). A scan
+      // tool addresses ECUs from the chassis side; our own UDS polling transmits
+      // on Bus 1, so a tester request seen here on Bus 0 is a foreign tool.
+      // Stamp the time so externalDiagActive() backs udsMQBTask off until the
+      // tool goes quiet, at which point live polling resumes on its own.
+      if (is_external_diag_request_id(rx_message_chs.identifier))
+      {
+        // Normalize so the stamp is never 0 (0 is the "never seen" sentinel).
+        externalDiagLastMs = external_diag_stamp(millis());
+      }
 
       // /api/uds/read tap: copy frames matching the registered response ID to
       // the web helper's queue. Copy, not consume - the frame continues down

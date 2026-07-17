@@ -11,13 +11,13 @@
 # OpenHaldex-C6-Edge
 
 > [!IMPORTANT]
-> **This is a personal, non-commercial firmware fork** of [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6). It exists for three reasons:
+> **This is a personal, non-commercial firmware fork** of [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6). It exists to:
 >
-> 1. **Firmware stability:** fix confirmed bugs before adding anything new.
-> 2. **Security hardening:** put the WiFi access point behind a password you set on the device, and gate CAN injection behind it.
-> 3. **A host-runnable test suite:** pin wire-byte correctness so changes can't silently break CAN behaviour.
+> 1. **Introduce motorsport-oriented features** for track and performance use.
+> 2. **Enhance stability** by fixing confirmed bugs before adding anything new.
+> 3. **Improve features for power users** - finer control, better tuning tools, a host-runnable test suite that pins wire-byte correctness, and WiFi-AP security hardening.
 >
-> **This repo contains firmware source only.** Hardware design files, Gerbers, BOM, enclosure STLs, and pre-built binaries all live in the upstream project. If you want supported hardware or a ready-to-flash binary, go to [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6) and [forbes-automotive.com](https://forbes-automotive.com/).
+> **This repo contains firmware source only.** Hardware design files, Gerbers, BOM and enclosure STLs live in the upstream project - for supported hardware, go to [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6) and [forbes-automotive.com](https://forbes-automotive.com/). Ready-to-flash binaries of this fork are attached to each [release](https://github.com/Kile-Thomson/OpenHaldex-Edge/releases); the upstream project remains the source for official, supported firmware.
 >
 > All original design, reverse-engineering, and credit belong to **Forbes Automotive** and the upstream contributors listed under [Acknowledgements](#acknowledgements). The Forbes Automotive copyright and the [LICENSE](LICENSE.md) (FASL v1.0) are preserved unchanged. This fork is not affiliated with or endorsed by Forbes Automotive. See [Upstream](#upstream) for tracking the original and [Improvements over upstream](#improvements-over-upstream) for what has changed here.
 
@@ -55,8 +55,8 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 
 ### Robustness under the hood
 
-- **Won't trip over itself under load.** Data that the CAN tasks read and write concurrently is now guarded by a mutex.
-- **Settings survive a reboot correctly.** Storage is consolidated onto one flash namespace, with a one-time migration from the old layout, so every setting persists and first-run defaults seed correctly.
+- **Shared control state is mutex-guarded.** The settings and mode fields that the web handlers and the CAN tasks touch concurrently are serialised behind a single lock, so a web write can't tear a value a CAN task is mid-read on.
+- **Storage consolidated onto one flash namespace.** Settings moved from around 29 separate NVS namespaces to a single `openhaldex` namespace with a one-time migration from the old layout, and dead first-run default seeding was fixed so a fresh device comes up with correct defaults.
 
 ### Added driving features
 
@@ -71,10 +71,10 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 
 ### Web interface
 
-- **Restyled dashboard.** A dark dashboard with a semi-circular engagement gauge and a target tick, touch and reduced-motion polish, and polling that pauses while the page is hidden so it isn't hitting the device in your pocket.
+- **Restyled dashboard.** A dark dashboard with a semi-circular engagement gauge and a target tick, touch and reduced-motion polish, and polling that pauses while the page is hidden so it isn't hitting the device in your pocket. The gauge arc, the bars and the live operating-point dot ease between polls instead of snapping, so the readout tracks smoothly while driving.
 - **Live lock-response trace.** A rolling 15-second strip chart under the gauge plots what you asked the lock to do against what it actually did, so coupling lag and the effect of the rate limits read at a glance while tuning. It clears on a dropped link, so a reconnect never draws a line across the outage.
 - **Connection-status badge.** A live/reconnecting/offline badge in the header. A dropped access-point link used to leave the last gauge values frozen on screen looking current; the badge now flips to reconnecting after the first missed poll and offline after three, so stale numbers can't be mistaken for live data while driving.
-- **Expert map curve view.** The Expert editor draws the lock surface as curves below the 7x7 grid - lock against speed, or lock against throttle - so the table of numbers reads as shapes while you tune. It is read-only and doesn't change what's written to the Haldex.
+- **Expert map 3D surface.** The Expert editor renders the lock table as an isometric 3D surface - speed and throttle on the ground plane, lock percent as height - the same read you'd get from a 3-axis map on a standalone ECU, with a live operating-point dot riding the surface as you drive. It is read-only and doesn't change what's written to the Haldex.
 - **Learn calibration chart.** Once your Haldex has a learned table, the Learn section plots it - commanded correction factor against measured engagement, with a 1:1 reference line - so where your unit over- or under-responds reads at a glance. Render-only from data the device already returns; no extra load on the module.
 - **Install it like an app, full-screen.** The web UI is an installable PWA (manifest, icon set, service worker) so it can go on a phone home screen and open full-screen. A full-screen toggle in the header also works over plain http with no install step, for a clean dashboard on an unmodified phone. Live telemetry and control always hit the device - the service worker never caches the API or POSTs.
 - **On-device saved tune slots.** Five named map slots persist in the device's own storage with list/save/load/delete, so a tune saved from one phone is visible from any phone. Replaces the earlier phone-side file export/import.
@@ -409,7 +409,7 @@ are captured.
 
 ## Hardware
 
-This fork is firmware source only. Hardware design files, Gerbers, BOM, enclosure STLs, and pre-built binaries live in the upstream project:
+This fork is firmware source only. Hardware design files, Gerbers, BOM and enclosure STLs live in the upstream project:
 
 **[Forbes-Automotive/OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6)**
 
