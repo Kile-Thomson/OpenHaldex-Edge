@@ -29,6 +29,8 @@ Preferences pref; // for EEPROM / storing settings
 
 SemaphoreHandle_t stateMutex = nullptr; // created in setupTasks() before any task starts
 
+void *pmNoLightSleepLock = nullptr; // ESP-PM no-light-sleep lock; held while awake (see setup())
+
 // for LED - will be initialized in setupIO()
 Freenove_ESP32_WS2812 strip = Freenove_ESP32_WS2812(1, gpio_led, led_channel, TYPE_RGB); // 1 led, gpio pin, channel, type of LED
 

@@ -324,6 +324,12 @@ extern volatile bool canWakeRequest; // set by CAN_RX GPIO ISR when transceivers
 
 extern bool rebootWiFi;
 extern bool lowPowerMode;
+// esp_pm_lock_handle_t held while awake to block automatic light sleep from
+// powering down the TWAI controller mid-drive. Stored as void* so this header
+// stays free of esp_pm.h (it is compiled in the native test env). Created in
+// setup() when canSleepEnabled; released/re-acquired by the low-power state
+// machine on deliberate sleep/wake. null when CAN sleep is disabled.
+extern void *pmNoLightSleepLock;
 extern char wifiPassword[65]; // WiFi AP password - empty = open network
 
 extern bool hazardForceMode;     // setting: use hazard lights to activate force mode

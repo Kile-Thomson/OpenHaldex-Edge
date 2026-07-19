@@ -12,6 +12,34 @@ limiting - are Forbes's own work and are not repeated here.
 
 ## Unreleased
 
+### Fixed
+
+- **Loss of drive from a stalled CAN controller no longer needs a physical
+  replug.** Both CAN receive tasks (chassis and Haldex) waited on the frame
+  queue with an infinite timeout. If a controller stopped delivering while the
+  module was awake - a bus-off event, or the TWAI power domain coming back
+  stopped after a light-sleep cycle - the receive call never returned, so the
+  existing recovery code never ran. The task parked on a dead controller, the
+  Haldex lost its frame feed, and the module sat dead until power was pulled.
+  The receives are now bounded (250 ms), and a stalled controller is detected
+  and recovered: a stopped controller is restarted, a bus-off one is sent into
+  recovery, and if the drive-critical chassis bus stays unrecoverable for ~3 s
+  the module cleanly restarts to restore drive. A running-but-quiet bus (normal
+  gaps between frames) is treated as healthy and never escalates.
+- **Automatic light sleep disabled to stop the CAN domain being powered down
+  mid-drive.** On the ESP32-C6 there is no armed GPIO wake source for automatic
+  light sleep, and entering it power-gated the TWAI domain, which could come
+  back stopped with nothing to wake it. Light sleep is now off and the TWAI
+  power domain is held up at all times; the low-power feature still saves power
+  by shutting down WiFi and the LED (and parking the transceivers in aggressive
+  mode) while the CPU keeps running, so the receive task, frame counter and wake
+  ISR stay live and the module can always recover on its own. CPU frequency
+  scaling for idle savings is unchanged.
+- **Control-path deadlock backstop.** The low-power supervisor task now feeds
+  the hardware task watchdog on every iteration, so if the shared state mutex is
+  ever lost and the control path deadlocks, the watchdog reboots the module
+  instead of leaving it hung.
+
 ## v8.00.16 - 2026-07-18
 
 First tagged release of this fork. Everything below is the delta over Forbes

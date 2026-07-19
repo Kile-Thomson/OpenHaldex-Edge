@@ -3,6 +3,22 @@
 #include <OpenHaldexC6_WiFi.h>
 #include <OpenHaldexC6_lowpower.h>
 #include "driver/usb_serial_jtag.h" // usb_serial_jtag_is_connected() - bench USB-host detection
+#include "esp_pm.h"       // release/acquire the no-light-sleep lock around deliberate sleep
+#include "esp_task_wdt.h" // hardware task watchdog - reboots on a full control-path deadlock
+
+// Toggle whether automatic light sleep is permitted. The lock is held (light
+// sleep blocked) while awake so light sleep can never stop the CAN controller
+// mid-drive; it is released only when the low-power state machine deliberately
+// sleeps, and re-acquired on wake. No-op when CAN sleep is disabled (lock null).
+static inline void pmAllowLightSleep(bool allow)
+{
+  if (pmNoLightSleepLock == nullptr) return;
+  esp_pm_lock_handle_t lk = (esp_pm_lock_handle_t)pmNoLightSleepLock;
+  if (allow)
+    esp_pm_lock_release(lk); // deliberate sleep: let the SoC light-sleep
+  else
+    esp_pm_lock_acquire(lk); // awake: block light sleep so CAN stays up
+}
 
 // Low-power state machine: WATCHING = WiFi up, normal IO; SLEEPING = WiFi
 // down, LED off, and (if canSleepAggressive) CAN transceivers in standby
@@ -271,8 +287,29 @@ void setupButtons()
 
 void updateTriggers(void *arg)
 {
+  // Subscribe this supervisor to the hardware task watchdog. It always loops on
+  // a bounded cadence (<=2s even in aggressive sleep) and it takes stateMutex
+  // for the LED below, so if the shared mutex is ever lost and the whole control
+  // path deadlocks on portMAX_DELAY, this task stalls too and the watchdog
+  // reboots the module - the only net that recovers a mutex deadlock. The 8s
+  // timeout is well clear of the normal 500ms / 2s cadence so it can't false-trip.
+  bool wdtSubscribed = (esp_task_wdt_add(NULL) == ESP_OK);
+  if (!wdtSubscribed)
+  {
+    // Task WDT not initialised yet (or add failed) - init it, then subscribe.
+    esp_task_wdt_config_t wdt_cfg = {};
+    wdt_cfg.timeout_ms = 8000;
+    wdt_cfg.idle_core_mask = 0;
+    wdt_cfg.trigger_panic = true;
+    esp_task_wdt_init(&wdt_cfg);
+    wdtSubscribed = (esp_task_wdt_add(NULL) == ESP_OK);
+  }
+
   while (1)
   {
+    if (wdtSubscribed)
+      esp_task_wdt_reset(); // pet the dog every iteration, on every code path below
+
     const uint32_t now = millis();
     hasCANChassis = (lastCANChassisTick > 0) && ((now - (uint32_t)lastCANChassisTick) <= canHealthTimeoutMs); // 1000ms timeout for CAN health - if we haven't received a message in 1000ms, consider the CAN connection unhealthy
     hasCANHaldex = (lastCANHaldexTick > 0) && ((now - (uint32_t)lastCANHaldexTick) <= canHealthTimeoutMs);    // 1000ms timeout for CAN health - if we haven't received a message in 1000ms, consider the CAN connection unhealthy
@@ -365,6 +402,8 @@ void updateTriggers(void *arg)
             DEBUG("Low power: no clients + CAN idle (%lu fps) - shutting down WiFi+LED%s",
                   (unsigned long)(isStandalone ? lpHaldexFps : lpChassisFps),
                   canSleepAggressive ? " + transceivers standby (ISR wake)" : "");
+            // Deliberate sleep: allow light sleep now (releases the awake lock).
+            pmAllowLightSleep(true);
             strip.setLedColorData(led_channel, 0, 0, 0);
             strip.show();
             // Aggressive: park transceivers immediately and suspend background
@@ -407,6 +446,8 @@ void updateTriggers(void *arg)
           // Ensure transceivers are back to normal before we re-enable WiFi/IO.
           lpSetTransceiverStandby(false);
           lpResumeBackgroundTasks();
+          // Awake again: block light sleep so CAN can't be stopped mid-drive.
+          pmAllowLightSleep(false);
           lowPowerMode = false;
           lpNoClientsSince = 0;
           lpState = LP_WATCHING;
