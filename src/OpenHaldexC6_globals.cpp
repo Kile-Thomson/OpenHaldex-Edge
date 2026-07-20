@@ -179,8 +179,8 @@ uint8_t analyzerProtocol = ANALYZER_PROTOCOL_GVRET;
 
 uint32_t alerts_to_enable = 0;
 
-long lastCANChassisTick = 0;
-long lastCANHaldexTick = 0;
+uint32_t lastCANChassisTick = 0; // unsigned: survives the signed 32-bit millis() rollover (see defs.h)
+uint32_t lastCANHaldexTick = 0;
 volatile uint32_t externalDiagLastMs = 0; // last time a tester request was seen on Bus 0 (0 = never)
 uint32_t canHealthTimeoutMs = 1000;
 

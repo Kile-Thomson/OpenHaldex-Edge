@@ -229,7 +229,7 @@ bool externalDiagActive()
 // and restores drive in a second or two - far better than sitting dead. It
 // never fires on a bench unit that has never seen a frame (everAliveTick == 0),
 // so a disconnected box does not boot-loop.
-static void canServiceRxFault(twai_handle_t bus, uint32_t &stalledSinceMs, long everAliveTick, bool allowReboot)
+static void canServiceRxFault(twai_handle_t bus, uint32_t &stalledSinceMs, uint32_t everAliveTick, bool allowReboot)
 {
   twai_status_info_t st;
   bool running = false;

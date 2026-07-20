@@ -6,10 +6,15 @@
 #include "esp_pm.h"       // release/acquire the no-light-sleep lock around deliberate sleep
 #include "esp_task_wdt.h" // hardware task watchdog - reboots on a full control-path deadlock
 
-// Toggle whether automatic light sleep is permitted. The lock is held (light
-// sleep blocked) while awake so light sleep can never stop the CAN controller
-// mid-drive; it is released only when the low-power state machine deliberately
-// sleeps, and re-acquired on wake. No-op when CAN sleep is disabled (lock null).
+// Toggle the ESP_PM_NO_LIGHT_SLEEP lock: held (light sleep blocked) while awake,
+// released only when the low-power state machine deliberately sleeps, re-acquired
+// on wake. No-op when CAN sleep is disabled (lock null).
+//
+// Defense-in-depth, currently redundant: main.cpp sets .light_sleep_enable=false,
+// so automatic light sleep is off at the esp_pm_configure level and this lock has
+// no effect today. It is kept deliberately so that if light_sleep_enable is ever
+// re-enabled, mid-drive light sleep (which can power-gate the TWAI domain and
+// stop the CAN controller) is still blocked without having to re-add this wiring.
 static inline void pmAllowLightSleep(bool allow)
 {
   if (pmNoLightSleepLock == nullptr) return;
@@ -303,6 +308,12 @@ void updateTriggers(void *arg)
     wdt_cfg.trigger_panic = true;
     esp_task_wdt_init(&wdt_cfg);
     wdtSubscribed = (esp_task_wdt_add(NULL) == ESP_OK);
+    if (!wdtSubscribed)
+    {
+      // Subscription failed even after init (e.g. WDT resource limits). The
+      // deadlock backstop is now absent - surface it rather than fail silently.
+      DEBUG("Task WDT subscription failed - deadlock backstop disabled for updateTriggers");
+    }
   }
 
   while (1)
