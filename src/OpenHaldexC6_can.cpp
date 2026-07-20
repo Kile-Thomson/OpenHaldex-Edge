@@ -2,6 +2,7 @@
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_Analyzer.h>
 #include <OpenHaldexC6_UDS.h>
+#include "esp_system.h" // esp_restart() - last-resort drive recovery
 
 // Every transmit in this file goes through this wrapper so a failed send
 // (TX queue still full after the 10 ms wait, driver stopped/bus-off) is
@@ -157,10 +158,13 @@ void setupCAN()
   g_config.rx_queue_len = 128; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5
   // g_config.intr_flags = ESP_INTR_FLAG_IRAM;
 
-  // Allow the TWAI power domain to be powered down during light sleep; the
-  // driver auto-saves/restores its registers + RX queue across sleep cycles.
-  // Sleep entry itself is gated at runtime by `canSleepEnabled`.
-  g_config.general_flags.sleep_allow_pd = 1;
+  // Keep the TWAI power domain powered at all times. Automatic light sleep is
+  // disabled (main.cpp), so the domain never needs to save/restore across a
+  // sleep cycle - and allowing power-down was the mechanism that let the
+  // controller come back stopped with no wake source, killing drive mid-run
+  // until a physical replug. Holding the domain up guarantees the chassis and
+  // Haldex controllers stay live.
+  g_config.general_flags.sleep_allow_pd = 0;
 
   // setup CAN Controller (0) - Chassis
   g_config.controller_id = 0;
@@ -211,6 +215,66 @@ bool externalDiagActive()
   return external_diag_active(externalDiagLastMs, millis(), EXTERNAL_DIAG_TIMEOUT_MS);
 }
 
+// Recover a TWAI controller that has stopped delivering frames while the module
+// is meant to be live. The prime trigger is automatic light sleep powering down
+// the TWAI domain (setupCAN sets sleep_allow_pd) and the driver failing to
+// restart on wake - the RX task then spins on a dead controller, the Haldex
+// loses its frame feed and drive is lost with no recovery. A STOPPED controller
+// is restarted; a BUS_OFF one is sent into recovery (showHaldexState's alert
+// handler finishes it with twai_start_v2). Only called while awake - a
+// deliberate low-power sleep owns its own wake path and must not be fought.
+//
+// allowReboot: on the drive-critical chassis path, if the bus was previously
+// alive and stays unrecoverable for ~3s, a clean esp_restart() re-runs setupCAN
+// and restores drive in a second or two - far better than sitting dead. It
+// never fires on a bench unit that has never seen a frame (everAliveTick == 0),
+// so a disconnected box does not boot-loop.
+static void canServiceRxFault(twai_handle_t bus, uint32_t &stalledSinceMs, uint32_t everAliveTick, bool allowReboot)
+{
+  twai_status_info_t st;
+  bool running = false;
+  if (twai_get_status_info_v2(bus, &st) == ESP_OK)
+  {
+    if (st.state == TWAI_STATE_STOPPED)
+    {
+      twai_start_v2(bus); // stopped (e.g. light-sleep restore) - bring it back live
+    }
+    else if (st.state == TWAI_STATE_BUS_OFF)
+    {
+      twai_initiate_recovery_v2(bus);
+    }
+    else if (st.state == TWAI_STATE_RUNNING)
+    {
+      running = true; // controller is fine, the bus is just momentarily quiet
+    }
+    // RECOVERING: recovery already in flight; let the stall clock keep running.
+  }
+
+  // A RUNNING controller with no traffic is a benign quiet bus, not a fault:
+  // clear the stall clock and never escalate. This is what makes a bounded
+  // receive timeout safe - ordinary gaps between frames don't count as a stall.
+  if (running)
+  {
+    stalledSinceMs = 0;
+    return;
+  }
+
+  // Controller is not delivering (stopped/bus-off/recovering). Stamp the first
+  // bad sample; if it stays unrecoverable for ~3s and the bus was previously
+  // alive, a clean restart re-runs setupCAN and restores drive in a second or
+  // two - far better than a task parked forever on a dead controller.
+  const uint32_t nowMs = (uint32_t)millis();
+  if (stalledSinceMs == 0)
+  {
+    stalledSinceMs = nowMs ? nowMs : 1; // never 0 - that is the "not stalled" sentinel
+  }
+  if (allowReboot && everAliveTick > 0 && (nowMs - stalledSinceMs) >= 3000UL)
+  {
+    DEBUG("CAN - chassis controller unrecoverable ~3s while awake, restarting to restore drive");
+    esp_restart();
+  }
+}
+
 void parseCAN_chs(void *arg)
 {
   // Interrupt-driven receive: block on the TWAI driver's RX queue (signalled
@@ -218,20 +282,33 @@ void parseCAN_chs(void *arg)
   // unblocked the moment a frame is queued by the ISR, so latency is the queue
   // wakeup time (microseconds) rather than the previous ~1 ms polling tick.
   // CPU usage on an idle bus drops to effectively zero.
+  static uint32_t chsRxStalledSince = 0; // millis() of first stalled sample, 0 = not stalled
   while (1)
   {
 #if detailedDebugStack
     stackCHS = uxTaskGetStackHighWaterMark(NULL);
 #endif
 
-    // Block until at least one frame is available, then read any further
-    // frames already queued by the ISR before blocking again.
-    if (twai_receive_v2(twai_bus_0, &rx_message_chs, portMAX_DELAY) != ESP_OK)
+    // Bounded receive: block up to 250ms for a frame instead of forever. On a
+    // live bus frames arrive continuously so this returns immediately; the
+    // timeout only matters when the controller stalls. An infinite wait
+    // (portMAX_DELAY) would park this task on a stopped controller forever - the
+    // recovery path below never runs because the receive never returns - which is
+    // the exact "dead until replug, no self-recovery" loss-of-drive failure.
+    if (twai_receive_v2(twai_bus_0, &rx_message_chs, pdMS_TO_TICKS(250)) != ESP_OK)
     {
-      // Driver was stopped/uninstalled (e.g. light-sleep entry); back off and retry.
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
+      // No frame in the window. In a deliberate low-power sleep the driver is
+      // stopped on purpose and the LP state machine owns the wake path, so leave
+      // it alone. Awake, canServiceRxFault checks the real controller state and
+      // only recovers/reboots when it is genuinely not delivering - a merely
+      // quiet bus (RUNNING, no traffic) is a no-op.
+      if (!lowPowerMode)
+      {
+        canServiceRxFault(twai_bus_0, chsRxStalledSince, lastCANChassisTick, true);
+      }
+      continue; // the 250ms timeout is the back-off; no extra delay needed
     }
+    chsRxStalledSince = 0; // a frame arrived - controller is delivering again
     do
     {
       lastCANChassisTick = millis();
@@ -842,17 +919,27 @@ void parseCAN_chs(void *arg)
 void parseCAN_hdx(void *arg)
 {
   // for all haldex frames received
+  static uint32_t hdxRxStalledSince = 0; // millis() of first stalled sample, 0 = not stalled
   while (1)
   {
 #if detailedDebugStack
     stackHDX = uxTaskGetStackHighWaterMark(NULL);
 #endif
 
-    if (twai_receive_v2(twai_bus_1, &rx_message_hdx, portMAX_DELAY) != ESP_OK)
+    // Bounded receive (250ms) for the same reason as the chassis task: a
+    // portMAX_DELAY wait would park this task on a stopped Haldex controller and
+    // the recovery path below would never run.
+    if (twai_receive_v2(twai_bus_1, &rx_message_hdx, pdMS_TO_TICKS(250)) != ESP_OK)
     {
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
+      // Awake, recover a stopped/bus-off Haldex-bus controller (no reboot from
+      // this path - the chassis task owns the drive-critical restart escalation).
+      if (!lowPowerMode)
+      {
+        canServiceRxFault(twai_bus_1, hdxRxStalledSince, lastCANHaldexTick, false);
+      }
+      continue; // the 250ms timeout is the back-off
     }
+    hdxRxStalledSince = 0;
     do
     {
       lastCANHaldexTick = millis();

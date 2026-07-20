@@ -324,6 +324,12 @@ extern volatile bool canWakeRequest; // set by CAN_RX GPIO ISR when transceivers
 
 extern bool rebootWiFi;
 extern bool lowPowerMode;
+// esp_pm_lock_handle_t held while awake to block automatic light sleep from
+// powering down the TWAI controller mid-drive. Stored as void* so this header
+// stays free of esp_pm.h (it is compiled in the native test env). Created in
+// setup() when canSleepEnabled; released/re-acquired by the low-power state
+// machine on deliberate sleep/wake. null when CAN sleep is disabled.
+extern void *pmNoLightSleepLock;
 extern char wifiPassword[65]; // WiFi AP password - empty = open network
 
 extern bool hazardForceMode;     // setting: use hazard lights to activate force mode
@@ -409,8 +415,12 @@ extern uint8_t udsBlockagePct;   // unconfirmed DID — always 0
 
 extern uint32_t alerts_to_enable;
 
-extern long lastCANChassisTick;
-extern long lastCANHaldexTick;
+// millis() timestamp of the last frame on each bus. Unsigned to match millis()
+// so the value never goes negative after the signed 32-bit rollover (~24.8 days
+// uptime) - a negative tick would silently defeat the everAliveTick > 0 guard
+// that arms the drive-critical CAN restart in canServiceRxFault.
+extern uint32_t lastCANChassisTick;
+extern uint32_t lastCANHaldexTick;
 extern volatile uint32_t lpChassisFrameCount; // chassis CAN frame counter for probe window activity check
 extern volatile uint32_t lpHaldexFrameCount;  // haldex CAN frame counter for standalone probe window activity check
 extern uint32_t canHealthTimeoutMs;

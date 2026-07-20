@@ -39,12 +39,39 @@ void setup()
         .max_freq_mhz = 160,
         // Aggressive: drop CPU floor to 10MHz (XTAL/N) for deeper idle.
         .min_freq_mhz = canSleepAggressive ? 10 : 40,
-        .light_sleep_enable = true,
+        // Automatic light sleep is DISABLED. On the C6 there is no armed GPIO
+        // wake source for light sleep, and the TWAI domain power-gates on sleep
+        // (setupCAN, sleep_allow_pd) and can come back stopped with nothing to
+        // wake it - the module goes dead mid-drive until a physical replug.
+        // The low-power feature still saves power by shutting down WiFi+LED (and
+        // parking the transceivers in aggressive mode) while the CPU keeps
+        // running, so the RX task, fps counter, and wake ISR stay live and the
+        // box can always recover on its own. CPU frequency scaling (DFS) below
+        // the max is still active for idle power savings.
+        .light_sleep_enable = false,
     };
     esp_err_t pm_err = esp_pm_configure(&pm_cfg);
     if (pm_err != ESP_OK)
     {
       DEBUG("ESP Power Management Failed: %d (continuing without CPU frequency scaling)", (int)pm_err);
+    }
+
+    // Hold light sleep OFF while the module is awake. Automatic light sleep can
+    // power down the TWAI power domain (setupCAN sets sleep_allow_pd); if the
+    // restore ever fails the CAN controller comes back stopped and the Haldex
+    // loses its frame feed - loss of drive. This lock blocks incidental light
+    // sleep during live driving. The low-power state machine in updateTriggers
+    // releases it only when it DELIBERATELY sleeps (5 min idle, no clients) and
+    // re-acquires it on wake, so the shipped low-power feature is unchanged.
+    esp_pm_lock_handle_t lk = nullptr;
+    if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "can_live", &lk) == ESP_OK)
+    {
+      pmNoLightSleepLock = (void *)lk;
+      esp_pm_lock_acquire(lk); // awake at boot
+    }
+    else
+    {
+      DEBUG("Failed to create PM no-light-sleep lock (CAN may sleep mid-drive)");
     }
   }
 

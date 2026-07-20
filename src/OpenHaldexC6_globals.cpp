@@ -29,6 +29,8 @@ Preferences pref; // for EEPROM / storing settings
 
 SemaphoreHandle_t stateMutex = nullptr; // created in setupTasks() before any task starts
 
+void *pmNoLightSleepLock = nullptr; // ESP-PM no-light-sleep lock; held while awake (see setup())
+
 // for LED - will be initialized in setupIO()
 Freenove_ESP32_WS2812 strip = Freenove_ESP32_WS2812(1, gpio_led, led_channel, TYPE_RGB); // 1 led, gpio pin, channel, type of LED
 
@@ -177,8 +179,8 @@ uint8_t analyzerProtocol = ANALYZER_PROTOCOL_GVRET;
 
 uint32_t alerts_to_enable = 0;
 
-long lastCANChassisTick = 0;
-long lastCANHaldexTick = 0;
+uint32_t lastCANChassisTick = 0; // unsigned: survives the signed 32-bit millis() rollover (see defs.h)
+uint32_t lastCANHaldexTick = 0;
 volatile uint32_t externalDiagLastMs = 0; // last time a tester request was seen on Bus 0 (0 = never)
 uint32_t canHealthTimeoutMs = 1000;
 
