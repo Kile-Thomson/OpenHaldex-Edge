@@ -326,8 +326,9 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert)
   if (haldexLearnTableValid)
   {
     // smallest correction factor whose learned engagement meets lock_target;
-    // clamps to 100 (highest learned engagement) when more lock is requested
-    // than was ever learned, instead of falling through to 0.
+    // clamps to the CF of the highest learned engagement (argmax) when more lock
+    // is requested than was ever learned, instead of falling through to 0 or
+    // over-claiming the full frame.
     correction_factor = lookup_learn_correction_factor(haldexLearnTable, (uint8_t)lock_target);
   }
   else if (haldexGeneration == 41)
@@ -1551,20 +1552,34 @@ EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data)
 // Learn-table lookup. Returns the smallest index i in 0..100 with table[i] >=
 // target - the lowest correction factor whose learned engagement meets the
 // requested lock target, matching the previous inline loop. When NO learned
-// entry meets target (more lock requested than was ever learned), the old loop
-// left correction_factor at 0 and delivered ZERO lock exactly when maximum lock
-// was wanted; this returns 100 instead, clamping to the highest learned
-// engagement. See include/OpenHaldexC6_Calculations.h.
+// entry meets target (more lock requested than was ever learned) we clamp to the
+// index of the MAXIMUM learned engagement, i.e. the CF that produced the most
+// lock the sweep ever actually measured - not a hardcoded 100.
+//
+// Why not 100: the table is only required to have one nonzero entry to be
+// "valid", so a light-load or interrupted sweep can top out well below 100 (e.g.
+// 25% engagement, or entries only up to CF 30 with the rest still 0). Returning
+// 100 then commands CF=100 -> value * 100 / 100 = the full frame value (full
+// bpkCeilingNm) for a target the car never learned - the stuck-at-100% field
+// symptom, and the exact inverse of the old fall-through-to-0 bug. Returning the
+// argmax commands the largest lock the sweep proved reachable and never
+// extrapolates past learned data. An all-zero table yields index 0 (zero lock,
+// safe) - table validity is enforced upstream. See the header.
 uint8_t lookup_learn_correction_factor(const uint8_t* table, uint8_t target)
 {
+  uint8_t max_idx = 0;
   for (uint8_t i = 0; i <= 100; i++)
   {
     if (table[i] >= target)
     {
       return i;
     }
+    if (table[i] > table[max_idx])
+    {
+      max_idx = i; // track highest learned engagement while scanning
+    }
   }
-  return 100;
+  return max_idx;
 }
 
 // See OpenHaldexC6_Calculations.h for the rationale. Median-of-window + monotonic

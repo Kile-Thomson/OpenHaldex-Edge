@@ -12,6 +12,20 @@ limiting - are Forbes's own work and are not repeated here.
 
 ## Unreleased
 
+## v8.00.17 - 2026-07-30
+
+### Fixed
+
+- **Stuck-at-100% lock on partially-learned tables.** When more lock was
+  requested than the learn sweep ever measured, the learn-table lookup returned
+  a hardcoded correction factor of 100. That made the firmware command the full
+  frame value (full `bpkCeilingNm`) for a lock target the car never actually
+  learned - the stuck-at-100% field symptom on a light-load or interrupted
+  learn. The lookup now clamps to the correction factor of the highest learned
+  engagement (argmax), so it never extrapolates past learned data. An all-zero
+  table safely yields zero. Added regression tests covering in-range targets,
+  partial sweeps, plateau tables, and the degenerate all-zero case.
+
 ## v8.00.16 - 2026-07-18
 
 First tagged release of this fork. Everything below is the delta over Forbes
