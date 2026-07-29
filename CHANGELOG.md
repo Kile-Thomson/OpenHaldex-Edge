@@ -10,9 +10,7 @@ limiting - are Forbes's own work and are not repeated here.
 
 ---
 
-## Unreleased
-
-## v8.00.17 - 2026-07-30
+## Unreleased - v8.00.17
 
 ### Fixed
 
