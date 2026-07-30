@@ -155,6 +155,68 @@ void test_old_behaviour_would_have_collapsed(void)
                                   "raw-spike table collapses (documents the bug)");
 }
 
+// --- clamp when target exceeds every learned entry --------------------------
+// Regression for the stuck-at-100% field bug: when more lock is requested than
+// the sweep ever measured, the lookup must clamp to the CF of the highest
+// learned engagement (argmax), NOT a hardcoded 100. Returning 100 makes
+// get_lock_target_adjusted_value compute value * 100 / 100 = the full frame
+// value (full bpkCeilingNm) for a target the car never learned.
+
+void test_in_range_target_still_resolves_normally(void)
+{
+  // Guard: the argmax tracking must not disturb the normal in-range path. A
+  // rising table where the target IS reachable still returns the smallest CF
+  // meeting it (unchanged behaviour).
+  uint8_t table[101];
+  for (int i = 0; i <= 100; i++)
+  {
+    table[i] = (i / 4 < 25) ? (uint8_t)(i / 4) : (uint8_t)25; // rises to 25, then flat
+  }
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(80, lookup_learn_correction_factor(table, 20),
+                                  "in-range target resolves to first CF meeting it");
+}
+
+void test_partial_sweep_clamps_to_max_index_not_100(void)
+{
+  // Interrupted / partial sweep: only CF 0..30 learned (rising to 25%), CF 31..100
+  // still 0. Max learned engagement is 25 at CF 30. A target of 40 meets no entry
+  // and must clamp to CF 30 (argmax), NOT 100 - commanding CF 100 here would drive
+  // the full frame against un-learned cells.
+  uint8_t table[101] = {0};
+  for (int cf = 0; cf <= 30; cf++)
+  {
+    table[cf] = (uint8_t)(cf * 25 / 30); // 0..25 across CF 0..30
+  }
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(30, lookup_learn_correction_factor(table, 40),
+                                  "unreachable target clamps to argmax CF, not 100");
+  // Sanity: an unreachable target on this table must never return 100.
+  TEST_ASSERT_TRUE_MESSAGE(lookup_learn_correction_factor(table, 90) != 100,
+                           "partial-table over-target must not command full lock");
+}
+
+void test_argmax_prefers_lowest_cf_at_plateau(void)
+{
+  // Plateau at the top: engagement rises to 50 by CF 60 then holds 50 to CF 100.
+  // Argmax is the FIRST CF reaching the max (60) - command the least frame value
+  // that reaches peak learned engagement, not CF 100.
+  uint8_t table[101];
+  for (int i = 0; i <= 100; i++)
+  {
+    table[i] = (i < 60) ? (uint8_t)(i * 50 / 60) : (uint8_t)50;
+  }
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(60, lookup_learn_correction_factor(table, 80),
+                                  "over-target clamps to first CF at the plateau max");
+}
+
+void test_all_zero_table_yields_zero_not_full_lock(void)
+{
+  // Degenerate all-zero table (should be rejected upstream, but defend anyway):
+  // no learned engagement -> argmax stays index 0 -> zero lock, never full lock.
+  uint8_t table[101] = {0};
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, lookup_learn_correction_factor(table, 50),
+                                  "all-zero table commands zero, not full lock");
+}
+
 // --- Motor_11 packing selector: learn must force BPK ------------------------
 // V3 packing pins the torque fields at full, so a learn on V3 records a flat
 // ~100% table (the "sits at 100% regardless" symptom on the live MQB car). The
@@ -221,6 +283,11 @@ int main(int, char **)
 
   RUN_TEST(test_spike_does_not_collapse_lookup);
   RUN_TEST(test_old_behaviour_would_have_collapsed);
+
+  RUN_TEST(test_in_range_target_still_resolves_normally);
+  RUN_TEST(test_partial_sweep_clamps_to_max_index_not_100);
+  RUN_TEST(test_argmax_prefers_lowest_cf_at_plateau);
+  RUN_TEST(test_all_zero_table_yields_zero_not_full_lock);
 
   RUN_TEST(test_bpk_off_when_idle_and_toggle_off);
   RUN_TEST(test_bpk_on_when_toggle_on);

@@ -111,13 +111,16 @@ void test_degenerate_window_returns_zero(void)
 }
 
 // ===========================================================================
-// lookup_learn_correction_factor(table, target) - clamp to highest learned
-// engagement.
+// lookup_learn_correction_factor(table, target) - clamp to the CF of the
+// highest learned engagement (argmax).
 //
 // Returns the smallest index i in 0..100 with table[i] >= target. When NO entry
-// meets target (more lock requested than was ever learned), returns 100 so the
-// caller clamps to the highest learned engagement instead of the old inline
-// loop's silent fall-through to 0 (zero lock delivered when maximum lock wanted).
+// meets target (more lock requested than was ever learned), returns the index of
+// the maximum learned engagement - the CF that produced the most lock the sweep
+// actually measured. NOT 100: a hardcoded 100 makes the caller command the full
+// frame value (full bpkCeilingNm) for a target the car never learned, the
+// stuck-at-100% field symptom. argmax never extrapolates past learned data, and
+// still beats the old inline loop's silent fall-through to 0.
 // ===========================================================================
 
 void test_lookup_reaches_target_returns_smallest_index(void)
@@ -138,28 +141,31 @@ void test_lookup_reaches_target_returns_smallest_index(void)
                                   "smallest i reaching the learned max (100) is 50");
 }
 
-void test_lookup_over_request_clamps_to_hundred(void)
+void test_lookup_over_request_clamps_to_argmax_not_hundred(void)
 {
-  // Partially-learned table whose max (10) is below target: the bug case. The
-  // old loop fell through with correction_factor==0; the helper returns 100,
-  // clamping to the highest learned engagement.
-  uint8_t table[101];
-  for (int i = 0; i <= 100; i++)
+  // Partial learn: engagement rises 0..30 across CF 0..30, then the rest of the
+  // sweep never ran (0). Max learned engagement is 30 at CF 30. A target of 40
+  // meets no entry, so the lookup clamps to CF 30 (argmax) - the most lock the
+  // sweep proved reachable - NOT 100 (which would command the full frame for a
+  // target the car never learned: the stuck-at-100% bug).
+  uint8_t table[101] = {0};
+  for (int i = 0; i <= 30; i++)
   {
-    table[i] = 10; // nothing learned ever reaches 40
+    table[i] = (uint8_t)i; // learned region tops out at engagement 30 at CF 30
   }
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(100u, lookup_learn_correction_factor(table, 40),
-                                  "no entry >= 40 -> clamp to 100, not 0");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(100u, lookup_learn_correction_factor(table, 255),
-                                  "no entry >= 255 -> clamp to 100");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(30u, lookup_learn_correction_factor(table, 40),
+                                  "no entry >= 40 -> clamp to argmax CF 30, not 100");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(30u, lookup_learn_correction_factor(table, 255),
+                                  "no entry >= 255 -> clamp to argmax CF 30");
 }
 
-void test_adjval_over_request_clamps_not_zero(void)
+void test_adjval_over_request_clamps_to_argmax_not_full_lock(void)
 {
   // End-to-end through get_lock_target_adjusted_value: with a valid but
-  // partially-learned table whose max < lock_target, the over-request now
-  // delivers a clamped non-zero corrected value (cf=100 -> full value) instead
-  // of the pre-fix 0.
+  // partially-learned table whose max engagement (30 at CF 30) is below
+  // lock_target (40), the over-request delivers the corrected value at the argmax
+  // CF (0xFE * 30 / 100 = 76), NOT the full frame (0xFE) and NOT zero. This is
+  // the fix for the stuck-at-100% over-claim.
   state.mode             = MODE_6040; // not EXPERT
   state.pedal_threshold  = 0;         // throttle gate open -> lock_enabled() true
   disengageUnderSpeed    = 0;         // speed gate open
@@ -171,11 +177,13 @@ void test_adjval_over_request_clamps_not_zero(void)
   lock_target            = 40.0f; // not 0, not 100 -> learn-table branch
   for (int i = 0; i <= 100; i++)
   {
-    haldexLearnTable[i] = 10; // nothing learned reaches 40 -> over-request
+    haldexLearnTable[i] = (i <= 30) ? (uint8_t)i : 0; // learned tops out at CF 30
   }
-  // cf clamps to 100 -> corrected = 0xFE * 100 / 100 = 0xFE (non-zero), NOT 0.
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xFE, get_lock_target_adjusted_value(0xFE, false),
-                                  "over-request clamps to full value, not zero lock");
+  // cf clamps to argmax (30) -> corrected = 0xFE * 30 / 100 = 76.
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(76u, get_lock_target_adjusted_value(0xFE, false),
+                                  "over-request clamps to argmax value, not full lock");
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(0xFE, get_lock_target_adjusted_value(0xFE, false),
+                                "over-request must not command the full frame");
   TEST_ASSERT_NOT_EQUAL_MESSAGE(0x00, get_lock_target_adjusted_value(0xFE, false),
                                 "over-request must not deliver zero lock");
 }
@@ -197,8 +205,8 @@ int main(int, char **)
 
   // learn-table lookup clamp
   RUN_TEST(test_lookup_reaches_target_returns_smallest_index);
-  RUN_TEST(test_lookup_over_request_clamps_to_hundred);
-  RUN_TEST(test_adjval_over_request_clamps_not_zero);
+  RUN_TEST(test_lookup_over_request_clamps_to_argmax_not_hundred);
+  RUN_TEST(test_adjval_over_request_clamps_to_argmax_not_full_lock);
 
   return UNITY_END();
 }

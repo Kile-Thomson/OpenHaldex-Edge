@@ -70,9 +70,13 @@ uint8_t scale_haldex_engagement(uint8_t raw, uint8_t in_min, uint8_t in_max);
 // Learn-table lookup. Returns the smallest index i in 0..100 with
 // table[i] >= target - the lowest correction factor whose learned engagement
 // meets the requested lock target. When NO entry meets target (more lock
-// requested than was ever learned), returns 100: clamp to the highest learned
-// engagement instead of the old loop's fall-through 0 (zero lock delivered
-// exactly when maximum lock is wanted). Pure array math, host-testable.
+// requested than was ever learned), returns the index of the MAXIMUM learned
+// engagement (argmax) - the CF that produced the most lock the sweep actually
+// measured. NOT 100: a hardcoded 100 commands the full frame value for a target
+// the car never learned (the stuck-at-100% symptom on a light-load or partial
+// learn), the inverse of the old loop's fall-through 0. argmax never
+// extrapolates past learned data; an all-zero table yields 0. Pure array math,
+// host-testable.
 uint8_t lookup_learn_correction_factor(const uint8_t* table, uint8_t target);
 
 // Reduce one CF settle window's burst of engagement samples into the value
