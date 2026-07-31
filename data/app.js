@@ -228,7 +228,6 @@ function initFullscreen() {
 
 // once settings are stored, start applying data where required
 function initApp() {
-  //initStoredSettings(); // old
   initNavigation();
   initDashboard();
   initDashTiles();
@@ -350,8 +349,6 @@ async function initStoredSettings() {
     }
 
     document.getElementById("FW_VERSION").textContent = data.FW_VERSION || "--";
-
-    //document.getElementById('mode').value = data.mode || 1;
 
     // bools
     document.getElementById("disableController").checked =
