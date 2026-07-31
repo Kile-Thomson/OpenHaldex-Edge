@@ -434,18 +434,11 @@ extern uint32_t rxtxcount; // frame counter
 extern uint32_t stackCHS;
 extern uint32_t stackHDX;
 
-extern uint32_t stackframes10;
 extern uint32_t stackframes13;
-extern uint32_t stackframes20;
-extern uint32_t stackframes25;
 extern uint32_t stackframes50;
-extern uint32_t stackframes100;
-extern uint32_t stackframes200;
 extern uint32_t stackframes250;
-extern uint32_t stackframes1000;
 
 extern uint32_t stackbroadcastOpenHaldex;
-extern uint32_t stackupdateLabels;
 extern uint32_t stackshowHaldexState;
 extern uint32_t stackwriteEEP;
 

@@ -193,18 +193,11 @@ uint32_t rxtxcount = 0; // frame counter
 uint32_t stackCHS = 0;
 uint32_t stackHDX = 0;
 
-uint32_t stackframes10 = 0;
 uint32_t stackframes13 = 0;
-uint32_t stackframes20 = 0;
-uint32_t stackframes25 = 0;
 uint32_t stackframes50 = 0;
-uint32_t stackframes100 = 0;
-uint32_t stackframes200 = 0;
 uint32_t stackframes250 = 0;
-uint32_t stackframes1000 = 0;
 
 uint32_t stackbroadcastOpenHaldex = 0;
-uint32_t stackupdateLabels = 0;
 uint32_t stackshowHaldexState = 0;
 uint32_t stackwriteEEP = 0;
 
