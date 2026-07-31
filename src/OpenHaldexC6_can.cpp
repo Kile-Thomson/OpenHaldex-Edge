@@ -22,8 +22,10 @@ static void canTransmit(twai_handle_t bus, const twai_message_t *msg)
   }
   const bool isBus0 = (bus == twai_bus_0);
   // C++20 deprecates ++ and reading the value of an assignment on volatile;
-  // spell out the read-modify-write separately. These counters are
-  // diagnostic-only and single-writer, so a plain increment is fine.
+  // spell out the read-modify-write separately. canTransmit runs from several
+  // tasks (broadcastOpenHaldex, parseCAN_chs, parseCAN_hdx), so these counters
+  // are intentionally non-atomic: a concurrent update may lose a count, which is
+  // acceptable for diagnostic-only drop tracking.
   uint32_t drops;
   if (isBus0)
   {
