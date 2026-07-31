@@ -562,151 +562,107 @@ void startHaldexLearn()
   xTaskCreate(haldexLearnTask, "haldexLearn", 4096, nullptr, 1, nullptr);
 }
 
-void getLockData(twai_message_t &rx_message_chs)
+// editFramesGen1: per-generation CAN frame edits factored out of getLockData.
+// Called under stateMutex; mutates only rx_message_chs.
+static void editFramesGen1(twai_message_t &rx_message_chs)
 {
-  // Calculate raw lock target then (optionally) apply rate-limited slewing.
-  // When lockReleaseEnabled is false, all transitions to new lock % are instantaneous.
-  // When enabled, falling transitions take `lockReleaseRampMs` ms for a full
-  // release so the clutch opens gradually rather than snapping, and rising
-  // transitions take `lockEngageRampMs` ms (0 = instantaneous, the default).
-  static float smoothed_lock_target = 0.0f;
-  static uint32_t last_lock_ms = 0;
-
-  // Hold stateMutex across the whole read+compute+frame-edit so the Haldex never
-  // sees a half-rewritten expert table, learn table or mode. No blocking calls
-  // inside, so the hold is bounded; nothing called from here takes the mutex again
-  xSemaphoreTake(stateMutex, portMAX_DELAY);
-
-  float raw_target = get_lock_target_adjustment(); // calculate raw lock target based on mode, overrides, and learn table
-
-  // Steering-gain taper: reduce lock as steering angle grows so the rear axle
-  // is not fighting the front through tight corners (driveline windup). A stale
-  // or QBit-degraded angle leaves the gain at 100% (stock behaviour) instead of
-  // latching the last reduction. Settings are read under the mutex held above.
-  if (steeringGainEnabled && raw_target > 0)
+  switch (rx_message_chs.identifier)
   {
-    if (steeringAngleValid && ((millis() - lastSteeringResponse) < steeringTimeout))
+  case MOTOR1_ID:
+    rx_message_chs.data[0] = 0x00;
+    rx_message_chs.data[1] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[2] = 0x21;
+    rx_message_chs.data[3] = get_lock_target_adjusted_value(0x4E, false);
+    rx_message_chs.data[4] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[5] = get_lock_target_adjusted_value(0xFE, false);
+    appliedTorque = rx_message_chs.data[6];
+
+    switch (state.mode)
     {
-      const uint8_t gain = steering_gain_percent(steeringAngleTenths, steeringGainStartDeg, steeringGainFullDeg, steeringGainFloor);
-      raw_target = (float)(((int)raw_target * gain + 50) / 100); // keep whole-number percentages
-    }
-  }
-
-  if (!lockReleaseEnabled)
-  {
-    smoothed_lock_target = raw_target; // instant: bypass rate limit
-    last_lock_ms = millis();
-  }
-  else
-  {
-    const uint32_t now_ms = millis();
-    const float dt_s = (last_lock_ms == 0) ? 0.0f : (float)(now_ms - last_lock_ms) / 1000.0f;
-    last_lock_ms = now_ms;
-
-    smoothed_lock_target = lock_rate_limit_step(smoothed_lock_target, raw_target,
-                                                lockEngageRampMs, lockReleaseRampMs, dt_s);
-  }
-  lock_target = smoothed_lock_target;
-
-  // begin frame parsing / editting
-  // edit the frames if configured as Gen1...
-  if (haldexGeneration == 1)
-  {
-    switch (rx_message_chs.identifier)
-    {
-    case MOTOR1_ID:
-      rx_message_chs.data[0] = 0x00;
-      rx_message_chs.data[1] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[2] = 0x21;
-      rx_message_chs.data[3] = get_lock_target_adjusted_value(0x4E, false);
-      rx_message_chs.data[4] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[5] = get_lock_target_adjusted_value(0xFE, false);
-      appliedTorque = rx_message_chs.data[6];
-
-      switch (state.mode)
-      {
-      case MODE_FWD:
-        appliedTorque = get_lock_target_adjusted_value(0xFE, true);
-        break;
-      case MODE_5050:
-        appliedTorque = get_lock_target_adjusted_value(0x16, false);
-        break;
-      case MODE_6040:
-        appliedTorque = get_lock_target_adjusted_value(0x22, false);
-        break;
-      case MODE_7525:
-        appliedTorque = get_lock_target_adjusted_value(0x50, false);
-        break;
-      default:
-        break;
-      }
-
-      rx_message_chs.data[6] = appliedTorque;
-      rx_message_chs.data[7] = 0x00;
+    case MODE_FWD:
+      appliedTorque = get_lock_target_adjusted_value(0xFE, true);
       break;
-    case MOTOR3_ID:
-      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[7] = get_lock_target_adjusted_value(0xFE, false);
+    case MODE_5050:
+      appliedTorque = get_lock_target_adjusted_value(0x16, false);
       break;
-    case BRAKES1_ID:
-      rx_message_chs.data[1] = get_lock_target_adjusted_value(0x00, false);
-      rx_message_chs.data[2] = 0x00;
-      rx_message_chs.data[3] = get_lock_target_adjusted_value(0x0A, false);
+    case MODE_6040:
+      appliedTorque = get_lock_target_adjusted_value(0x22, false);
       break;
-    case BRAKES3_ID:
-      rx_message_chs.data[0] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[1] = 0x0A;
-      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[3] = 0x0A;
-      rx_message_chs.data[4] = 0x00;
-      rx_message_chs.data[5] = 0x0A;
-      rx_message_chs.data[6] = 0x00;
-      rx_message_chs.data[7] = 0x0A;
+    case MODE_7525:
+      appliedTorque = get_lock_target_adjusted_value(0x50, false);
+      break;
+    default:
       break;
     }
-  }
 
-  // edit the frames if configured as Gen2...
-  if (haldexGeneration == 2)
-  {
-    switch (rx_message_chs.identifier)
-    {
-    case MOTOR1_ID:
-      rx_message_chs.data[1] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[2] = 0x21;
-      rx_message_chs.data[3] = get_lock_target_adjusted_value(0x4E, false);
-      rx_message_chs.data[6] = get_lock_target_adjusted_value(0xFE, false); // 0x20 in standalone - same as gen1?
-      break;
-    case MOTOR3_ID:
-      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[7] = get_lock_target_adjusted_value(0x01, false);
-      break;
-    case BRAKES1_ID:
-      rx_message_chs.data[0] = get_lock_target_adjusted_value(0x80, false);
-      rx_message_chs.data[1] = get_lock_target_adjusted_value(0x41, false);
-      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[3] = 0x0A;
-      break;
-    case BRAKES2_ID:
-      rx_message_chs.data[4] = get_lock_target_adjusted_value(0x7F, false);
-      rx_message_chs.data[5] = get_lock_target_adjusted_value(0xFE, false);
-      break;
-    case BRAKES3_ID:
-      rx_message_chs.data[0] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[1] = 0x0A;
-      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-      rx_message_chs.data[3] = 0x0A;
-      rx_message_chs.data[4] = 0x00;
-      rx_message_chs.data[5] = 0x0A;
-      rx_message_chs.data[6] = 0x00;
-      rx_message_chs.data[7] = 0x0A;
-      break;
-    }
+    rx_message_chs.data[6] = appliedTorque;
+    rx_message_chs.data[7] = 0x00;
+    break;
+  case MOTOR3_ID:
+    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[7] = get_lock_target_adjusted_value(0xFE, false);
+    break;
+  case BRAKES1_ID:
+    rx_message_chs.data[1] = get_lock_target_adjusted_value(0x00, false);
+    rx_message_chs.data[2] = 0x00;
+    rx_message_chs.data[3] = get_lock_target_adjusted_value(0x0A, false);
+    break;
+  case BRAKES3_ID:
+    rx_message_chs.data[0] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[1] = 0x0A;
+    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[3] = 0x0A;
+    rx_message_chs.data[4] = 0x00;
+    rx_message_chs.data[5] = 0x0A;
+    rx_message_chs.data[6] = 0x00;
+    rx_message_chs.data[7] = 0x0A;
+    break;
   }
+}
 
-  // edit the frames if configured as Gen4...
-  if (haldexGeneration == 4)
+// editFramesGen2: per-generation CAN frame edits factored out of getLockData.
+// Called under stateMutex; mutates only rx_message_chs.
+static void editFramesGen2(twai_message_t &rx_message_chs)
+{
+  switch (rx_message_chs.identifier)
   {
+  case MOTOR1_ID:
+    rx_message_chs.data[1] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[2] = 0x21;
+    rx_message_chs.data[3] = get_lock_target_adjusted_value(0x4E, false);
+    rx_message_chs.data[6] = get_lock_target_adjusted_value(0xFE, false); // 0x20 in standalone - same as gen1?
+    break;
+  case MOTOR3_ID:
+    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[7] = get_lock_target_adjusted_value(0x01, false);
+    break;
+  case BRAKES1_ID:
+    rx_message_chs.data[0] = get_lock_target_adjusted_value(0x80, false);
+    rx_message_chs.data[1] = get_lock_target_adjusted_value(0x41, false);
+    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[3] = 0x0A;
+    break;
+  case BRAKES2_ID:
+    rx_message_chs.data[4] = get_lock_target_adjusted_value(0x7F, false);
+    rx_message_chs.data[5] = get_lock_target_adjusted_value(0xFE, false);
+    break;
+  case BRAKES3_ID:
+    rx_message_chs.data[0] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[1] = 0x0A;
+    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+    rx_message_chs.data[3] = 0x0A;
+    rx_message_chs.data[4] = 0x00;
+    rx_message_chs.data[5] = 0x0A;
+    rx_message_chs.data[6] = 0x00;
+    rx_message_chs.data[7] = 0x0A;
+    break;
+  }
+}
+
+// editFramesGen4: per-generation CAN frame edits factored out of getLockData.
+// Called under stateMutex; mutates only rx_message_chs.
+static void editFramesGen4(twai_message_t &rx_message_chs)
+{
     switch (rx_message_chs.identifier)
     {
     case mLW_1:
@@ -775,12 +731,12 @@ void getLockData(twai_message_t &rx_message_chs)
       }
       break;
     }
-  }
+}
 
-  // edit the frames if configured as Gen5 (0AY) - frames left
-  // commented-out are so they can be re-enabled later if a required
-  if (haldexGeneration == 51)
-  {
+// editFramesGen5_0AY: per-generation CAN frame edits factored out of getLockData.
+// Called under stateMutex; mutates only rx_message_chs.
+static void editFramesGen5_0AY(twai_message_t &rx_message_chs)
+{
     switch (rx_message_chs.identifier)
     {
     // ---- Active (lock-modulated) -------------------------------------------
@@ -1036,12 +992,12 @@ void getLockData(twai_message_t &rx_message_chs)
         break;
       */
     }
-  }
+}
 
-  // edit the frames if configured as Gen5 (0CQ) - frames left
-  // commented-out are so they can be re-enabled later if a required
-  if (haldexGeneration == 50)
-  {
+// editFramesGen5_0CQ: per-generation CAN frame edits factored out of getLockData.
+// Called under stateMutex; mutates only rx_message_chs.
+static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
+{
     switch (rx_message_chs.identifier)
     {
       /*
@@ -1523,6 +1479,84 @@ void getLockData(twai_message_t &rx_message_chs)
       //...
       */
     }
+}
+
+void getLockData(twai_message_t &rx_message_chs)
+{
+  // Calculate raw lock target then (optionally) apply rate-limited slewing.
+  // When lockReleaseEnabled is false, all transitions to new lock % are instantaneous.
+  // When enabled, falling transitions take `lockReleaseRampMs` ms for a full
+  // release so the clutch opens gradually rather than snapping, and rising
+  // transitions take `lockEngageRampMs` ms (0 = instantaneous, the default).
+  static float smoothed_lock_target = 0.0f;
+  static uint32_t last_lock_ms = 0;
+
+  // Hold stateMutex across the whole read+compute+frame-edit so the Haldex never
+  // sees a half-rewritten expert table, learn table or mode. No blocking calls
+  // inside, so the hold is bounded; nothing called from here takes the mutex again
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
+
+  float raw_target = get_lock_target_adjustment(); // calculate raw lock target based on mode, overrides, and learn table
+
+  // Steering-gain taper: reduce lock as steering angle grows so the rear axle
+  // is not fighting the front through tight corners (driveline windup). A stale
+  // or QBit-degraded angle leaves the gain at 100% (stock behaviour) instead of
+  // latching the last reduction. Settings are read under the mutex held above.
+  if (steeringGainEnabled && raw_target > 0)
+  {
+    if (steeringAngleValid && ((millis() - lastSteeringResponse) < steeringTimeout))
+    {
+      const uint8_t gain = steering_gain_percent(steeringAngleTenths, steeringGainStartDeg, steeringGainFullDeg, steeringGainFloor);
+      raw_target = (float)(((int)raw_target * gain + 50) / 100); // keep whole-number percentages
+    }
+  }
+
+  if (!lockReleaseEnabled)
+  {
+    smoothed_lock_target = raw_target; // instant: bypass rate limit
+    last_lock_ms = millis();
+  }
+  else
+  {
+    const uint32_t now_ms = millis();
+    const float dt_s = (last_lock_ms == 0) ? 0.0f : (float)(now_ms - last_lock_ms) / 1000.0f;
+    last_lock_ms = now_ms;
+
+    smoothed_lock_target = lock_rate_limit_step(smoothed_lock_target, raw_target,
+                                                lockEngageRampMs, lockReleaseRampMs, dt_s);
+  }
+  lock_target = smoothed_lock_target;
+
+  // begin frame parsing / editting
+  // Per-generation frame edits are factored into editFramesGenN() helpers above.
+  // Each runs under the stateMutex held here and mutates only rx_message_chs.
+  if (haldexGeneration == 1)
+  {
+    editFramesGen1(rx_message_chs);
+  }
+
+  if (haldexGeneration == 2)
+  {
+    editFramesGen2(rx_message_chs);
+  }
+
+  if (haldexGeneration == 4)
+  {
+    editFramesGen4(rx_message_chs);
+  }
+
+  // edit the frames if configured as Gen5 (0AY) - frames left
+  // commented-out are so they can be re-enabled later if a required
+  if (haldexGeneration == 51)
+  {
+    editFramesGen5_0AY(rx_message_chs);
+  }
+
+  // edit the frames if configured as Gen5 (0CQ) - frames left
+  // commented-out are so they can be re-enabled later if a required
+  if (haldexGeneration == 50)
+  {
+    editFramesGen5_0CQ(rx_message_chs);
   }
 
   xSemaphoreGive(stateMutex);
