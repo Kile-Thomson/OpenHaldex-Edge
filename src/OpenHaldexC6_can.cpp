@@ -21,7 +21,22 @@ static void canTransmit(twai_handle_t bus, const twai_message_t *msg)
     return;
   }
   const bool isBus0 = (bus == twai_bus_0);
-  uint32_t drops = isBus0 ? ++canTxDropBus0 : ++canTxDropBus1;
+  // C++20 deprecates ++ and reading the value of an assignment on volatile;
+  // spell out the read-modify-write separately. canTransmit runs from several
+  // tasks (broadcastOpenHaldex, parseCAN_chs, parseCAN_hdx), so these counters
+  // are intentionally non-atomic: a concurrent update may lose a count, which is
+  // acceptable for diagnostic-only drop tracking.
+  uint32_t drops;
+  if (isBus0)
+  {
+    drops = canTxDropBus0 + 1;
+    canTxDropBus0 = drops;
+  }
+  else
+  {
+    drops = canTxDropBus1 + 1;
+    canTxDropBus1 = drops;
+  }
   // Log the first drop and every 256th after that.
   if ((drops & 0xFF) == 1)
   {
@@ -312,7 +327,7 @@ void parseCAN_chs(void *arg)
     do
     {
       lastCANChassisTick = millis();
-      ++lpChassisFrameCount;
+      lpChassisFrameCount = lpChassisFrameCount + 1; // C++20: no ++ on volatile
 
       // External diagnostic-tool detection (auto-pause of live polling). A scan
       // tool addresses ECUs from the chassis side; our own UDS polling transmits
@@ -943,7 +958,7 @@ void parseCAN_hdx(void *arg)
     do
     {
       lastCANHaldexTick = millis();
-      ++lpHaldexFrameCount;
+      lpHaldexFrameCount = lpHaldexFrameCount + 1; // C++20: no ++ on volatile
 
       // Analyzer mode: queue for GVRET/SLCAN and forward untouched, skipping control logic.
       if (analyzerMode || analyzerSerial)

@@ -1,8 +1,10 @@
 #include <OpenHaldexC6_WiFi.h>
 #include <cstring>
 
-// Legacy WiFi implementation - now a stub
-// All WiFi functionality has moved to OpenHaldexC6_WebServer.cpp
+// WiFi AP setup and reset helpers. Brings up the soft-AP (open or WPA2 per the
+// stored password), advertises mDNS, and provides the password/SSID reset paths
+// used by the API. The HTTP server itself is set up separately in
+// OpenHaldexC6_API.cpp (setupWebServer).
 
 static void softAPStart()
 {
@@ -21,7 +23,7 @@ static void softAPStart()
 
 void setupWiFi()
 {
-  // WiFi setup is now in main.cpp
+  // Called once from main.cpp at boot. Configures the soft-AP and mDNS here.
   WiFi.hostname(wifiHostName);
   DEBUG("Creating Access Point...");
   WiFi.mode(WIFI_AP);
