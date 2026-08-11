@@ -632,8 +632,21 @@ void test_esp14_floor_clamps_to_zero_when_max_is_zero(void)
 
 void test_esp14_floor_gates_to_zero_off_throttle(void)
 {
+  // Lock commanded (5050, lock_target==100) but throttle below threshold ->
+  // lock_enabled() is false via the throttle gate, so get_lock_target_adjusted_value
+  // returns 0 and even a non-zero floor_pct collapses to 0 (no always-engaged
+  // floor when off-throttle). Exercises the throttle-disabled path specifically,
+  // not the FWD early-return.
+  lock_target            = 100.0f;
+  state.pedal_threshold  = 50;   // require >=50% pedal to enable lock
+  received_pedal_value   = 10.0f; // off-throttle -> throttle_ok false
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, esp14_min_floor(50, 0xFE), "floor gates to 0 when off-throttle");
+}
+
+void test_esp14_floor_gates_to_zero_fwd_not_commanded(void)
+{
   // FWD / lock not commanded (lock_target==0) -> get_lock_target_adjusted_value
-  // returns 0, so even a non-zero floor_pct collapses to 0 (no always-engaged effect).
+  // returns 0 via the FWD early-return, so even a non-zero floor_pct collapses to 0.
   lock_target = 0.0f;
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, esp14_min_floor(50, 0xFE), "floor gates to 0 when lock not commanded");
 }
@@ -705,6 +718,7 @@ int main(int, char **)
   RUN_TEST(test_esp14_floor_100_pct_clamped_below_max);
   RUN_TEST(test_esp14_floor_clamps_to_zero_when_max_is_zero);
   RUN_TEST(test_esp14_floor_gates_to_zero_off_throttle);
+  RUN_TEST(test_esp14_floor_gates_to_zero_fwd_not_commanded);
 
   return UNITY_END();
 }
