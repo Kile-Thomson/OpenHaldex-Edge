@@ -381,6 +381,7 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["disableExternalButton"] = disableExternalButton;
     data["fixHunting"] = fixHunting;
     data["bpkCeilingNm"] = bpkCeilingNm;
+    data["esp14MinFloorPct"] = esp14MinFloorPct;
     data["canSleepEnabled"] = canSleepEnabled;
     data["canSleepAggressive"] = canSleepAggressive;
     data["lpWakeThresholdFps"] = lpWakeThresholdFps;
@@ -666,6 +667,14 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         uint16_t value = data["bpkCeilingNm"];
         xSemaphoreTake(stateMutex, portMAX_DELAY);
         bpkCeilingNm = constrain(value, 10, 509); // floor..509 Nm signal max
+        xSemaphoreGive(stateMutex);
+    }
+
+    if (data["esp14MinFloorPct"].is<uint8_t>())
+    {
+        uint8_t value = data["esp14MinFloorPct"];
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        esp14MinFloorPct = constrain(value, 0, 100); // 0 = inherited (Min=0)
         xSemaphoreGive(stateMutex);
     }
 

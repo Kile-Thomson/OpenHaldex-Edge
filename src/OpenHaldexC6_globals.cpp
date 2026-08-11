@@ -138,6 +138,7 @@ bool disableExternalButton = false;
 
 bool fixHunting = false; // when true, Motor_11 uses BPK packing instead of V3
 uint16_t bpkCeilingNm = 220; // BPK per-car lock calibration (Nm claimed at 100% command); default preserves inherited behaviour
+uint8_t esp14MinFloorPct = 0; // ESP_14 BR_Vorg_*_Min floor as % of full command; 0 = inherited behaviour (Min pinned at 0). Live-tunable launch-PWM lever.
 
 bool canSleepEnabled = true;
 bool canSleepAggressive = false; // opt-in: transceiver standby + DFS floor 10MHz + low WiFi TX power

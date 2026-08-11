@@ -1925,13 +1925,29 @@ void Gen5_0CQ_frames10()
   frame.data[1] = ESP_14_counter; // ESP_BZ_14 - rolling counter (0x10>0x1F)
   frame.data[2] = 0x00;           // ESP_14 reserved/status (doesn't affect)
   frame.data[3] = 0x00;           // ESP_14 reserved/status (doesn't affect, sometimes 0xC0, sometimes 0x00)
-  frame.data[4] = 0x00;           // BR_Vorg_Quer_Min (Minimum specified limit value of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.) - doesn't affect
-  frame.data[6] = 0x00;           // BR_Vorg_Allrad_Min (Minimum specified limit value of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm) - doesn't affect
-
   appliedTorque = get_lock_target_adjusted_value(0xFE, false);
 
   frame.data[5] = appliedTorque; // BR_Vorg_Quer_Max (Maximum predefined limit of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.)
   frame.data[7] = appliedTorque; // BR_Vorg_Allrad_Max (Maximum specified limit of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.)
+
+  // BR_Vorg_*_Min launch-PWM floor. Kept identical to the CAN-passthrough edit
+  // (getLockData / editFramesGen5_0CQ) so standalone and inline never drift.
+  // esp14MinFloorPct raises the floor as a % of full command, gated through
+  // get_lock_target_adjusted_value (0 off-throttle), clamped strictly below Max.
+  {
+    uint8_t minFloor = 0;
+    if (esp14MinFloorPct > 0)
+    {
+      const uint8_t floorByte = (uint8_t)((uint16_t)0xFE * esp14MinFloorPct / 100);
+      minFloor = get_lock_target_adjusted_value(floorByte, false);
+      if (minFloor >= appliedTorque)
+      {
+        minFloor = (appliedTorque > 0) ? (uint8_t)(appliedTorque - 1) : 0;
+      }
+    }
+    frame.data[4] = minFloor; // BR_Vorg_Quer_Min   (100% = 2000 Nm)
+    frame.data[6] = minFloor; // BR_Vorg_Allrad_Min (100% = 2000 Nm)
+  }
   // massive effects (4>7)
 
   frame.data[0] = calcChecksum(frame.data, ID_SEQ_08A); // for 0x08A

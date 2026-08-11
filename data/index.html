@@ -310,18 +310,18 @@
                     <button class="btn-danger" id="learnClear">Clear Learn Data</button>
                 </div>
                 <div class="toggle-group" style="margin-top: 12px;">
-                    <label class="toggle">
-                        <input type="checkbox" id="fixHunting">
-                        <span class="toggle-slider"></span>
-                        <span class="toggle-label">Fix Hunting</span>
-                    </label>
-                    <p class="hint">Turn this on if the rear lock surges or won't hold steady at the part-lock modes (60:40, 75:25). Only the 554K Haldex controller needs it - leave it off otherwise.</p>
                     <p class="hint" id="bpkCeilingLabel">Lock calibration</p>
                     <div class="slider-container" id="bpkCeilingContainer">
                         <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider" aria-labelledby="bpkCeilingLabel">
                         <div class="slider-value"><span id="bpkCeilingValue">220</span> Nm</div>
                     </div>
-                    <p class="hint">A per-car calibration number, NOT more lock and NOT your engine's torque. There is one correct value: the one where the lock you command matches what the Haldex actually delivers (1:1). Set it with the Learn - run a Learn and adjust this until the Sent vs Returned line sits on the 1:1 diagonal. Higher does not lock harder: too high and the coupling grabs early and slams shut; too low and it under-delivers. Once you have run a Learn this value applies whenever you drive - you do not need the Fix Hunting switch on for it to work.</p>
+                    <p class="hint">A per-car calibration number, NOT more lock and NOT your engine's torque. There is one correct value: the one where the lock you command matches what the Haldex actually delivers (1:1). Set it with the Learn - run a Learn and adjust this until the Sent vs Returned line sits on the 1:1 diagonal. Higher does not lock harder: too high and the coupling grabs early and slams shut; too low and it under-delivers. Once you have run a Learn this value applies whenever you drive.</p>
+                    <p class="hint" id="esp14MinFloorLabel">Launch PWM floor (experimental)</p>
+                    <div class="slider-container" id="esp14MinFloorContainer">
+                        <input type="range" id="esp14MinFloorRange" min="0" max="100" step="1" value="0" class="slider" aria-labelledby="esp14MinFloorLabel">
+                        <div class="slider-value"><span id="esp14MinFloorValue">0</span> %</div>
+                    </div>
+                    <p class="hint">Experimental. Raises the ESP demand FLOOR the Haldex sees while lock is commanded, which pushes clutch PWM (solenoid duty) up under launch toward what Stock mode reaches. 0 = off (unchanged behaviour). It only applies while lock is actually commanded - off-throttle, FWD and coasting still open the clutch, so it does not cause always-engaged. Bracket it live against the Clutch PWM readout: raise until PWM climbs to where you want, back off if it grabs mid-corner. This is a floor only; the Haldex keeps headroom to modulate above it.</p>
                 </div>
             </section>
 

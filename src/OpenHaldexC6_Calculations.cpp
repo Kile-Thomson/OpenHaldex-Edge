@@ -1121,13 +1121,33 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
       rx_message_chs.data[1] = ESP_14_counter; // rolling - 0x10>0x1F
       rx_message_chs.data[2] = 0x00;           // doesn't affect
       rx_message_chs.data[3] = 0x00;           // doesn't affect sometimes 0xC0, sometimes 0x00
-      rx_message_chs.data[4] = 0x00;           // doesn't affect BR_Vorg_Quer_Min Minimum specified limit value of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.
-      rx_message_chs.data[6] = 0x00;           // doesn't affect BR_Vorg_Allrad_Min Minimum specified limit value of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm
 
       appliedTorque = get_lock_target_adjusted_value(0xFE, false);
 
       rx_message_chs.data[5] = appliedTorque; // BR_Vorg_Quer_Max - lock-modulated (massive effect, ported from standalone)
       rx_message_chs.data[7] = appliedTorque; // BR_Vorg_Allrad_Max - lock-modulated (massive effect)
+
+      // BR_Vorg_*_Min: OEM ESP raises this floor under launch to force the Haldex
+      // to hold at least X torque; upstream pinned it at 0 (Haldex free to settle
+      // to its own minimum PWM ~60%). esp14MinFloorPct raises the floor as a % of
+      // full command, routed through get_lock_target_adjusted_value so it gates to
+      // 0 whenever lock isn't commanded (off-throttle/FWD/coast) - no always-engaged
+      // effect. Clamped strictly below Max so the Haldex keeps modulation headroom
+      // (Min==Max would pin the band and remove its freedom to back off in-corner).
+      {
+        uint8_t minFloor = 0;
+        if (esp14MinFloorPct > 0)
+        {
+          const uint8_t floorByte = (uint8_t)((uint16_t)0xFE * esp14MinFloorPct / 100);
+          minFloor = get_lock_target_adjusted_value(floorByte, false);
+          if (minFloor >= appliedTorque)
+          {
+            minFloor = (appliedTorque > 0) ? (uint8_t)(appliedTorque - 1) : 0;
+          }
+        }
+        rx_message_chs.data[4] = minFloor; // BR_Vorg_Quer_Min   (100% = 2000 Nm)
+        rx_message_chs.data[6] = minFloor; // BR_Vorg_Allrad_Min (100% = 2000 Nm)
+      }
       // massive effects (4>7)
 
       rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_08A); // for 0x08A
