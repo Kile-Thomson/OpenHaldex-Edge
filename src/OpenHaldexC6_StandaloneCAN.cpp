@@ -1930,21 +1930,11 @@ void Gen5_0CQ_frames10()
   frame.data[5] = appliedTorque; // BR_Vorg_Quer_Max (Maximum predefined limit of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.)
   frame.data[7] = appliedTorque; // BR_Vorg_Allrad_Max (Maximum specified limit of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.)
 
-  // BR_Vorg_*_Min launch-PWM floor. Kept identical to the CAN-passthrough edit
-  // (getLockData / editFramesGen5_0CQ) so standalone and inline never drift.
-  // esp14MinFloorPct raises the floor as a % of full command, gated through
-  // get_lock_target_adjusted_value (0 off-throttle), clamped strictly below Max.
+  // BR_Vorg_*_Min launch-PWM floor. Shared esp14_min_floor helper (see header)
+  // keeps this byte-identical to the CAN-passthrough edit (getLockData /
+  // editFramesGen5_0CQ) so standalone and inline never drift.
   {
-    uint8_t minFloor = 0;
-    if (esp14MinFloorPct > 0)
-    {
-      const uint8_t floorByte = (uint8_t)((uint16_t)0xFE * esp14MinFloorPct / 100);
-      minFloor = get_lock_target_adjusted_value(floorByte, false);
-      if (minFloor >= appliedTorque)
-      {
-        minFloor = (appliedTorque > 0) ? (uint8_t)(appliedTorque - 1) : 0;
-      }
-    }
+    const uint8_t minFloor = esp14_min_floor(esp14MinFloorPct, appliedTorque);
     frame.data[4] = minFloor; // BR_Vorg_Quer_Min   (100% = 2000 Nm)
     frame.data[6] = minFloor; // BR_Vorg_Allrad_Min (100% = 2000 Nm)
   }

@@ -1129,22 +1129,10 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
 
       // BR_Vorg_*_Min: OEM ESP raises this floor under launch to force the Haldex
       // to hold at least X torque; upstream pinned it at 0 (Haldex free to settle
-      // to its own minimum PWM ~60%). esp14MinFloorPct raises the floor as a % of
-      // full command, routed through get_lock_target_adjusted_value so it gates to
-      // 0 whenever lock isn't commanded (off-throttle/FWD/coast) - no always-engaged
-      // effect. Clamped strictly below Max so the Haldex keeps modulation headroom
-      // (Min==Max would pin the band and remove its freedom to back off in-corner).
+      // to its own minimum PWM ~60%). Shared esp14_min_floor helper (see header)
+      // keeps this byte-identical to the standalone frame path so they can't drift.
       {
-        uint8_t minFloor = 0;
-        if (esp14MinFloorPct > 0)
-        {
-          const uint8_t floorByte = (uint8_t)((uint16_t)0xFE * esp14MinFloorPct / 100);
-          minFloor = get_lock_target_adjusted_value(floorByte, false);
-          if (minFloor >= appliedTorque)
-          {
-            minFloor = (appliedTorque > 0) ? (uint8_t)(appliedTorque - 1) : 0;
-          }
-        }
+        const uint8_t minFloor = esp14_min_floor(esp14MinFloorPct, appliedTorque);
         rx_message_chs.data[4] = minFloor; // BR_Vorg_Quer_Min   (100% = 2000 Nm)
         rx_message_chs.data[6] = minFloor; // BR_Vorg_Allrad_Min (100% = 2000 Nm)
       }
@@ -1689,6 +1677,29 @@ uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_rec
 bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_table_valid)
 {
   return fix_hunting || learn_active || learn_table_valid;
+}
+
+// See OpenHaldexC6_Calculations.h for the full rationale. Single shared
+// implementation of the ESP_14 BR_Vorg_*_Min launch-PWM floor so the standalone
+// frame generator (OpenHaldexC6_StandaloneCAN.cpp) and the CAN-passthrough edit
+// path (getLockData below) can never drift apart - both wrote the same block by
+// hand. floor_pct 0 yields 0 (inherited Min=0). Otherwise the floor byte is a %
+// of full command routed through get_lock_target_adjusted_value, so it gates to
+// 0 whenever lock isn't commanded (off-throttle/FWD/coast), then clamped strictly
+// below applied_torque (Max) so the Haldex keeps modulation headroom.
+uint8_t esp14_min_floor(uint8_t floor_pct, uint8_t applied_torque)
+{
+  if (floor_pct == 0)
+  {
+    return 0;
+  }
+  const uint8_t floorByte = (uint8_t)((uint16_t)0xFE * floor_pct / 100);
+  uint8_t minFloor = get_lock_target_adjusted_value(floorByte, false);
+  if (minFloor >= applied_torque)
+  {
+    minFloor = (applied_torque > 0) ? (uint8_t)(applied_torque - 1) : 0;
+  }
+  return minFloor;
 }
 
 // Slew one BPK torque field one cycle toward `target`, moving at most `step` Nm.
