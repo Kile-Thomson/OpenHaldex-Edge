@@ -2636,11 +2636,26 @@ const CALIB_INFO = {
 // reload so an uncalibrated car nags again next time the UI is opened.
 let calibBannerDismissed = false;
 
+// Monotonic revision so a slow in-flight /api/learn/status response can't clobber
+// a newer state. Every call to applyCalibrationState bumps it; async reads capture
+// the value before their fetch and only apply if it's still current (see
+// applyCalibrationStateFromFetch).
+let calibStateRev = 0;
+
+// Apply a calibration state read from an async /api/learn/status fetch, but only
+// if no newer authoritative update landed while the request was in flight. Callers
+// capture calibStateRev before the fetch and pass it here on resolve.
+function applyCalibrationStateFromFetch(tableValid, revAtRequest) {
+  if (revAtRequest !== calibStateRev) return; // a newer update already won
+  applyCalibrationState(tableValid);
+}
+
 // Single source of truth for the calibrated/uncalibrated UI state. Driven by the
 // tableValid flag from /api/learn/status, called from every place that resolves
 // it (page load, learn complete, clear). Updates both the Dashboard banner and
 // the Calibrate-tab status chip so they never disagree.
 function applyCalibrationState(tableValid) {
+  calibStateRev++; // this is now the latest word; invalidate older in-flight reads
   const banner = document.getElementById("calibBanner");
   if (banner) {
     const show = !tableValid && !calibBannerDismissed;
@@ -2670,9 +2685,13 @@ function initCalibrate() {
   const body    = document.getElementById("calibInfoBody");
   const btnClose = document.getElementById("calibInfoClose");
 
-  function openInfo(key) {
+  // The (i) button that opened the modal, so focus can be restored on close.
+  let infoTrigger = null;
+
+  function openInfo(key, trigger) {
     const info = CALIB_INFO[key];
     if (!info || !modal) return;
+    infoTrigger = trigger || null;
     title.textContent = info.title;
     // Preserve paragraph breaks from the copy without injecting HTML.
     body.textContent = "";
@@ -2682,19 +2701,47 @@ function initCalibrate() {
       body.appendChild(p);
     });
     modal.classList.add("active");
+    if (btnClose) btnClose.focus(); // move focus into the dialog
   }
 
   function closeInfo() {
     if (modal) modal.classList.remove("active");
+    // Return focus to the (i) button the user came from.
+    if (infoTrigger) infoTrigger.focus();
+    infoTrigger = null;
   }
 
   document.querySelectorAll(".calib-info").forEach((btn) => {
-    btn.addEventListener("click", () => openInfo(btn.dataset.info));
+    btn.addEventListener("click", () => openInfo(btn.dataset.info, btn));
   });
   if (btnClose) btnClose.addEventListener("click", closeInfo);
   if (modal) {
     modal.addEventListener("click", (e) => {
       if (e.target === modal) closeInfo(); // tap the backdrop to dismiss
+    });
+    // Keyboard support while the dialog is open: Escape closes it, Tab is
+    // trapped so focus can't wander to the page behind the backdrop.
+    modal.addEventListener("keydown", (e) => {
+      if (!modal.classList.contains("active")) return;
+      if (e.key === "Escape") {
+        closeInfo();
+        return;
+      }
+      if (e.key === "Tab") {
+        const focusable = modal.querySelectorAll(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     });
   }
 
@@ -2716,8 +2763,11 @@ function initCalibrate() {
   }
 
   // Seed the initial state; initLearn's own status reads keep it current after.
+  // Guarded so a slow response can't overwrite a newer state set by the learn
+  // poll or a clear that resolved first.
+  const seedRev = calibStateRev;
   fetchJson("/api/learn/status").then((data) => {
-    if (data) applyCalibrationState(!!data.tableValid);
+    if (data) applyCalibrationStateFromFetch(!!data.tableValid, seedRev);
   });
 }
 
@@ -2834,10 +2884,18 @@ function initLearn() {
     if (!confirm("Clear the learned calibration table? The controller reverts to the static factor until you run Learn again.")) {
       return;
     }
-    await fetchJson("/api/learn/clear", { method: "POST" });
+    const resp = await fetchJson("/api/learn/clear", { method: "POST" });
+    if (!resp || !resp.ok) {
+      // Clear failed (network error or endpoint rejected) - leave the current
+      // calibration UI untouched rather than pretending the table is gone.
+      statusText.textContent = "Clear failed - try again";
+      statusText.style.color = "var(--warning)";
+      return;
+    }
     statusText.textContent = "Learn data cleared - static factor active";
     statusText.style.color = "var(--text-dim)";
     renderLearnChart([]); // table gone - hide the chart
+    calibBannerDismissed = false; // fresh uncalibrated state - let it nag again
     applyCalibrationState(false); // table wiped - nag again
   });
 
