@@ -237,6 +237,7 @@ function initApp() {
   initExpertEditor();
   initTuneSelection();
   initTuneChart();
+  initCalibrate();
   initLearn();
   initWifiSsid();
   initWifi();
@@ -2590,6 +2591,186 @@ function updateChartMarker() {
   }
 }
 
+// PAL-friendly explainers for the Calibrate tab. Keyed by the data-info value on
+// each .calib-info button; opened in the shared #calibInfoModal. Kept as plain
+// strings (no HTML) so the copy stays readable and can't inject markup.
+const CALIB_INFO = {
+  gen: {
+    title: "Generation",
+    body:
+      "This tells the controller which type of Haldex is fitted to your car. It sets how the controller reads the Haldex over CAN and how it commands lock.\n\n" +
+      "It MUST match your car. If it is wrong, lock control will not work at all.\n\n" +
+      "MQB cars (e.g. Mk3 TT, 8V S3, MQB Golf R) are Generation 5 (0CQ). The 0AY variant is the older PQ-derived unit. If you are not sure, check what Haldex generation your car uses before changing anything else.",
+  },
+  learn: {
+    title: "Learn Haldex",
+    body:
+      "Every Haldex responds slightly differently. The Learn finds out how YOUR one behaves so that when you ask for a lock amount, you actually get it.\n\n" +
+      "It slowly steps the command from 0% up to 100% and records how much the Haldex actually engages at each step, building a calibration table that replaces the built-in estimate.\n\n" +
+      "How to run it:\n" +
+      "1. Engine running.\n" +
+      "2. Car stationary (it stops itself if you move off).\n" +
+      "3. Haldex CAN connected and healthy.\n" +
+      "4. Press Learn Haldex and wait - it takes a couple of minutes.\n\n" +
+      "Until you have run a Learn, the controller is guessing, and the car usually drives BETTER left in Stock than run uncalibrated.",
+  },
+  ceiling: {
+    title: "Lock calibration",
+    body:
+      "This lines up the lock you ask for with the lock the Haldex actually delivers, so 50% means 50%.\n\n" +
+      "It is NOT a power or strength dial, and it is NOT your engine's torque. There is one correct value: the one where commanded and delivered match 1:1.\n\n" +
+      "How to set it: run a Learn, look at the chart, and adjust this until the Sent vs Returned line sits on the dashed 1:1 diagonal.\n\n" +
+      "Higher is not better. Too high and the coupling grabs early and slams shut; too low and it under-delivers. Once set, it applies whenever you drive.",
+  },
+  floor: {
+    title: "Launch PWM floor (experimental)",
+    body:
+      "Optional, experimental. It holds a minimum clutch PWM (solenoid duty) while lock is commanded, so engagement builds faster off the line - closer to what Stock reaches under launch.\n\n" +
+      "0% = off (default, unchanged behaviour). Leave it there unless you specifically want a firmer launch.\n\n" +
+      "It only applies while lock is actually commanded - off-throttle, FWD, and coasting still open the clutch, so it does not force the car to be always-engaged.\n\n" +
+      "How to tune it: watch the Clutch PWM readout on the Dashboard and raise this until PWM climbs to where you want. If it grabs mid-corner, back it off. It is a floor only - the Haldex still modulates above it.",
+  },
+};
+
+// Whether the current session has dismissed the not-calibrated banner. Resets on
+// reload so an uncalibrated car nags again next time the UI is opened.
+let calibBannerDismissed = false;
+
+// Monotonic revision so a slow in-flight /api/learn/status response can't clobber
+// a newer state. Every call to applyCalibrationState bumps it; async reads capture
+// the value before their fetch and only apply if it's still current (see
+// applyCalibrationStateFromFetch).
+let calibStateRev = 0;
+
+// Apply a calibration state read from an async /api/learn/status fetch, but only
+// if no newer authoritative update landed while the request was in flight. Callers
+// capture calibStateRev before the fetch and pass it here on resolve.
+function applyCalibrationStateFromFetch(tableValid, revAtRequest) {
+  if (revAtRequest !== calibStateRev) return; // a newer update already won
+  applyCalibrationState(tableValid);
+}
+
+// Single source of truth for the calibrated/uncalibrated UI state. Driven by the
+// tableValid flag from /api/learn/status, called from every place that resolves
+// it (page load, learn complete, clear). Updates both the Dashboard banner and
+// the Calibrate-tab status chip so they never disagree.
+function applyCalibrationState(tableValid) {
+  calibStateRev++; // this is now the latest word; invalidate older in-flight reads
+  const banner = document.getElementById("calibBanner");
+  if (banner) {
+    const show = !tableValid && !calibBannerDismissed;
+    banner.hidden = !show;
+  }
+
+  const chip = document.getElementById("calibStatusChip");
+  const chipText = document.getElementById("calibStatusChipText");
+  if (chip && chipText) {
+    if (tableValid) {
+      chip.classList.remove("uncalibrated");
+      chip.classList.add("calibrated");
+      chipText.textContent = "Calibrated - learn table active";
+    } else {
+      chip.classList.remove("calibrated");
+      chip.classList.add("uncalibrated");
+      chipText.textContent = "Not calibrated - run the Learn (results worse than Stock until you do)";
+    }
+  }
+}
+
+// initialise the Calibrate tab: info modals, the not-calibrated banner controls,
+// and an initial calibration-state read.
+function initCalibrate() {
+  const modal   = document.getElementById("calibInfoModal");
+  const title   = document.getElementById("calibInfoTitle");
+  const body    = document.getElementById("calibInfoBody");
+  const btnClose = document.getElementById("calibInfoClose");
+
+  // The (i) button that opened the modal, so focus can be restored on close.
+  let infoTrigger = null;
+
+  function openInfo(key, trigger) {
+    const info = CALIB_INFO[key];
+    if (!info || !modal) return;
+    infoTrigger = trigger || null;
+    title.textContent = info.title;
+    // Preserve paragraph breaks from the copy without injecting HTML.
+    body.textContent = "";
+    info.body.split("\n\n").forEach((para) => {
+      const p = document.createElement("p");
+      p.textContent = para;
+      body.appendChild(p);
+    });
+    modal.classList.add("active");
+    if (btnClose) btnClose.focus(); // move focus into the dialog
+  }
+
+  function closeInfo() {
+    if (modal) modal.classList.remove("active");
+    // Return focus to the (i) button the user came from.
+    if (infoTrigger) infoTrigger.focus();
+    infoTrigger = null;
+  }
+
+  document.querySelectorAll(".calib-info").forEach((btn) => {
+    btn.addEventListener("click", () => openInfo(btn.dataset.info, btn));
+  });
+  if (btnClose) btnClose.addEventListener("click", closeInfo);
+  if (modal) {
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closeInfo(); // tap the backdrop to dismiss
+    });
+    // Keyboard support while the dialog is open: Escape closes it, Tab is
+    // trapped so focus can't wander to the page behind the backdrop.
+    modal.addEventListener("keydown", (e) => {
+      if (!modal.classList.contains("active")) return;
+      if (e.key === "Escape") {
+        closeInfo();
+        return;
+      }
+      if (e.key === "Tab") {
+        const focusable = modal.querySelectorAll(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    });
+  }
+
+  // Not-calibrated Dashboard banner controls.
+  const dismissBtn = document.getElementById("calibBannerDismiss");
+  const openBtn    = document.getElementById("calibBannerOpen");
+  if (dismissBtn) {
+    dismissBtn.addEventListener("click", () => {
+      calibBannerDismissed = true;
+      const banner = document.getElementById("calibBanner");
+      if (banner) banner.hidden = true;
+    });
+  }
+  if (openBtn) {
+    openBtn.addEventListener("click", () => {
+      const tab = document.querySelector('.nav-tab[data-page="calibrate"]');
+      if (tab) tab.click();
+    });
+  }
+
+  // Seed the initial state; initLearn's own status reads keep it current after.
+  // Guarded so a slow response can't overwrite a newer state set by the learn
+  // poll or a clear that resolved first.
+  const seedRev = calibStateRev;
+  fetchJson("/api/learn/status").then((data) => {
+    if (data) applyCalibrationStateFromFetch(!!data.tableValid, seedRev);
+  });
+}
+
 // initialise Learn Haldex UI
 function initLearn() {
   let learnPollInterval = null;
@@ -2670,6 +2851,7 @@ function initLearn() {
           statusText.textContent = "Learn cancelled or failed";
           statusText.style.color = "var(--warning)";
         }
+        applyCalibrationState(!!data.tableValid);
       }
     } finally {
       clearTimeout(pollTimeout);
@@ -2702,10 +2884,19 @@ function initLearn() {
     if (!confirm("Clear the learned calibration table? The controller reverts to the static factor until you run Learn again.")) {
       return;
     }
-    await fetchJson("/api/learn/clear", { method: "POST" });
+    const resp = await fetchJson("/api/learn/clear", { method: "POST" });
+    if (!resp || !resp.ok) {
+      // Clear failed (network error or endpoint rejected) - leave the current
+      // calibration UI untouched rather than pretending the table is gone.
+      statusText.textContent = "Clear failed - try again";
+      statusText.style.color = "var(--warning)";
+      return;
+    }
     statusText.textContent = "Learn data cleared - static factor active";
     statusText.style.color = "var(--text-dim)";
     renderLearnChart([]); // table gone - hide the chart
+    calibBannerDismissed = false; // fresh uncalibrated state - let it nag again
+    applyCalibrationState(false); // table wiped - nag again
   });
 
   // check initial state on page load

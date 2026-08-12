@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 
-    <link rel="stylesheet" href="style.css?v=8.00.16">
+    <link rel="stylesheet" href="style.css?v=8.00.17">
 </head>
 
 <body>
@@ -52,6 +52,10 @@
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
                 <span>Dashboard</span>
             </button>
+            <button class="nav-tab" data-page="calibrate">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><line x1="12" x2="12" y1="2" y2="4"/><line x1="12" x2="12" y1="20" y2="22"/><line x1="2" x2="4" y1="12" y2="12"/><line x1="20" x2="22" y1="12" y2="12"/></svg>
+                <span>Calibrate</span>
+            </button>
             <button class="nav-tab" data-page="basic">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>
                 <span>Basic</span>
@@ -71,6 +75,17 @@
         </nav>
 
         <div class="page active" id="dashboard-page">
+            <div class="calib-banner" id="calibBanner" role="status" hidden>
+                <svg class="calib-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                <div class="calib-banner-body">
+                    <p class="calib-banner-title">Not calibrated</p>
+                    <p class="calib-banner-text">The Haldex has not been learned, so lock is running on an estimated factor - results will be worse than Stock. Open the Calibrate tab and run the Learn first.</p>
+                    <button class="calib-banner-cta" id="calibBannerOpen" type="button">Open Calibrate</button>
+                </div>
+                <button class="calib-banner-dismiss" id="calibBannerDismiss" type="button" aria-label="Dismiss">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+            </div>
             <section class="card hero-card">
                 <div class="hero-top">
                     <h2>Haldex Engagement</h2>
@@ -250,11 +265,30 @@
 
         </div>
 
-        <div class="page" id="settings-page">
-            <section class="card" id="learnSection">
-                <h2>Haldex Calibration</h2>
+        <div class="page" id="calibrate-page">
+            <section class="card">
+                <h2>Calibrate</h2>
+                <p class="hint">Set this up once per car <strong>before</strong> you start using the drive modes. Without it the controller only guesses how your Haldex responds, and an uncalibrated guess drives worse than leaving the car in Stock. Work top to bottom.</p>
 
-                <h3 class="subsection-title">Generation</h3>
+                <div class="calib-status-chip" id="calibStatusChip">
+                    <span class="calib-status-dot"></span>
+                    <span class="calib-status-text" id="calibStatusChipText">Checking calibration...</span>
+                </div>
+
+                <ol class="calib-steps">
+                    <li>Set your <strong>Generation</strong> to match the car.</li>
+                    <li>Run the <strong>Learn</strong> (engine running, car stationary, Haldex CAN live).</li>
+                    <li>Set <strong>Lock calibration</strong> to 1:1 using the learn chart.</li>
+                    <li>Optional: raise the <strong>Launch PWM floor</strong>.</li>
+                </ol>
+            </section>
+
+            <section class="card" id="learnSection">
+                <div class="calib-head">
+                    <h3 class="subsection-title">1 &middot; Generation</h3>
+                    <button class="calib-info" type="button" data-info="gen" aria-label="About Generation">i</button>
+                </div>
+                <p class="hint">Which Haldex controller is fitted to your car. This has to be right or nothing else works.</p>
                 <select id="haldexGeneration" class="input-select">
                     <option value="1">Generation 1</option>
                     <option value="2">Generation 2</option>
@@ -264,12 +298,12 @@
                     <option value="51">Generation 5 (0AY)</option>
                     <option value="41">Generation 4 - GM/SAAB</option>
                 </select>
-                <p class="hint">Must match the Haldex controller fitted to the car - it selects the CAN decode and command format. MQB cars (e.g. Mk3 TT, 8V S3, MQB Golf R) are Gen 5 (0CQ); the 0AY variant is the PQ-derived unit. Wrong generation means no lock control.</p>
 
-                <h3 class="subsection-title">Learn Haldex</h3>
-                <p class="hint">Sweeps correction factors 0–100% and records actual Haldex engagement at each step,
-                    building a calibration table that replaces the formula. Car must be running with Haldex CAN active.
-                </p>
+                <div class="calib-head">
+                    <h3 class="subsection-title">2 &middot; Learn Haldex</h3>
+                    <button class="calib-info" type="button" data-info="learn" aria-label="About Learn Haldex">i</button>
+                </div>
+                <p class="hint">Teaches the controller how your exact Haldex responds so lock commands hit their target. Engine running, car stationary, Haldex CAN connected. Takes a couple of minutes.</p>
                 <p class="hint" id="learnStatusText">--</p>
                 <div class="learn-progress-wrap" id="learnProgressWrap" style="display:none;">
                     <div class="learn-progress-bar">
@@ -309,22 +343,32 @@
                     <button class="btn-secondary" id="learnCancel" style="display:none;">Cancel</button>
                     <button class="btn-danger" id="learnClear">Clear Learn Data</button>
                 </div>
+
                 <div class="toggle-group" style="margin-top: 12px;">
-                    <p class="hint" id="bpkCeilingLabel">Lock calibration</p>
+                    <div class="calib-head">
+                        <h3 class="subsection-title" id="bpkCeilingLabel">3 &middot; Lock calibration</h3>
+                        <button class="calib-info" type="button" data-info="ceiling" aria-label="About Lock calibration">i</button>
+                    </div>
+                    <p class="hint">Lines up the lock you command with the lock the Haldex actually delivers. Run a Learn, then adjust this until the Sent vs Returned line sits on the 1:1 diagonal. Not a power dial.</p>
                     <div class="slider-container" id="bpkCeilingContainer">
                         <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider" aria-labelledby="bpkCeilingLabel">
                         <div class="slider-value"><span id="bpkCeilingValue">220</span> Nm</div>
                     </div>
-                    <p class="hint">A per-car calibration number, NOT more lock and NOT your engine's torque. There is one correct value: the one where the lock you command matches what the Haldex actually delivers (1:1). Set it with the Learn - run a Learn and adjust this until the Sent vs Returned line sits on the 1:1 diagonal. Higher does not lock harder: too high and the coupling grabs early and slams shut; too low and it under-delivers. Once you have run a Learn this value applies whenever you drive.</p>
-                    <p class="hint" id="esp14MinFloorLabel">Launch PWM floor (experimental)</p>
+
+                    <div class="calib-head">
+                        <h3 class="subsection-title" id="esp14MinFloorLabel">4 &middot; Launch PWM floor (experimental)</h3>
+                        <button class="calib-info" type="button" data-info="floor" aria-label="About Launch PWM floor">i</button>
+                    </div>
+                    <p class="hint">Optional. Holds a minimum clutch PWM under launch so engagement builds faster off the line. Leave at 0 unless you know you want it. Only applies while lock is commanded.</p>
                     <div class="slider-container" id="esp14MinFloorContainer">
                         <input type="range" id="esp14MinFloorRange" min="0" max="100" step="1" value="0" class="slider" aria-labelledby="esp14MinFloorLabel">
                         <div class="slider-value"><span id="esp14MinFloorValue">0</span> %</div>
                     </div>
-                    <p class="hint">Experimental. Raises the ESP demand FLOOR the Haldex sees while lock is commanded, which pushes clutch PWM (solenoid duty) up under launch toward what Stock mode reaches. 0 = off (unchanged behaviour). It only applies while lock is actually commanded - off-throttle, FWD and coasting still open the clutch, so it does not cause always-engaged. Bracket it live against the Clutch PWM readout: raise until PWM climbs to where you want, back off if it grabs mid-corner. This is a floor only; the Haldex keeps headroom to modulate above it.</p>
                 </div>
             </section>
+        </div>
 
+        <div class="page" id="settings-page">
             <section class="card">
                 <h2>Inputs &amp; Triggers</h2>
                 <div class="toggle-group">
@@ -879,7 +923,20 @@
             </div>
         </aside>
 
-        <script src="./app.js?v=8.00.16" type="text/javascript"></script>
+        <!-- Reusable info modal for the Calibrate tab. Opened by any .calib-info
+             button; title + body are filled from CALIB_INFO in app.js keyed by
+             the button's data-info. -->
+        <div id="calibInfoModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="calibInfoTitle">
+            <div class="modal-content calib-info-content">
+                <h3 id="calibInfoTitle">Info</h3>
+                <div class="calib-info-body" id="calibInfoBody"></div>
+                <div class="modal-buttons calib-info-buttons">
+                    <button class="btn-secondary" id="calibInfoClose">Got it</button>
+                </div>
+            </div>
+        </div>
+
+        <script src="./app.js?v=8.00.18" type="text/javascript"></script>
         <!-- add version query param to force cache refresh on updates-->
     </div>
 </body>
