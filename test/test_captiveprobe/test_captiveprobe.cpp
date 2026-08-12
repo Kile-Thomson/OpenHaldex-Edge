@@ -65,6 +65,12 @@ void test_firefox_canonical(void)
                            "Firefox /canonical.html must be treated as a probe");
 }
 
+void test_firefox_success_txt(void)
+{
+  TEST_ASSERT_TRUE_MESSAGE(is_captive_probe("/success.txt"),
+                           "Firefox /success.txt must be treated as a probe");
+}
+
 // ---- match rules ------------------------------------------------------------
 
 void test_case_insensitive(void)
@@ -118,6 +124,7 @@ int main(int, char **)
   RUN_TEST(test_windows_ncsi);
   RUN_TEST(test_windows_connecttest);
   RUN_TEST(test_firefox_canonical);
+  RUN_TEST(test_firefox_success_txt);
   RUN_TEST(test_case_insensitive);
   RUN_TEST(test_query_string_tolerated);
   RUN_TEST(test_prefix_does_not_false_match);
