@@ -118,6 +118,15 @@ uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_rec
 // symbols, host-testable.
 bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_table_valid);
 
+// ESP_14 (0x08A) BR_Vorg_*_Min launch-PWM floor. Shared between the standalone
+// frame generator and the CAN-passthrough edit path so the two never drift.
+// floor_pct is esp14MinFloorPct (0..100); applied_torque is the ESP_14 Max byte
+// already computed for the same frame. Returns 0 when floor_pct is 0 (inherited
+// Min=0). Otherwise the floor is floor_pct% of full command, routed through
+// get_lock_target_adjusted_value (gates to 0 off-throttle/FWD/coast) and clamped
+// strictly below applied_torque so the Haldex keeps modulation headroom.
+uint8_t esp14_min_floor(uint8_t floor_pct, uint8_t applied_torque);
+
 // MQB Motor_11 (0x0A7) BPK torque-spoof packer. Fills out[0..7] with the
 // DBC-correct bit-packed engine-torque frame that provokes the Haldex to close
 // the clutch: MO_Mom_Soll_Roh / MO_Mom_Ist_Summe / MO_Mom_Soll_gefiltert are

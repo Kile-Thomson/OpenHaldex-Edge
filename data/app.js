@@ -384,14 +384,18 @@ async function initStoredSettings() {
     document.getElementById("disableExternalButton").checked =
       data.disableExternalButton || false;
 
-    const fixHuntingElem = document.getElementById("fixHunting");
-    if (fixHuntingElem) fixHuntingElem.checked = data.fixHunting || false;
-
     const bpkCeilRange = document.getElementById("bpkCeilingRange");
     const bpkCeilVal   = document.getElementById("bpkCeilingValue");
     if (bpkCeilRange && data.bpkCeilingNm !== undefined) {
       bpkCeilRange.value = data.bpkCeilingNm;
       if (bpkCeilVal) bpkCeilVal.textContent = data.bpkCeilingNm;
+    }
+
+    const esp14FloorRange = document.getElementById("esp14MinFloorRange");
+    const esp14FloorVal   = document.getElementById("esp14MinFloorValue");
+    if (esp14FloorRange && data.esp14MinFloorPct !== undefined) {
+      esp14FloorRange.value = data.esp14MinFloorPct;
+      if (esp14FloorVal) esp14FloorVal.textContent = data.esp14MinFloorPct;
     }
 
     const canSleepElem = document.getElementById("canSleepEnabled");
@@ -1110,6 +1114,20 @@ function initNavigation() {
     });
   }
 
+  // ESP_14 Min-band launch-PWM floor. Same rationale as the BPK slider: update
+  // the label live while dragging, only save on release so the car isn't streamed
+  // calibration changes mid-drag.
+  const esp14FloorRange = document.getElementById("esp14MinFloorRange");
+  const esp14FloorValue = document.getElementById("esp14MinFloorValue");
+  if (esp14FloorRange) {
+    esp14FloorRange.addEventListener("input", () => {
+      if (esp14FloorValue) esp14FloorValue.textContent = esp14FloorRange.value;
+    });
+    esp14FloorRange.addEventListener("change", () => {
+      saveSetting("esp14MinFloorPct", parseInt(esp14FloorRange.value));
+    });
+  }
+
   // Lock response ramp sliders (display update only — save handled in initSettings)
   const lockReleaseRange = document.getElementById("lockReleaseRampRange");
   const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
@@ -1355,7 +1373,6 @@ function initSettings() {
     "broadcastOpenHaldexOverCAN",
     "disableOnboardButton",
     "disableExternalButton",
-    "fixHunting",
     "canSleepEnabled",
     "canSleepAggressive",
     "udsMQBEnabled",

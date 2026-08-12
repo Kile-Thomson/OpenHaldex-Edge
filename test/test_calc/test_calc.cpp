@@ -24,6 +24,7 @@
 // Real functions under test (src/OpenHaldexC6_Calculations.cpp).
 extern float get_lock_target_adjustment();
 extern uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert);
+extern uint8_t esp14_min_floor(uint8_t floor_pct, uint8_t applied_torque);
 
 // ---------------------------------------------------------------------------
 // Deterministic global reset. Drives every input referenced by the functions
@@ -594,6 +595,63 @@ void test_bpk_counter_in_low_nibble(void)
 }
 
 // ===========================================================================
+// esp14_min_floor() - ESP_14 BR_Vorg_*_Min launch-PWM floor. Exercised in the
+// 50/50 (lock_target==100, lock enabled) state, where get_lock_target_adjusted_value
+// returns its argument unchanged, so the floor math is deterministic.
+// ===========================================================================
+
+void test_esp14_floor_zero_pct_is_zero(void)
+{
+  // 0% -> inherited Min=0, regardless of applied torque.
+  lock_target = 100.0f;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, esp14_min_floor(0, 0xFE), "floor 0% -> 0");
+}
+
+void test_esp14_floor_50_pct_below_max_passes_through(void)
+{
+  // 50% -> floorByte = 0xFE*50/100 = 127 (0x7F). Applied torque full (0xFE), so
+  // 0x7F < 0xFE and the floor is returned unclamped.
+  lock_target = 100.0f;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x7F, esp14_min_floor(50, 0xFE), "floor 50% below max");
+}
+
+void test_esp14_floor_100_pct_clamped_below_max(void)
+{
+  // 100% -> floorByte = 0xFE (254) == applied torque, so it clamps to max-1 (0xFD)
+  // to keep Min strictly below Max (modulation headroom preserved).
+  lock_target = 100.0f;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xFD, esp14_min_floor(100, 0xFE), "floor 100% clamped to max-1");
+}
+
+void test_esp14_floor_clamps_to_zero_when_max_is_zero(void)
+{
+  // Floor would exceed a zero max -> collapses to 0 rather than underflowing.
+  lock_target = 100.0f;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, esp14_min_floor(50, 0x00), "floor clamps to 0 when max==0");
+}
+
+void test_esp14_floor_gates_to_zero_off_throttle(void)
+{
+  // Lock commanded (5050, lock_target==100) but throttle below threshold ->
+  // lock_enabled() is false via the throttle gate, so get_lock_target_adjusted_value
+  // returns 0 and even a non-zero floor_pct collapses to 0 (no always-engaged
+  // floor when off-throttle). Exercises the throttle-disabled path specifically,
+  // not the FWD early-return.
+  lock_target            = 100.0f;
+  state.pedal_threshold  = 50;   // require >=50% pedal to enable lock
+  received_pedal_value   = 10.0f; // off-throttle -> throttle_ok false
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, esp14_min_floor(50, 0xFE), "floor gates to 0 when off-throttle");
+}
+
+void test_esp14_floor_gates_to_zero_fwd_not_commanded(void)
+{
+  // FWD / lock not commanded (lock_target==0) -> get_lock_target_adjusted_value
+  // returns 0 via the FWD early-return, so even a non-zero floor_pct collapses to 0.
+  lock_target = 0.0f;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, esp14_min_floor(50, 0xFE), "floor gates to 0 when lock not commanded");
+}
+
+// ===========================================================================
 
 int main(int, char **)
 {
@@ -653,6 +711,14 @@ int main(int, char **)
   RUN_TEST(test_bpk_ceiling_clamps_to_509);
   RUN_TEST(test_bpk_slew_limits_ist_and_solf);
   RUN_TEST(test_bpk_counter_in_low_nibble);
+
+  // ESP_14 launch-PWM floor
+  RUN_TEST(test_esp14_floor_zero_pct_is_zero);
+  RUN_TEST(test_esp14_floor_50_pct_below_max_passes_through);
+  RUN_TEST(test_esp14_floor_100_pct_clamped_below_max);
+  RUN_TEST(test_esp14_floor_clamps_to_zero_when_max_is_zero);
+  RUN_TEST(test_esp14_floor_gates_to_zero_off_throttle);
+  RUN_TEST(test_esp14_floor_gates_to_zero_fwd_not_commanded);
 
   return UNITY_END();
 }

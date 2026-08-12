@@ -317,6 +317,7 @@ extern bool disableExternalButton;
 
 extern bool fixHunting; // Motor_11: false=V3 packing, true=BPK packing
 extern uint16_t bpkCeilingNm; // BPK per-car lock calibration: Nm the spoof frame claims at 100% command (not a strength dial)
+extern uint8_t esp14MinFloorPct; // ESP_14 Min-band floor as % of full command; 0 = inherited (Min=0). Raises commanded clutch-torque floor under lock to lift launch PWM.
 
 extern bool canSleepEnabled;    // runtime toggle for CAN-wake light sleep (UI/EEP)
 extern bool canSleepAggressive; // aggressive add-on: transceiver standby + DFS 10MHz + low WiFi TX power

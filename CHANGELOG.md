@@ -12,6 +12,27 @@ limiting - are Forbes's own work and are not repeated here.
 
 ## Unreleased - v8.00.17
 
+### Added
+
+- **Launch PWM floor (experimental).** A tunable slider (0-100%, defaults to 0 =
+  unchanged) that raises the ESP_14 `BR_Vorg_*_Min` bytes the Haldex sees while
+  lock is commanded. Upstream pinned these `Min` bytes at 0, letting the Haldex
+  settle to its own minimum clutch PWM; raising the floor forces it to hold
+  higher under load. The floor is routed through the same lock-target gating as
+  the `Max` bytes, so it collapses to 0 off-throttle, in FWD, and while coasting
+  (no always-engaged effect), and is clamped strictly below `Max` so the Haldex
+  keeps modulation headroom. Applied on both the CAN-passthrough and standalone
+  frame paths.
+
+### Changed
+
+- **Fix Hunting toggle removed from the web UI.** The learn already forces the
+  DBC-correct BPK Motor_11 packing for its own duration and afterward whenever a
+  valid learn table is present, so the manual toggle was only ever needed for a
+  bare 554K controller at partial lock with no learn table. The BPK packing path
+  and the `fixHunting` persistence field are unchanged internally (EEPROM layout
+  is stable); only the confusing manual control is gone.
+
 ### Fixed
 
 - **Stuck-at-100% lock on partially-learned tables.** When more lock was
