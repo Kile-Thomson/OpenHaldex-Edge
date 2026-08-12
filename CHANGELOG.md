@@ -14,6 +14,21 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Added
 
+- **Calibrate tab.** A new top-level tab (second in the nav, after Dashboard)
+  that groups the per-car setup in the order it should be done: Generation,
+  Learn Haldex, Lock calibration, and the Launch PWM floor. Each control has a
+  short inline description plus a tappable (i) button that opens a plain-language
+  explanation, aimed at users who plug the module in without reading a manual.
+  These controls moved out of the Settings "Haldex Calibration" card; Settings
+  keeps triggers, controller options, low-power, and updates.
+- **Not-calibrated warning (soft gate).** When no learn table exists, the
+  Dashboard shows a dismissible banner explaining that lock is running on an
+  estimated factor and usually drives worse than Stock until a Learn is run, with
+  a shortcut to the Calibrate tab. The Calibrate tab shows a matching
+  calibrated/not-calibrated status chip. Nothing is disabled - competent users
+  (restored table, bench, deliberate stock passthrough) are not blocked. Driven
+  off the `tableValid` flag already returned by `/api/learn/status`; front-end
+  only, no firmware change.
 - **Launch PWM floor (experimental).** A tunable slider (0-100%, defaults to 0 =
   unchanged) that raises the ESP_14 `BR_Vorg_*_Min` bytes the Haldex sees while
   lock is commanded. Upstream pinned these `Min` bytes at 0, letting the Haldex

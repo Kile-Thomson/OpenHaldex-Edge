@@ -79,6 +79,7 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 - **Learn calibration chart.** Once your Haldex has a learned table, the Learn section plots it - commanded correction factor against measured engagement, with a 1:1 reference line - so where your unit over- or under-responds reads at a glance. Render-only from data the device already returns; no extra load on the module.
 - **Install it like an app, full-screen.** The web UI is an installable PWA (manifest, icon set, service worker) so it can go on a phone home screen and open full-screen. A full-screen toggle in the header also works over plain http with no install step, for a clean dashboard on an unmodified phone. Live telemetry and control always hit the device - the service worker never caches the API or POSTs.
 - **On-device saved tune slots.** Five named map slots persist in the device's own storage with list/save/load/delete, so a tune saved from one phone is visible from any phone. Replaces the earlier phone-side file export/import.
+- **Calibrate tab with a soft "not calibrated" gate.** Everything you set up per car - Generation, Learn, Lock calibration, and the Launch PWM floor - is grouped on one Calibrate tab with a numbered setup order, an inline intro plus a tappable (i) explainer per control, and a live calibration status chip. Until a learn table exists, a dismissible banner on the Dashboard warns that lock is running on an estimate and drives worse than Stock until you run the Learn. Nothing is disabled - it guides rather than blocks.
 - **Plain-English help throughout.** The drive-mode drawer describes what each mode actually does, and the previously bare controls (Haldex generation, brake/handbrake follow, the controller and connectivity toggles) now carry inline hints. Copy only - no behaviour change.
 
 ### Built and tested
@@ -151,7 +152,7 @@ Below the grid, a read-only curve view plots the same lock surface so the table 
 
 ## Haldex learning
 
-The controller can learn the actual engagement curve of your specific Haldex unit by cycling through all available lock percentages. Use the **Learn Haldex** option in the Settings page. Within one minute the controller will know exactly how to hit the lock percentage you request. Once a table is learned it is plotted as a curve - commanded correction factor against measured engagement, with a 1:1 reference line - so you can see where your Haldex over- or under-responds.
+The controller can learn the actual engagement curve of your specific Haldex unit by cycling through all available lock percentages. Use the **Learn Haldex** option on the Calibrate tab. Within one minute the controller will know exactly how to hit the lock percentage you request. Once a table is learned it is plotted as a curve - commanded correction factor against measured engagement, with a 1:1 reference line - so you can see where your Haldex over- or under-responds.
 
 ### Gen5 'Fix hunting' (planned, not yet built)
 

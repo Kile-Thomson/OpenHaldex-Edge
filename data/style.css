@@ -1937,3 +1937,186 @@ button,
 .glance-state-gauge .gauge-unit {
     margin-top: 0;
 }
+
+/* ===== Calibrate tab ===== */
+
+/* Dashboard "not calibrated" banner. Loud but dismissible (soft gate). */
+.calib-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin: 0 1rem 1rem;
+    padding: 1rem;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-lg);
+}
+
+.calib-banner[hidden] {
+    display: none;
+}
+
+.calib-banner-icon {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    color: var(--warning);
+    margin-top: 2px;
+}
+
+.calib-banner-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.calib-banner-title {
+    font-weight: 700;
+    color: var(--warning);
+    margin: 0 0 0.25rem;
+}
+
+.calib-banner-text {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    margin: 0 0 0.75rem;
+}
+
+.calib-banner-cta {
+    background: var(--warning);
+    color: #1a1a1a;
+    border: none;
+    border-radius: var(--radius-md);
+    padding: 0.5rem 1rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.calib-banner-dismiss {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 0.25rem;
+    line-height: 0;
+}
+
+.calib-banner-dismiss svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* Calibrate-tab status chip - mirrors the banner state. */
+.calib-status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.5rem 0 1rem;
+    padding: 0.5rem 0.85rem;
+    border-radius: 999px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface-light);
+    color: var(--text-dim);
+}
+
+.calib-status-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--dot-idle);
+    flex: 0 0 auto;
+}
+
+.calib-status-chip.calibrated {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.calib-status-chip.calibrated .calib-status-dot {
+    background: var(--success);
+}
+
+.calib-status-chip.uncalibrated {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.calib-status-chip.uncalibrated .calib-status-dot {
+    background: var(--warning);
+}
+
+/* Numbered setup-order list. */
+.calib-steps {
+    margin: 0.5rem 0 0;
+    padding-left: 1.25rem;
+    color: var(--text-dim);
+    font-size: 0.92rem;
+}
+
+.calib-steps li {
+    margin-bottom: 0.35rem;
+}
+
+.calib-steps strong {
+    color: var(--text);
+}
+
+/* Section head with an (i) info button beside the title. */
+.calib-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1.25rem;
+}
+
+.calib-head .subsection-title {
+    margin: 0;
+}
+
+.calib-info {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface-light);
+    color: var(--text-dim);
+    font-style: italic;
+    font-weight: 700;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.calib-info:hover,
+.calib-info:focus-visible {
+    border-color: var(--primary);
+    color: var(--text);
+    outline: none;
+}
+
+/* Info modal body - reuses .modal / .modal-content; wider and left-aligned. */
+.calib-info-content {
+    max-width: 460px;
+    text-align: left;
+}
+
+.calib-info-body p {
+    color: var(--text-dim);
+    font-size: 0.92rem;
+    margin: 0 0 0.75rem;
+    white-space: pre-line;
+}
+
+.calib-info-body p:last-child {
+    margin-bottom: 1rem;
+}
+
+.calib-info-buttons {
+    grid-template-columns: 1fr;
+}

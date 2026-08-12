@@ -237,6 +237,7 @@ function initApp() {
   initExpertEditor();
   initTuneSelection();
   initTuneChart();
+  initCalibrate();
   initLearn();
   initWifiSsid();
   initWifi();
@@ -2590,6 +2591,136 @@ function updateChartMarker() {
   }
 }
 
+// PAL-friendly explainers for the Calibrate tab. Keyed by the data-info value on
+// each .calib-info button; opened in the shared #calibInfoModal. Kept as plain
+// strings (no HTML) so the copy stays readable and can't inject markup.
+const CALIB_INFO = {
+  gen: {
+    title: "Generation",
+    body:
+      "This tells the controller which type of Haldex is fitted to your car. It sets how the controller reads the Haldex over CAN and how it commands lock.\n\n" +
+      "It MUST match your car. If it is wrong, lock control will not work at all.\n\n" +
+      "MQB cars (e.g. Mk3 TT, 8V S3, MQB Golf R) are Generation 5 (0CQ). The 0AY variant is the older PQ-derived unit. If you are not sure, check what Haldex generation your car uses before changing anything else.",
+  },
+  learn: {
+    title: "Learn Haldex",
+    body:
+      "Every Haldex responds slightly differently. The Learn finds out how YOUR one behaves so that when you ask for a lock amount, you actually get it.\n\n" +
+      "It slowly steps the command from 0% up to 100% and records how much the Haldex actually engages at each step, building a calibration table that replaces the built-in estimate.\n\n" +
+      "How to run it:\n" +
+      "1. Engine running.\n" +
+      "2. Car stationary (it stops itself if you move off).\n" +
+      "3. Haldex CAN connected and healthy.\n" +
+      "4. Press Learn Haldex and wait - it takes a couple of minutes.\n\n" +
+      "Until you have run a Learn, the controller is guessing, and the car usually drives BETTER left in Stock than run uncalibrated.",
+  },
+  ceiling: {
+    title: "Lock calibration",
+    body:
+      "This lines up the lock you ask for with the lock the Haldex actually delivers, so 50% means 50%.\n\n" +
+      "It is NOT a power or strength dial, and it is NOT your engine's torque. There is one correct value: the one where commanded and delivered match 1:1.\n\n" +
+      "How to set it: run a Learn, look at the chart, and adjust this until the Sent vs Returned line sits on the dashed 1:1 diagonal.\n\n" +
+      "Higher is not better. Too high and the coupling grabs early and slams shut; too low and it under-delivers. Once set, it applies whenever you drive.",
+  },
+  floor: {
+    title: "Launch PWM floor (experimental)",
+    body:
+      "Optional, experimental. It holds a minimum clutch PWM (solenoid duty) while lock is commanded, so engagement builds faster off the line - closer to what Stock reaches under launch.\n\n" +
+      "0% = off (default, unchanged behaviour). Leave it there unless you specifically want a firmer launch.\n\n" +
+      "It only applies while lock is actually commanded - off-throttle, FWD, and coasting still open the clutch, so it does not force the car to be always-engaged.\n\n" +
+      "How to tune it: watch the Clutch PWM readout on the Dashboard and raise this until PWM climbs to where you want. If it grabs mid-corner, back it off. It is a floor only - the Haldex still modulates above it.",
+  },
+};
+
+// Whether the current session has dismissed the not-calibrated banner. Resets on
+// reload so an uncalibrated car nags again next time the UI is opened.
+let calibBannerDismissed = false;
+
+// Single source of truth for the calibrated/uncalibrated UI state. Driven by the
+// tableValid flag from /api/learn/status, called from every place that resolves
+// it (page load, learn complete, clear). Updates both the Dashboard banner and
+// the Calibrate-tab status chip so they never disagree.
+function applyCalibrationState(tableValid) {
+  const banner = document.getElementById("calibBanner");
+  if (banner) {
+    const show = !tableValid && !calibBannerDismissed;
+    banner.hidden = !show;
+  }
+
+  const chip = document.getElementById("calibStatusChip");
+  const chipText = document.getElementById("calibStatusChipText");
+  if (chip && chipText) {
+    if (tableValid) {
+      chip.classList.remove("uncalibrated");
+      chip.classList.add("calibrated");
+      chipText.textContent = "Calibrated - learn table active";
+    } else {
+      chip.classList.remove("calibrated");
+      chip.classList.add("uncalibrated");
+      chipText.textContent = "Not calibrated - run the Learn (results worse than Stock until you do)";
+    }
+  }
+}
+
+// initialise the Calibrate tab: info modals, the not-calibrated banner controls,
+// and an initial calibration-state read.
+function initCalibrate() {
+  const modal   = document.getElementById("calibInfoModal");
+  const title   = document.getElementById("calibInfoTitle");
+  const body    = document.getElementById("calibInfoBody");
+  const btnClose = document.getElementById("calibInfoClose");
+
+  function openInfo(key) {
+    const info = CALIB_INFO[key];
+    if (!info || !modal) return;
+    title.textContent = info.title;
+    // Preserve paragraph breaks from the copy without injecting HTML.
+    body.textContent = "";
+    info.body.split("\n\n").forEach((para) => {
+      const p = document.createElement("p");
+      p.textContent = para;
+      body.appendChild(p);
+    });
+    modal.classList.add("active");
+  }
+
+  function closeInfo() {
+    if (modal) modal.classList.remove("active");
+  }
+
+  document.querySelectorAll(".calib-info").forEach((btn) => {
+    btn.addEventListener("click", () => openInfo(btn.dataset.info));
+  });
+  if (btnClose) btnClose.addEventListener("click", closeInfo);
+  if (modal) {
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closeInfo(); // tap the backdrop to dismiss
+    });
+  }
+
+  // Not-calibrated Dashboard banner controls.
+  const dismissBtn = document.getElementById("calibBannerDismiss");
+  const openBtn    = document.getElementById("calibBannerOpen");
+  if (dismissBtn) {
+    dismissBtn.addEventListener("click", () => {
+      calibBannerDismissed = true;
+      const banner = document.getElementById("calibBanner");
+      if (banner) banner.hidden = true;
+    });
+  }
+  if (openBtn) {
+    openBtn.addEventListener("click", () => {
+      const tab = document.querySelector('.nav-tab[data-page="calibrate"]');
+      if (tab) tab.click();
+    });
+  }
+
+  // Seed the initial state; initLearn's own status reads keep it current after.
+  fetchJson("/api/learn/status").then((data) => {
+    if (data) applyCalibrationState(!!data.tableValid);
+  });
+}
+
 // initialise Learn Haldex UI
 function initLearn() {
   let learnPollInterval = null;
@@ -2670,6 +2801,7 @@ function initLearn() {
           statusText.textContent = "Learn cancelled or failed";
           statusText.style.color = "var(--warning)";
         }
+        applyCalibrationState(!!data.tableValid);
       }
     } finally {
       clearTimeout(pollTimeout);
@@ -2706,6 +2838,7 @@ function initLearn() {
     statusText.textContent = "Learn data cleared - static factor active";
     statusText.style.color = "var(--text-dim)";
     renderLearnChart([]); // table gone - hide the chart
+    applyCalibrationState(false); // table wiped - nag again
   });
 
   // check initial state on page load
