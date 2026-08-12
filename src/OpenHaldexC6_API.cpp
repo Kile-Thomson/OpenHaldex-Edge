@@ -1450,6 +1450,22 @@ void setupAPI()
     // (including static assets blocked by the serveStatic filter) redirects to the
     // first-run setup page.
     webServer.onNotFound([](AsyncWebServerRequest *request) {
+        // Phone OS "is there internet here?" probes land here as unmatched URLs.
+        // We are an offline device (a car AP with no uplink), so we must answer
+        // these so the phone concludes "no internet" and keeps its own cellular
+        // data alive for messages, calls, and OTA downloads. The wrong answers:
+        //   - a 204 tells the OS "internet works" (a lie; the phone would then
+        //     route everything through us and go dark), and
+        //   - a redirect/200-with-body reads as a captive portal ("Sign in to
+        //     WiFi"), which can also trap the phone off cellular.
+        // The right answer is a bare error that is neither: a plain 404 with no
+        // body and no redirect. The OS reads that as no-internet-not-captive and
+        // leaves cellular in charge. This runs before the setup redirect so the
+        // probe is answered the same way whether or not the AP is provisioned.
+        if (is_captive_probe(request->url().c_str())) {
+            request->send(404, "text/plain", ""); // no body, no redirect
+            return;
+        }
         if (!isDeviceProvisioned()) {
             request->redirect("/setup");
             return;

@@ -1849,6 +1849,62 @@ bool wifi_password_provisioned(const char* ap_pw)
   return false;
 }
 
+// See include/OpenHaldexC6_Calculations.h for the full rationale. Matches the
+// request path (up to any '?' query string, case-insensitively) against the
+// well-known phone-OS connectivity-probe URLs. Kept dependency-free of Arduino
+// so the URL set is host-tested; std::strncasecmp-free by hand-rolling the
+// compare so it builds identically under env:native.
+bool is_captive_probe(const char* path)
+{
+  if (path == nullptr)
+  {
+    return false;
+  }
+
+  // The exact request paths each OS hits to decide "is there internet here?".
+  // Android: /generate_204 and /gen_204 (various Google/vendor probe hosts).
+  // Apple:   /hotspot-detect.html and the /library/test/success.html variant.
+  // Windows: /ncsi.txt and /connecttest.txt (NCSI).
+  // Firefox: /canonical.html; some builds also request /success.txt.
+  static const char *const kProbes[] = {
+      "/generate_204",
+      "/gen_204",
+      "/hotspot-detect.html",
+      "/library/test/success.html",
+      "/ncsi.txt",
+      "/connecttest.txt",
+      "/success.txt",
+      "/canonical.html",
+  };
+
+  for (const char *probe : kProbes)
+  {
+    size_t i = 0;
+    bool match = true;
+    for (; probe[i] != '\0'; ++i)
+    {
+      char c = path[i];
+      // Lower-case the path char (ASCII); probe entries are already lower-case.
+      if (c >= 'A' && c <= 'Z')
+      {
+        c = (char)(c + ('a' - 'A'));
+      }
+      if (c != probe[i])
+      {
+        match = false;
+        break;
+      }
+    }
+    // A match requires the path to end here or continue only with a query string,
+    // so "/generate_204extra" does not match but "/generate_204?foo" does.
+    if (match && (path[i] == '\0' || path[i] == '?'))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Pure bus-health predicate: any failure bit set means a fault.
 // Plain arithmetic, no TWAI symbols, so it runs in the native test suite.
 bool can_alerts_indicate_failure(uint32_t alerts, uint32_t failure_mask)
