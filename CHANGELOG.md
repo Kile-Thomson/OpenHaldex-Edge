@@ -10,6 +10,23 @@ limiting - are Forbes's own work and are not repeated here.
 
 ---
 
+## Unreleased - v8.00.18
+
+### Fixed
+
+- **Phone keeps its cellular data while connected to the device.** When a phone
+  joins the device's WiFi, its OS fires an internet-check probe (Android
+  `generate_204`, Apple `hotspot-detect`, Windows NCSI, Firefox `canonical`). The
+  AP used to answer those with the first-run setup redirect, which reads as a
+  captive portal ("Sign in to WiFi") and can push the phone off cellular - so
+  messages, calls, and downloading an OTA image would stall while connected. The
+  AP now answers those probes with a bare 404, which the OS reads as "no
+  internet, not a captive portal", so the phone keeps its own 4G/5G alive and
+  only sends device-UI traffic over the AP. Firmware-only; the probe set lives in
+  a host-tested `is_captive_probe()` seam with regression tests.
+
+---
+
 ## Unreleased - v8.00.17
 
 ### Added

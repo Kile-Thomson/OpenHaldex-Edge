@@ -212,6 +212,17 @@ bool is_strictly_ascending_u16(const uint16_t* arr, uint8_t count);
 // host-tested place.
 bool wifi_password_provisioned(const char* ap_pw);
 
+// is_captive_probe: true when a request path is one of the well-known phone-OS
+// "is there internet on this WiFi?" connectivity checks (Android generate_204,
+// Apple hotspot-detect, Windows NCSI/connecttest, Firefox canonical). The device
+// is an offline car AP with no uplink, so the web server answers these with a
+// bare 404 (no 204, no redirect) to signal "no internet, not a captive portal",
+// which lets the phone keep its own cellular data alive for messages/calls/OTA
+// downloads instead of routing everything through us and going dark. Case- and
+// query-string-insensitive path match; pure const char* logic so the URL set is
+// host-tested in one place. Null path returns false.
+bool is_captive_probe(const char* path);
+
 // Pure CAN bus-health predicates. Plain arithmetic ((alerts & mask) != 0), no
 // TWAI driver symbols, so the always-on failure/recovery decision that drives
 // isBusFailure is host-testable. can_alerts_indicate_failure: true when any

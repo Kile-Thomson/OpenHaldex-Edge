@@ -2,7 +2,7 @@
 #include <OpenHaldexC6_defs.h>
 
 // Current firmware version
-#define FW_VERSION "8.00.17" // update this with every firmware release AND change .html version query param to force cache refresh of web UI
+#define FW_VERSION "8.00.18" // update this with every firmware release AND change .html version query param to force cache refresh of web UI
 
 /*
 Version Control:
@@ -68,6 +68,7 @@ V8.00.14 - Gen5 BPK (Fix Hunting) lock calibration is now a per-car user setting
 V8.00.15 - Software Update card on the Settings page: one upload slot with progress that takes the release's single merged image (firmware + web UI in one file, the same file used for USB flashing) as well as a bare firmware.bin or littlefs.bin. /ota/update classifies the file from its first bytes; a merged image is split by flash offset into the app slot and filesystem partition, so a full update is one file and no USB. Web UI is now an installable PWA (manifest, icons, service worker) for full-screen single-tap launch from a phone home screen
 V8.00.16 - full-screen toggle in the web UI header: uses the Fullscreen API, which works over plain http (PWA install needs a secure context, so Android Chrome only offers a shortcut); manifest gains display_override: fullscreen for installs made from a secure context
 V8.00.17 - fixed a stuck-at-100% lock on partially-learned tables: the learn-table lookup returned a hardcoded 100 when more lock was requested than the sweep ever measured, commanding the full frame value for a target the car never learned. Now clamps to the correction factor of the highest learned engagement (argmax), so it never extrapolates past learned data; an all-zero table safely yields zero. Added regression tests.
+V8.00.18 - the AP now answers phone-OS internet-check probes (Android generate_204, Apple hotspot-detect, Windows NCSI, Firefox canonical) with a bare 404 instead of the setup redirect, so a phone joined to the device reads it as "no internet, not a captive portal" and keeps its own cellular data alive for messages, calls and OTA downloads. Pure host-tested is_captive_probe() seam with a regression suite.
 */
 
 
