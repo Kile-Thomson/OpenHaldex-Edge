@@ -203,30 +203,9 @@ void readEEP() // function to read stored preferences into runtime variables
 
   // Map the (now-populated) lastMode to the runtime enum for every path, so a
   // freshly seeded or migrated device boots into a coherent mode just like a load.
-  switch (lastMode) // map stored lastMode to runtime enum
-  {
-  case 0:
-    state.mode = MODE_STOCK;  // set MODE_STOCK
-    break;
-  case 1:
-    state.mode = MODE_FWD;    // set MODE_FWD
-    break;
-  case 2:
-    state.mode = MODE_5050;   // set MODE_5050
-    break;
-  case 3:
-    state.mode = MODE_6040;   // set MODE_6040
-    break;
-  case 4:
-    state.mode = MODE_7525;   // set MODE_7525
-    break;
-  case 5:
-    state.mode = MODE_EXPERT; // set MODE_EXPERT
-    break;
-  default:                    // unrecognized value
-    state.mode = MODE_FWD;    // default to MODE_FWD
-    break;
-  }
+  // The mapping is a pure seam (mode_from_last_mode) so it is host-tested; an
+  // out-of-range stored byte falls back to MODE_FWD.
+  state.mode = mode_from_last_mode(lastMode);
 
 #if detailedDebugEEP
   DEBUG("EEPROM initialised with...");                                                           // debug: print loaded prefs

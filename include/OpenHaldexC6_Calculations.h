@@ -127,6 +127,23 @@ bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_tab
 // strictly below applied_torque so the Haldex keeps modulation headroom.
 uint8_t esp14_min_floor(uint8_t floor_pct, uint8_t applied_torque);
 
+// ESP_14 (0x08A) BR_Vorg_*_Max operating-range ceiling. This byte declares how
+// much of the clutch's operating range the ESP permits the Haldex to use - a
+// PERMISSION envelope, not a torque request. Upstream fed it the same
+// CF-attenuated byte as the MOTOR_11 torque request (get_lock_target_adjusted_value),
+// which collapsed the declared ceiling to ~60% (the correction_factor tops out
+// near 60 at full lock), so the Haldex never opened its pump duty past ~60% PWM
+// while stock reached ~80%. This helper decouples the ceiling from the CF
+// translation: it declares the full 0xFE range scaled by the RAW commanded lock
+// fraction (frac_pct = lock_target 0..100), so 30% lock still declares ~30% range
+// (keeping the sane part of the original partial-lock intent) but 100% command
+// declares the FULL range. Gating is caller-supplied via lock_active: pass the
+// same lock gate the rest of the frame uses (lock_enabled() / not FWD / not
+// stock-passthrough) so the ceiling collapses to 0 whenever lock isn't commanded.
+// Returns 0 when lock_active is false. Pure arithmetic given its inputs, so it is
+// host-testable in isolation.
+uint8_t esp14_range_max(uint8_t frac_pct, bool lock_active);
+
 // MQB Motor_11 (0x0A7) BPK torque-spoof packer. Fills out[0..7] with the
 // DBC-correct bit-packed engine-torque frame that provokes the Haldex to close
 // the clutch: MO_Mom_Soll_Roh / MO_Mom_Ist_Summe / MO_Mom_Soll_gefiltert are
@@ -262,6 +279,14 @@ bool external_diag_active(uint32_t last_seen_ms, uint32_t now_ms, uint32_t timeo
 //   * neither                  -> EEP_SEED_DEFAULTS  (first ever run, write defaults)
 enum EepInitAction { EEP_LOAD_EXISTING, EEP_MIGRATE_LEGACY, EEP_SEED_DEFAULTS };
 EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data);
+
+// mode_from_last_mode: the boot-time mapping from the persisted lastMode byte to
+// the runtime drive-mode enum. Valid stored values are 0..5 (Stock/FWD/5050/
+// 6040/7525/Expert); anything else (notably a haldexGeneration number like 41/50/
+// 51 that a bug once wrote into lastMode) falls back to MODE_FWD. Extracted as a
+// pure seam so a host test proves generation-namespace values can never be
+// mistaken for a valid drive mode. Pure logic, no Arduino/NVS symbols.
+openhaldex_mode_t mode_from_last_mode(uint8_t last_mode);
 
 // HTTP request-body buffer ownership, extracted from parseJSON so the
 // malloc-owned single-block contract that ESPAsyncWebServer frees with plain

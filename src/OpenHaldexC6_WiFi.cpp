@@ -1,10 +1,56 @@
 #include <OpenHaldexC6_WiFi.h>
+#include <DNSServer.h>
 #include <cstring>
 
 // WiFi AP setup and reset helpers. Brings up the soft-AP (open or WPA2 per the
 // stored password), advertises mDNS, and provides the password/SSID reset paths
 // used by the API. The HTTP server itself is set up separately in
 // OpenHaldexC6_API.cpp (setupWebServer).
+
+// Captive-DNS responder. The soft-AP hands out its own IP (192.168.1.1) as the
+// DNS server via DHCP, but arduino-esp32 runs no DNS process by default - so a
+// phone's connectivity-check lookup (connectivitycheck.gstatic.com, etc.) hits
+// 192.168.1.1:53 and nothing answers. The lookup then hangs, the phone sits in
+// a "validating" state, and it pulls its default route onto our AP while it
+// waits - killing the phone's cellular data (calls, messages, OTA).
+//
+// This DNSServer answers every query with 192.168.1.1, so the probe HTTP GET
+// actually reaches the web server, where is_captive_probe() replies with a bare
+// 404 (no 204, no redirect). The phone reads that as "reachable, but no
+// internet, not a captive portal" and keeps cellular as its data route. The DNS
+// answer is what makes the existing 404 handler reachable at all.
+static DNSServer dnsServer;
+static bool dnsRunning = false;
+
+void dnsStart()
+{
+  if (dnsRunning)
+  {
+    return;
+  }
+  // "*" matches every hostname; TTL 0 so the phone never caches the answer.
+  dnsServer.setTTL(0);
+  dnsServer.start(53, "*", IPAddress(192, 168, 1, 1));
+  dnsRunning = true;
+}
+
+void dnsStop()
+{
+  if (!dnsRunning)
+  {
+    return;
+  }
+  dnsServer.stop();
+  dnsRunning = false;
+}
+
+void dnsProcess()
+{
+  if (dnsRunning)
+  {
+    dnsServer.processNextRequest();
+  }
+}
 
 static void softAPStart()
 {
@@ -38,6 +84,8 @@ void setupWiFi()
 
   MDNS.begin("openhaldex");           // openhaldex.local
   MDNS.addService("http", "tcp", 80); // advertise HTTP
+
+  dnsStart(); // answer phone connectivity-check DNS so it keeps cellular alive
 }
 
 void disconnectWifi()

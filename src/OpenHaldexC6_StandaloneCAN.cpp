@@ -1927,14 +1927,20 @@ void Gen5_0CQ_frames10()
   frame.data[3] = 0x00;           // ESP_14 reserved/status (doesn't affect, sometimes 0xC0, sometimes 0x00)
   appliedTorque = get_lock_target_adjusted_value(0xFE, false);
 
-  frame.data[5] = appliedTorque; // BR_Vorg_Quer_Max (Maximum predefined limit of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.)
-  frame.data[7] = appliedTorque; // BR_Vorg_Allrad_Max (Maximum specified limit of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.)
+  // BR_Vorg_*_Max is the operating-RANGE ceiling (permission envelope), not a
+  // torque request. Decoupled from the CF attenuation so full command declares
+  // full range (see esp14_range_max in the header); gated by the same lock-active
+  // signal appliedTorque encodes. Byte-identical to the CAN-passthrough edit.
+  const uint8_t rangeMax = esp14_range_max((uint8_t)lock_target, appliedTorque > 0);
+  frame.data[5] = rangeMax; // BR_Vorg_Quer_Max   - full range at full command
+  frame.data[7] = rangeMax; // BR_Vorg_Allrad_Max - full range at full command
 
   // BR_Vorg_*_Min launch-PWM floor. Shared esp14_min_floor helper (see header)
   // keeps this byte-identical to the CAN-passthrough edit (getLockData /
-  // editFramesGen5_0CQ) so standalone and inline never drift.
+  // editFramesGen5_0CQ) so standalone and inline never drift. Now clamps below the
+  // wider rangeMax, so the launch floor gains real headroom.
   {
-    const uint8_t minFloor = esp14_min_floor(esp14MinFloorPct, appliedTorque);
+    const uint8_t minFloor = esp14_min_floor(esp14MinFloorPct, rangeMax);
     frame.data[4] = minFloor; // BR_Vorg_Quer_Min   (100% = 2000 Nm)
     frame.data[6] = minFloor; // BR_Vorg_Allrad_Min (100% = 2000 Nm)
   }
