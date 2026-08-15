@@ -59,11 +59,59 @@ void test_out_of_range_falls_back(void)
                             "an erased-NVS 0xFF byte must fall back to MODE_FWD");
 }
 
+// ---- a generation change must never alter the stored drive mode --------------
+// Pins last_mode_after_generation_change(), the seam settingsIncoming() routes
+// lastMode through when the haldexGeneration is set. This is the regression at
+// its source: reintroducing `lastMode = generation` means editing this seam to
+// return `generation`, which reddens these assertions instead of shipping
+// silently. Every valid generation number is checked against every stored mode.
+
+void test_generation_change_preserves_mode(void)
+{
+  const int generations[] = {1, 2, 4, 41, 50, 51};
+  for (uint8_t mode = 0; mode <= 5; mode++)
+  {
+    for (unsigned g = 0; g < sizeof(generations) / sizeof(generations[0]); g++)
+    {
+      TEST_ASSERT_EQUAL_UINT8_MESSAGE(
+          mode, last_mode_after_generation_change(mode, generations[g]),
+          "setting the haldex generation must leave the stored drive mode unchanged");
+    }
+  }
+}
+
+// ---- the boot mapping composed with the write-back self-heals a corrupt byte -
+// EEP.cpp does `state.mode = mode_from_last_mode(lastMode); lastMode = state.mode;`.
+// Compose the same two steps here: a corrupt stored byte (a generation number)
+// must both boot into a valid mode AND be normalized to a valid 0-5 value that
+// the next writeEEP persists - so the corruption cannot leak through
+// settingsOutgoing (data["mode"] = lastMode) or the standalone mode-0 cast.
+
+void test_corrupt_byte_normalizes_on_boot(void)
+{
+  const uint8_t corrupt[] = {41, 50, 51, 6, 255};
+  for (unsigned i = 0; i < sizeof(corrupt) / sizeof(corrupt[0]); i++)
+  {
+    uint8_t stored = corrupt[i];
+    openhaldex_mode_t booted = mode_from_last_mode(stored); // boot decode
+    stored = (uint8_t)booted;                               // write-back
+    TEST_ASSERT_EQUAL_MESSAGE(MODE_FWD, booted,
+                              "a corrupt stored byte must boot into MODE_FWD");
+    TEST_ASSERT_TRUE_MESSAGE(stored <= 5,
+                             "the written-back lastMode must be a valid 0-5 value");
+    // And the normalized byte must round-trip to the same mode it booted into.
+    TEST_ASSERT_EQUAL_MESSAGE(booted, mode_from_last_mode(stored),
+                              "normalized byte must round-trip to the same mode");
+  }
+}
+
 int main(int, char **)
 {
   UNITY_BEGIN();
   RUN_TEST(test_valid_modes_map_exactly);
   RUN_TEST(test_generation_values_fall_back);
   RUN_TEST(test_out_of_range_falls_back);
+  RUN_TEST(test_generation_change_preserves_mode);
+  RUN_TEST(test_corrupt_byte_normalizes_on_boot);
   return UNITY_END();
 }

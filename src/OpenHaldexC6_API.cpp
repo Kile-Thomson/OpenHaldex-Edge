@@ -451,11 +451,12 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         if (generation == 1 || generation == 2 || generation == 4 || generation == 50 || generation == 51 || generation == 41)
         {
             haldexGeneration = (uint8_t)generation;
-            // Do NOT touch lastMode here. haldexGeneration values (1/2/4/41/50/51)
-            // are a different namespace from the drive-mode enum (0-5). Writing a
-            // generation number into lastMode corrupts the persisted drive mode:
-            // on reboot the load switch sees e.g. 41, falls through to default, and
-            // the car boots in MODE_FWD instead of the mode the user selected.
+            // lastMode is a different namespace from generation (drive mode 0-5
+            // vs generation 1/2/4/41/50/51). Route the stored mode through the
+            // host-tested seam, which returns it unchanged - so a generation
+            // change provably never corrupts the persisted drive mode, and
+            // reintroducing the old `lastMode = generation` bug reddens a test.
+            lastMode = last_mode_after_generation_change(lastMode, generation);
         }
     }
 

@@ -1625,6 +1625,18 @@ openhaldex_mode_t mode_from_last_mode(uint8_t last_mode)
   }
 }
 
+// Setting the haldex generation must leave the stored drive mode untouched -
+// they are separate namespaces (generation 1/2/4/41/50/51 vs mode 0..5). The
+// generation argument is intentionally unused: it exists so the seam documents
+// exactly which write path this guards, and so a test can pass generation values
+// and assert the returned mode is unchanged. Reintroducing the old
+// `lastMode = generation` bug means editing this return, which reddens the test.
+uint8_t last_mode_after_generation_change(uint8_t current_last_mode, int generation)
+{
+  (void)generation;
+  return current_last_mode;
+}
+
 // Learn-table lookup. Returns the smallest index i in 0..100 with table[i] >=
 // target - the lowest correction factor whose learned engagement meets the
 // requested lock target, matching the previous inline loop. When NO learned

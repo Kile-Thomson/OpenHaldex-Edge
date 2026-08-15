@@ -207,6 +207,14 @@ void readEEP() // function to read stored preferences into runtime variables
   // out-of-range stored byte falls back to MODE_FWD.
   state.mode = mode_from_last_mode(lastMode);
 
+  // Write the normalized value back into lastMode so the raw stored byte can
+  // never leak downstream: settingsOutgoing() reports data["mode"] = lastMode,
+  // and the standalone mode-0 path casts (openhaldex_mode_t)lastMode directly.
+  // This also self-heals a device already carrying a corrupt byte (e.g. a
+  // generation number 41/50/51 written by the old firmware) - the next writeEEP
+  // persists the sane 0-5 value, so the corruption is cleared on first boot.
+  lastMode = (uint8_t)state.mode;
+
 #if detailedDebugEEP
   DEBUG("EEPROM initialised with...");                                                           // debug: print loaded prefs
   DEBUG("    Broadcast OpenHaldex over CAN: %s", broadcastOpenHaldexOverCAN ? "true" : "false"); // debug broadcast

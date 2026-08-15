@@ -288,6 +288,15 @@ EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data);
 // mistaken for a valid drive mode. Pure logic, no Arduino/NVS symbols.
 openhaldex_mode_t mode_from_last_mode(uint8_t last_mode);
 
+// last_mode_after_generation_change: the drive mode that must remain stored when
+// the haldex generation is changed in Settings. Generation (1/2/4/41/50/51) and
+// drive mode (0..5) are separate namespaces; setting the generation must NOT
+// touch the stored mode. This seam returns current_last_mode unchanged, and
+// settingsIncoming() assigns lastMode through it - so re-introducing the old
+// `lastMode = generation` corruption breaks a host test rather than shipping
+// silently. Pure logic, no Arduino/NVS symbols.
+uint8_t last_mode_after_generation_change(uint8_t current_last_mode, int generation);
+
 // HTTP request-body buffer ownership, extracted from parseJSON so the
 // malloc-owned single-block contract that ESPAsyncWebServer frees with plain
 // free() can be host-tested. Both reference only <cstdlib>/<cstring>, no
