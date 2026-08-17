@@ -6,6 +6,7 @@
 #include <OpenHaldexC6_StandaloneCAN.h>
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_UDS.h>
+#include <cstring> // memcpy - learn-table restore on cancelled/aborted sweep
 
 void haldexLearnTask(void *arg)
 {
@@ -55,11 +56,22 @@ void haldexLearnTask(void *arg)
     haldexLearnTable[cf] = prevRecorded;
   }
 
-  if (speedAborted)
+  if (speedAborted || haldexLearnCancel)
   {
-    haldexLearnStep = 103; // 103 = aborted: vehicle started moving (table stays invalid)
+    // Interrupted sweep: restore the pre-learn calibration snapshotted by
+    // startHaldexLearn, so a cancel at CF=5 doesn't destroy a good table and
+    // silently revert the user to the default CF formula (and V3 packing).
+    // Published atomically with the valid flag, same as the success path.
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    memcpy(haldexLearnTable, haldexLearnTableBackup, sizeof(haldexLearnTable));
+    haldexLearnTableValid = haldexLearnTableBackupValid;
+    xSemaphoreGive(stateMutex);
+    if (speedAborted)
+    {
+      haldexLearnStep = 103; // 103 = aborted: vehicle started moving (previous table restored)
+    }
   }
-  else if (!haldexLearnCancel)
+  else
   {
     // Publish the finished table and the valid flag together under the lock so
     // the hot path never sees a valid flag pointing at a half-scanned table

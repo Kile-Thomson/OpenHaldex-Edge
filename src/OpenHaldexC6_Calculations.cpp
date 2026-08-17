@@ -551,6 +551,13 @@ void startHaldexLearn()
     return; // already running
   }
 
+  // Snapshot the current calibration before wiping, so a cancelled or
+  // speed-aborted sweep can restore it instead of leaving the user with no
+  // table at all (which also silently flipped BPK packing back to V3 for
+  // anyone relying on learn_table_valid).
+  memcpy(haldexLearnTableBackup, haldexLearnTable, sizeof(haldexLearnTableBackup));
+  haldexLearnTableBackupValid = haldexLearnTableValid;
+
   memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
   haldexLearnTableValid = false; // wiped table is no longer valid until the task republishes
   haldexLearnCancel = false;

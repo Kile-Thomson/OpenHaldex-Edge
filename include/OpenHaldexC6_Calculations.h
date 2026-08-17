@@ -5,6 +5,9 @@
 // Learn Haldex table
 extern uint8_t haldexLearnTable[101];
 extern bool haldexLearnTableValid;
+// Pre-sweep snapshot, restored on learn cancel/abort (see globals.cpp).
+extern uint8_t haldexLearnTableBackup[101];
+extern bool haldexLearnTableBackupValid;
 extern volatile bool haldexLearnActive;
 extern volatile bool haldexLearnCancel;
 extern volatile uint8_t haldexLearnStep;
