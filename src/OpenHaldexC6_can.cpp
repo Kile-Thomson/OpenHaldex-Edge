@@ -358,17 +358,24 @@ void parseCAN_chs(void *arg)
 
       // Gen41 Haldex-originated Bus0 heartbeats - capture presence & timestamp.
       // Done before any mode gating so the API can show liveness even in standalone.
+      // Flag + timestamp are published together under stateMutex so the expiry
+      // check in updateTriggers can never observe a fresh flag with a stale
+      // timestamp (or vice versa) and clear a heartbeat that just arrived.
       if (haldexGeneration == 41)
       {
         if (rx_message_chs.identifier == HALDEX_GEN41_SEC_AXLE_GENINFO_ID)
         {
+          xSemaphoreTake(stateMutex, portMAX_DELAY);
           received_haldex_alive_bus0 = true;
           received_haldex_alive_bus0_ms = millis();
+          xSemaphoreGive(stateMutex);
         }
         else if (rx_message_chs.identifier == HALDEX_GEN41_DRIVETRAIN_STATE_ID)
         {
+          xSemaphoreTake(stateMutex, portMAX_DELAY);
           received_drivetrain_state_ok = true;
           received_drivetrain_state_ms = millis();
+          xSemaphoreGive(stateMutex);
         }
       }
 

@@ -262,6 +262,92 @@ void test_no_table_toggle_off_stays_v3(void)
   TEST_ASSERT_FALSE_MESSAGE(motor11_use_bpk_packing(false, false, false), "no table + toggle off -> V3");
 }
 
+// --- learn_finalize: interrupted sweeps restore the pre-learn calibration ----
+// Regression for the cancel-wipes-calibration bug: startHaldexLearn wipes the
+// table before the sweep, so a cancel (or the speed interlock firing) used to
+// leave no table at all - silently reverting the user to the default CF formula
+// and flipping Motor_11 packing back to V3. learn_finalize is the seam the task
+// calls under stateMutex; these tests pin both restore paths and both backup
+// states, plus the completed-sweep validation it also owns.
+
+extern uint8_t learn_finalize(uint8_t *table, bool *valid,
+                              const uint8_t *backup, bool backup_valid,
+                              bool cancelled, bool speed_aborted, uint8_t current_step);
+
+void test_cancel_restores_valid_backup(void)
+{
+  // A good calibration existed before the sweep; cancel at CF=5 must bring it
+  // back exactly, valid flag included, and leave the step untouched.
+  uint8_t backup[101];
+  for (int i = 0; i <= 100; i++) { backup[i] = (uint8_t)i; }
+  uint8_t table[101] = {0}; // wiped by startHaldexLearn, partially rescanned
+  table[0] = 1; table[1] = 2;
+  bool valid = false;
+
+  uint8_t step = learn_finalize(table, &valid, backup, true, true, false, 5);
+
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(5, step, "plain cancel keeps the current step");
+  TEST_ASSERT_TRUE_MESSAGE(valid, "valid backup restores the valid flag");
+  TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(backup, table, 101, "cancel restores the snapshot verbatim");
+}
+
+void test_cancel_with_no_prior_table_stays_invalid(void)
+{
+  // First-ever learn cancelled: the backup is the empty pre-learn state, so the
+  // restore must leave the table invalid - not resurrect garbage as valid.
+  uint8_t backup[101] = {0};
+  uint8_t table[101] = {0};
+  table[3] = 40; // partial sweep data that must be discarded
+  bool valid = true; // poisoned on purpose; finalize must overwrite it
+
+  learn_finalize(table, &valid, backup, false, true, false, 3);
+
+  TEST_ASSERT_FALSE_MESSAGE(valid, "invalid backup restores invalid");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, table[3], "partial sweep data discarded");
+}
+
+void test_speed_abort_restores_and_reports_103(void)
+{
+  uint8_t backup[101];
+  for (int i = 0; i <= 100; i++) { backup[i] = (uint8_t)(i / 2); }
+  uint8_t table[101] = {0};
+  bool valid = false;
+
+  uint8_t step = learn_finalize(table, &valid, backup, true, false, true, 42);
+
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(103, step, "speed abort reports step 103");
+  TEST_ASSERT_TRUE_MESSAGE(valid, "speed abort restores the valid flag");
+  TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(backup, table, 101, "speed abort restores the snapshot");
+}
+
+void test_completed_sweep_with_data_is_valid_101(void)
+{
+  uint8_t backup[101] = {0};
+  uint8_t table[101] = {0};
+  for (int i = 0; i <= 100; i++) { table[i] = (uint8_t)i; }
+  bool valid = false;
+
+  uint8_t step = learn_finalize(table, &valid, backup, false, false, false, 100);
+
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(101, step, "completed sweep reports 101");
+  TEST_ASSERT_TRUE_MESSAGE(valid, "non-zero table marks valid");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(50, table[50], "completed sweep keeps the scanned table");
+}
+
+void test_completed_all_zero_sweep_is_invalid_102(void)
+{
+  // A sweep that recorded nothing (e.g. Haldex feedback dead) must not replace
+  // the calibration with a valid all-zero table.
+  uint8_t backup[101] = {0};
+  uint8_t table[101] = {0};
+  bool valid = true; // poisoned; finalize must clear it
+
+  uint8_t step = learn_finalize(table, &valid, backup, false, false, false, 100);
+
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(102, step, "empty completed sweep reports 102");
+  TEST_ASSERT_FALSE_MESSAGE(valid, "all-zero completed sweep stays invalid");
+}
+
 int main(int, char **)
 {
   UNITY_BEGIN();
@@ -295,6 +381,12 @@ int main(int, char **)
   RUN_TEST(test_learn_and_toggle_both_on_still_bpk);
   RUN_TEST(test_valid_table_forces_bpk_with_toggle_off);
   RUN_TEST(test_no_table_toggle_off_stays_v3);
+
+  RUN_TEST(test_cancel_restores_valid_backup);
+  RUN_TEST(test_cancel_with_no_prior_table_stays_invalid);
+  RUN_TEST(test_speed_abort_restores_and_reports_103);
+  RUN_TEST(test_completed_sweep_with_data_is_valid_101);
+  RUN_TEST(test_completed_all_zero_sweep_is_invalid_102);
 
   return UNITY_END();
 }

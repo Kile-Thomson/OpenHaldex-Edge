@@ -103,6 +103,17 @@ uint8_t lookup_learn_correction_factor(const uint8_t* table, uint8_t target);
 // host-testable (no Arduino/TWAI symbols).
 uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_recorded);
 
+// Learn-sweep finalization seam, called by haldexLearnTask under stateMutex.
+// Interrupted sweep (cancel or speed abort): restores the pre-sweep snapshot
+// into table/valid and returns 103 for a speed abort or current_step for a
+// plain cancel. Completed sweep: publishes valid = any non-zero entry and
+// returns 101 (complete) or 102 (complete but no data). Pure apart from the
+// caller-supplied buffers, so the native tests pin the shipped restore logic
+// rather than a mirrored copy (same seam pattern as lpCanActive).
+uint8_t learn_finalize(uint8_t* table, bool* valid,
+                       const uint8_t* backup, bool backup_valid,
+                       bool cancelled, bool speed_aborted, uint8_t current_step);
+
 // MQB Motor_11 (0x0A7) packing selector. Returns true when the frame must use
 // the DBC-correct BPK packing rather than the empirical V3 packing. V3 pins the
 // primary torque fields (MO_Mom_Soll_Roh/Ist/gefiltert) at full 0xFA regardless

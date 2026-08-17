@@ -6,7 +6,6 @@
 #include <OpenHaldexC6_StandaloneCAN.h>
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_UDS.h>
-#include <cstring> // memcpy - learn-table restore on cancelled/aborted sweep
 
 void haldexLearnTask(void *arg)
 {
@@ -56,34 +55,17 @@ void haldexLearnTask(void *arg)
     haldexLearnTable[cf] = prevRecorded;
   }
 
-  if (speedAborted || haldexLearnCancel)
+  // Publish the outcome (restore on cancel/speed-abort, validate on complete)
+  // together with the valid flag under the lock so the hot path never sees a
+  // valid flag pointing at a half-scanned table. The decision itself lives in
+  // learn_finalize (Calculations.cpp), a pure seam pinned by test_learn.
   {
-    // Interrupted sweep: restore the pre-learn calibration snapshotted by
-    // startHaldexLearn, so a cancel at CF=5 doesn't destroy a good table and
-    // silently revert the user to the default CF formula (and V3 packing).
-    // Published atomically with the valid flag, same as the success path.
+    bool tableValid;
     xSemaphoreTake(stateMutex, portMAX_DELAY);
-    memcpy(haldexLearnTable, haldexLearnTableBackup, sizeof(haldexLearnTable));
-    haldexLearnTableValid = haldexLearnTableBackupValid;
-    xSemaphoreGive(stateMutex);
-    if (speedAborted)
-    {
-      haldexLearnStep = 103; // 103 = aborted: vehicle started moving (previous table restored)
-    }
-  }
-  else
-  {
-    // Publish the finished table and the valid flag together under the lock so
-    // the hot path never sees a valid flag pointing at a half-scanned table
-    xSemaphoreTake(stateMutex, portMAX_DELAY);
-    // only mark valid if at least one non-zero engagement was recorded
-    bool anyNonZero = false;
-    for (uint8_t i = 0; i <= 100; i++)
-    {
-      if (haldexLearnTable[i] > 0) { anyNonZero = true; break; }
-    }
-    haldexLearnTableValid = anyNonZero;
-    haldexLearnStep = anyNonZero ? 101 : 102; // 101 = complete OK, 102 = complete but no data
+    haldexLearnStep = learn_finalize(haldexLearnTable, &tableValid,
+                                     haldexLearnTableBackup, haldexLearnTableBackupValid,
+                                     haldexLearnCancel, speedAborted, haldexLearnStep);
+    haldexLearnTableValid = tableValid;
     xSemaphoreGive(stateMutex);
   }
 

@@ -1716,6 +1716,33 @@ uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_rec
   return (median < prev_recorded) ? prev_recorded : median;
 }
 
+// Learn-sweep finalization. See the header for the contract; kept free of
+// Arduino/FreeRTOS symbols so the native tests exercise this exact code.
+uint8_t learn_finalize(uint8_t* table, bool* valid,
+                       const uint8_t* backup, bool backup_valid,
+                       bool cancelled, bool speed_aborted, uint8_t current_step)
+{
+  if (cancelled || speed_aborted)
+  {
+    // Interrupted sweep: restore the pre-learn calibration snapshotted by
+    // startHaldexLearn, so a cancel at CF=5 doesn't destroy a good table and
+    // silently revert the user to the default CF formula (and V3 packing).
+    memcpy(table, backup, 101);
+    *valid = backup_valid;
+    return speed_aborted ? 103 : current_step; // 103 = aborted: vehicle moving
+  }
+
+  // Completed sweep: only mark valid if at least one non-zero engagement was
+  // recorded.
+  bool anyNonZero = false;
+  for (uint8_t i = 0; i <= 100; i++)
+  {
+    if (table[i] > 0) { anyNonZero = true; break; }
+  }
+  *valid = anyNonZero;
+  return anyNonZero ? 101 : 102; // 101 = complete OK, 102 = complete but no data
+}
+
 // Decide whether the MQB Motor_11 (0x0A7) frame should use the DBC-correct BPK
 // packing instead of the empirical V3 packing. See the header for the full
 // rationale: V3 packing pins three torque fields at full (0xFA) regardless of
