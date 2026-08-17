@@ -203,30 +203,17 @@ void readEEP() // function to read stored preferences into runtime variables
 
   // Map the (now-populated) lastMode to the runtime enum for every path, so a
   // freshly seeded or migrated device boots into a coherent mode just like a load.
-  switch (lastMode) // map stored lastMode to runtime enum
-  {
-  case 0:
-    state.mode = MODE_STOCK;  // set MODE_STOCK
-    break;
-  case 1:
-    state.mode = MODE_FWD;    // set MODE_FWD
-    break;
-  case 2:
-    state.mode = MODE_5050;   // set MODE_5050
-    break;
-  case 3:
-    state.mode = MODE_6040;   // set MODE_6040
-    break;
-  case 4:
-    state.mode = MODE_7525;   // set MODE_7525
-    break;
-  case 5:
-    state.mode = MODE_EXPERT; // set MODE_EXPERT
-    break;
-  default:                    // unrecognized value
-    state.mode = MODE_FWD;    // default to MODE_FWD
-    break;
-  }
+  // The mapping is a pure seam (mode_from_last_mode) so it is host-tested; an
+  // out-of-range stored byte falls back to MODE_FWD.
+  state.mode = mode_from_last_mode(lastMode);
+
+  // Write the normalized value back into lastMode so the raw stored byte can
+  // never leak downstream: settingsOutgoing() reports data["mode"] = lastMode,
+  // and the standalone mode-0 path casts (openhaldex_mode_t)lastMode directly.
+  // This also self-heals a device already carrying a corrupt byte (e.g. a
+  // generation number 41/50/51 written by the old firmware) - the next writeEEP
+  // persists the sane 0-5 value, so the corruption is cleared on first boot.
+  lastMode = (uint8_t)state.mode;
 
 #if detailedDebugEEP
   DEBUG("EEPROM initialised with...");                                                           // debug: print loaded prefs

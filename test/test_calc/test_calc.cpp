@@ -25,6 +25,7 @@
 extern float get_lock_target_adjustment();
 extern uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert);
 extern uint8_t esp14_min_floor(uint8_t floor_pct, uint8_t applied_torque);
+extern uint8_t esp14_range_max(uint8_t frac_pct, bool lock_active);
 
 // ---------------------------------------------------------------------------
 // Deterministic global reset. Drives every input referenced by the functions
@@ -652,6 +653,61 @@ void test_esp14_floor_gates_to_zero_fwd_not_commanded(void)
 }
 
 // ===========================================================================
+// esp14_range_max() - ESP_14 BR_Vorg_*_Max operating-range ceiling. Pure given
+// its inputs (frac_pct, lock_active); reads no globals, so no fixture needed.
+// The regression these pin: full command must declare the FULL 0xFE range,
+// decoupled from the correction_factor that used to collapse it to ~60% and cap
+// PWM below stock.
+// ===========================================================================
+
+void test_esp14_range_full_command_declares_full_range(void)
+{
+  // The launch-authority lever: 100% commanded lock -> full 0xFE range, NOT the
+  // CF-attenuated ~0x99 (60%) the old path produced. This is the whole fix.
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xFE, esp14_range_max(100, true),
+                                  "full command declares full range");
+}
+
+void test_esp14_range_over_100_still_full(void)
+{
+  // Defensive: a frac above 100 (shouldn't happen, lock_target is constrained)
+  // still saturates at full range rather than overflowing the scale.
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xFE, esp14_range_max(200, true),
+                                  "over-100 frac saturates at full range");
+}
+
+void test_esp14_range_partial_command_scales_raw(void)
+{
+  // Partial lock still declares a partial range (keeps the sane part of the
+  // original intent) but scaled by the RAW fraction, not the CF. 30% -> 0xFE*30/100
+  // = 76 (0x4C). Crucially higher than the old CF path would give at 30% target.
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(76u, esp14_range_max(30, true),
+                                  "30% command declares ~30% raw range");
+}
+
+void test_esp14_range_half_command(void)
+{
+  // 50% -> 0xFE*50/100 = 127 (0x7F).
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x7F, esp14_range_max(50, true),
+                                  "50% command declares half range");
+}
+
+void test_esp14_range_gates_to_zero_when_lock_inactive(void)
+{
+  // lock_active false (FWD/off-throttle/stock passthrough) -> declare NO range,
+  // regardless of frac. Prevents declaring AWD authority when lock isn't asked for.
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, esp14_range_max(100, false),
+                                  "no range declared when lock inactive");
+}
+
+void test_esp14_range_zero_command_is_zero(void)
+{
+  // 0% commanded -> 0 range even when lock_active (nothing to declare).
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, esp14_range_max(0, true),
+                                  "zero command declares zero range");
+}
+
+// ===========================================================================
 
 int main(int, char **)
 {
@@ -719,6 +775,13 @@ int main(int, char **)
   RUN_TEST(test_esp14_floor_clamps_to_zero_when_max_is_zero);
   RUN_TEST(test_esp14_floor_gates_to_zero_off_throttle);
   RUN_TEST(test_esp14_floor_gates_to_zero_fwd_not_commanded);
+
+  RUN_TEST(test_esp14_range_full_command_declares_full_range);
+  RUN_TEST(test_esp14_range_over_100_still_full);
+  RUN_TEST(test_esp14_range_partial_command_scales_raw);
+  RUN_TEST(test_esp14_range_half_command);
+  RUN_TEST(test_esp14_range_gates_to_zero_when_lock_inactive);
+  RUN_TEST(test_esp14_range_zero_command_is_zero);
 
   return UNITY_END();
 }

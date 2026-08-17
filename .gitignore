@@ -9,6 +9,7 @@
 .gsd-id
 .bg-shell/
 .mcp.json
+.claude/
 
 # Editor
 .vscode/.browse.c_cpp.db*

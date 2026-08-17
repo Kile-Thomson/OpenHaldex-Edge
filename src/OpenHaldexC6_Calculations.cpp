@@ -1124,15 +1124,24 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
 
       appliedTorque = get_lock_target_adjusted_value(0xFE, false);
 
-      rx_message_chs.data[5] = appliedTorque; // BR_Vorg_Quer_Max - lock-modulated (massive effect, ported from standalone)
-      rx_message_chs.data[7] = appliedTorque; // BR_Vorg_Allrad_Max - lock-modulated (massive effect)
-
-      // BR_Vorg_*_Min: OEM ESP raises this floor under launch to force the Haldex
-      // to hold at least X torque; upstream pinned it at 0 (Haldex free to settle
-      // to its own minimum PWM ~60%). Shared esp14_min_floor helper (see header)
-      // keeps this byte-identical to the standalone frame path so they can't drift.
+      // BR_Vorg_*_Max is the operating-RANGE ceiling (a permission envelope), not
+      // a torque request. Feeding it the CF-attenuated appliedTorque collapsed the
+      // declared ceiling to ~60% and capped PWM below stock's ~80%. esp14_range_max
+      // declares the full range scaled only by the RAW commanded lock fraction
+      // (lock_target), gated by the same lock-active signal appliedTorque already
+      // encodes (appliedTorque > 0 -> lock commanded). See header. Wrapped in a
+      // block so its initializer doesn't cross the switch's other case labels.
       {
-        const uint8_t minFloor = esp14_min_floor(esp14MinFloorPct, appliedTorque);
+        const uint8_t rangeMax = esp14_range_max((uint8_t)lock_target, appliedTorque > 0);
+        rx_message_chs.data[5] = rangeMax; // BR_Vorg_Quer_Max   - full range at full command
+        rx_message_chs.data[7] = rangeMax; // BR_Vorg_Allrad_Max - full range at full command
+
+        // BR_Vorg_*_Min: OEM ESP raises this floor under launch to force the Haldex
+        // to hold at least X torque; upstream pinned it at 0 (Haldex free to settle
+        // to its own minimum PWM ~60%). Shared esp14_min_floor helper (see header)
+        // keeps this byte-identical to the standalone frame path so they can't drift.
+        // It now clamps below the wider rangeMax, so it also gains real headroom.
+        const uint8_t minFloor = esp14_min_floor(esp14MinFloorPct, rangeMax);
         rx_message_chs.data[4] = minFloor; // BR_Vorg_Quer_Min   (100% = 2000 Nm)
         rx_message_chs.data[6] = minFloor; // BR_Vorg_Allrad_Min (100% = 2000 Nm)
       }
@@ -1591,6 +1600,43 @@ EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data)
   return EEP_SEED_DEFAULTS;
 }
 
+// Boot-time mapping from the persisted lastMode byte to the runtime drive mode.
+// Valid stored values are 0..5; anything else (e.g. a haldexGeneration number
+// like 41/50/51 that a prior bug wrote into lastMode) is not a real mode and
+// falls back to MODE_FWD, matching the original boot switch's default arm.
+openhaldex_mode_t mode_from_last_mode(uint8_t last_mode)
+{
+  switch (last_mode)
+  {
+  case 0:
+    return MODE_STOCK;
+  case 1:
+    return MODE_FWD;
+  case 2:
+    return MODE_5050;
+  case 3:
+    return MODE_6040;
+  case 4:
+    return MODE_7525;
+  case 5:
+    return MODE_EXPERT;
+  default:
+    return MODE_FWD;
+  }
+}
+
+// Setting the haldex generation must leave the stored drive mode untouched -
+// they are separate namespaces (generation 1/2/4/41/50/51 vs mode 0..5). The
+// generation argument is intentionally unused: it exists so the seam documents
+// exactly which write path this guards, and so a test can pass generation values
+// and assert the returned mode is unchanged. Reintroducing the old
+// `lastMode = generation` bug means editing this return, which reddens the test.
+uint8_t last_mode_after_generation_change(uint8_t current_last_mode, int generation)
+{
+  (void)generation;
+  return current_last_mode;
+}
+
 // Learn-table lookup. Returns the smallest index i in 0..100 with table[i] >=
 // target - the lowest correction factor whose learned engagement meets the
 // requested lock target, matching the previous inline loop. When NO learned
@@ -1700,6 +1746,27 @@ uint8_t esp14_min_floor(uint8_t floor_pct, uint8_t applied_torque)
     minFloor = (applied_torque > 0) ? (uint8_t)(applied_torque - 1) : 0;
   }
   return minFloor;
+}
+
+// See OpenHaldexC6_Calculations.h for the full rationale. The ESP_14 Max byte is
+// a PERMISSION envelope (how much operating range the Haldex may use), NOT a
+// torque request, so it must not be routed through the correction_factor that
+// translates lock_target into an engagement byte - that collapsed the ceiling to
+// ~60% and capped PWM. Declare the full 0xFE range scaled only by the RAW
+// commanded lock fraction: full command -> full range, partial command -> partial
+// range. Gated to 0 by the caller-supplied lock_active. (uint16 product 0xFE*100
+// = 25400 stays clear of overflow.)
+uint8_t esp14_range_max(uint8_t frac_pct, bool lock_active)
+{
+  if (!lock_active)
+  {
+    return 0;
+  }
+  if (frac_pct >= 100)
+  {
+    return 0xFE; // full command -> full declared range (the launch-authority lever)
+  }
+  return (uint8_t)((uint16_t)0xFE * frac_pct / 100);
 }
 
 // Slew one BPK torque field one cycle toward `target`, moving at most `step` Nm.

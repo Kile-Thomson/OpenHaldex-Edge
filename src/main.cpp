@@ -117,7 +117,10 @@ void loop()
 #endif
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
+    dnsStop(); // no AP -> no captive-DNS responder
   }
+
+  dnsProcess(); // answer any pending phone connectivity-check DNS query
 
   if (rebootWiFi)
   {
@@ -158,6 +161,9 @@ void loop()
     MDNS.end();
     MDNS.begin("openhaldex"); // restart openhaldex.local
     MDNS.addService("http", "tcp", 80);
+
+    dnsStop();  // clear any responder bound to the old AP interface
+    dnsStart(); // rebind captive-DNS to the fresh AP
 
     rebootWiFi = false;
   }

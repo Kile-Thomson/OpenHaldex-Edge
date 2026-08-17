@@ -14,16 +14,34 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Fixed
 
-- **Phone keeps its cellular data while connected to the device.** When a phone
-  joins the device's WiFi, its OS fires an internet-check probe (Android
-  `generate_204`, Apple `hotspot-detect`, Windows NCSI, Firefox `canonical`). The
-  AP used to answer those with the first-run setup redirect, which reads as a
-  captive portal ("Sign in to WiFi") and can push the phone off cellular - so
-  messages, calls, and downloading an OTA image would stall while connected. The
-  AP now answers those probes with a bare 404, which the OS reads as "no
-  internet, not a captive portal", so the phone keeps its own 4G/5G alive and
-  only sends device-UI traffic over the AP. Firmware-only; the probe set lives in
-  a host-tested `is_captive_probe()` seam with regression tests.
+- **Drive mode no longer resets on reboot.** Changing the haldex generation in
+  Settings wrote the generation number (1/2/4/41/50/51) into the stored drive
+  mode, which is a separate 0-5 value. On the next boot that out-of-range value
+  didn't match any mode and fell back to FWD, so the device forgot the mode you
+  had selected. Setting the generation no longer touches the stored mode. The
+  boot mapping from stored mode to runtime mode is now a host-tested
+  `mode_from_last_mode()` seam with regression tests covering the generation
+  values that used to corrupt it. Inherited from the upstream V8.00.2 import.
+
+- **ESP_14 launch authority: full command now declares the full operating
+  range.** The standalone Gen 5.0 CQ path fed the correction-factor-attenuated
+  torque into `BR_Vorg_*_Max`, which is the operating-range ceiling, not a
+  torque request - collapsing the declared range to ~60% and capping PWM below
+  stock at full command. Range-max is now decoupled from the CF via a host-tested
+  `esp14_range_max()` seam (byte-identical to the CAN-passthrough edit), so full
+  command declares the full 0xFE range and the launch floor gains real headroom.
+
+### In progress (not yet confirmed on-device)
+
+- **Phone cellular-data while connected to the device.** When a phone joins the
+  device's WiFi, its OS fires an internet-check probe (Android `generate_204`,
+  Apple `hotspot-detect`, Windows NCSI, Firefox `canonical`). The intent is for
+  the AP to answer those so the OS concludes "no internet, not a captive portal"
+  and keeps its own 4G/5G alive. This build adds a catch-all DNS responder plus a
+  bare-404 probe handler toward that, but on-device testing shows the phone still
+  drops cellular - the fix is not yet working and the approach is under review.
+  The `is_captive_probe()` probe set remains host-tested. Do not rely on this
+  behaviour yet.
 
 ---
 
