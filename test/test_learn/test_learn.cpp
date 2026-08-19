@@ -348,6 +348,25 @@ void test_completed_all_zero_sweep_is_invalid_102(void)
   TEST_ASSERT_FALSE_MESSAGE(valid, "all-zero completed sweep stays invalid");
 }
 
+void test_task_create_failure_restores_backup(void)
+{
+  // startHaldexLearn wipes the table BEFORE spawning the sweep task. If
+  // xTaskCreate fails, nothing will ever republish, so it rolls back through
+  // the same finalize path as a cancel (cancelled=true, step untouched) and
+  // clears haldexLearnActive itself. Pin that rollback: the wiped table and
+  // valid flag must return exactly to the pre-learn snapshot.
+  uint8_t backup[101];
+  for (int i = 0; i <= 100; i++) { backup[i] = (uint8_t)(100 - i); }
+  uint8_t table[101] = {0}; // already wiped, no CF scanned yet (step 0)
+  bool valid = false;       // cleared by the wipe
+
+  uint8_t step = learn_finalize(table, &valid, backup, true, true, false, 0);
+
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, step, "create-failure rollback keeps step 0");
+  TEST_ASSERT_TRUE_MESSAGE(valid, "create-failure rollback restores the valid flag");
+  TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(backup, table, 101, "create-failure rollback restores the snapshot");
+}
+
 int main(int, char **)
 {
   UNITY_BEGIN();
@@ -387,6 +406,7 @@ int main(int, char **)
   RUN_TEST(test_speed_abort_restores_and_reports_103);
   RUN_TEST(test_completed_sweep_with_data_is_valid_101);
   RUN_TEST(test_completed_all_zero_sweep_is_invalid_102);
+  RUN_TEST(test_task_create_failure_restores_backup);
 
   return UNITY_END();
 }

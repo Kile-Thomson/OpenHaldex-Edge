@@ -136,6 +136,13 @@ static void statusOutgoing(AsyncWebServerRequest *request)
     const uint16_t steerGainStartSnapshot = steeringGainStartDeg;
     const uint16_t steerGainFullSnapshot = steeringGainFullDeg;
     const uint8_t steerGainFloorSnapshot = steeringGainFloor;
+    // Gen41 heartbeat flags + timestamps: parseCAN_chs writes and updateTriggers
+    // expires these under stateMutex, so copy them in the same critical section
+    // to keep each flag consistent with its own timestamp in the JSON.
+    const bool aliveBus0Snapshot = received_haldex_alive_bus0;
+    const bool drivetrainOkSnapshot = received_drivetrain_state_ok;
+    const uint32_t aliveBus0MsSnapshot = received_haldex_alive_bus0_ms;
+    const uint32_t drivetrainMsSnapshot = received_drivetrain_state_ms;
     xSemaphoreGive(stateMutex);
 
     data["mode"] = modeSnapshot;
@@ -262,10 +269,10 @@ static void statusOutgoing(AsyncWebServerRequest *request)
             rear["metricA"] = received_rear_axle_metric_a;
             rear["metricB"] = received_rear_axle_metric_b;
             JsonObject hb = gen41["heartbeat"].to<JsonObject>();
-            hb["aliveBus0"] = received_haldex_alive_bus0;
-            hb["drivetrainOk"] = received_drivetrain_state_ok;
-            hb["aliveBus0AgeMs"] = received_haldex_alive_bus0_ms ? (millis() - received_haldex_alive_bus0_ms) : 0;
-            hb["drivetrainAgeMs"] = received_drivetrain_state_ms ? (millis() - received_drivetrain_state_ms) : 0;
+            hb["aliveBus0"] = aliveBus0Snapshot;
+            hb["drivetrainOk"] = drivetrainOkSnapshot;
+            hb["aliveBus0AgeMs"] = aliveBus0MsSnapshot ? (millis() - aliveBus0MsSnapshot) : 0;
+            hb["drivetrainAgeMs"] = drivetrainMsSnapshot ? (millis() - drivetrainMsSnapshot) : 0;
         }
     }
     else // if haldex CAN not ok, set related values to null (displayed as "--" in the UI)

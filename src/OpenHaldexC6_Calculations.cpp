@@ -566,7 +566,19 @@ void startHaldexLearn()
   haldexLearnActive = true;
   xSemaphoreGive(stateMutex);
 
-  xTaskCreate(haldexLearnTask, "haldexLearn", 4096, nullptr, 1, nullptr);
+  if (xTaskCreate(haldexLearnTask, "haldexLearn", 4096, nullptr, 1, nullptr) != pdPASS)
+  {
+    // Task never started, so nothing will republish the table or clear the
+    // active flag. Undo everything: restore the snapshot (same path as a
+    // cancelled sweep) and release the learn state so a retry is possible.
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    haldexLearnStep = learn_finalize(haldexLearnTable, &haldexLearnTableValid,
+                                     haldexLearnTableBackup, haldexLearnTableBackupValid,
+                                     true /*cancelled*/, false, haldexLearnStep);
+    haldexLearnActive = false;
+    xSemaphoreGive(stateMutex);
+    DEBUG("startHaldexLearn: xTaskCreate failed - learn aborted, previous table restored");
+  }
 }
 
 // editFramesGen1: per-generation CAN frame edits factored out of getLockData.
