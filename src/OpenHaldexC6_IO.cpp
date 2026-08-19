@@ -345,6 +345,26 @@ void updateTriggers(void *arg)
       received_haldex_engagement = 0; // stale engagement would freeze telemetry and poison a running learn
     }
 
+    // Gen41 Bus0 heartbeat liveness: parseCAN_chs only ever sets these true on
+    // frame arrival, so unplugging the Haldex left the dashboard reporting
+    // "alive" forever. Age each flag off its own timestamp so liveness goes
+    // false when the heartbeat stops, even while the rest of the chassis bus
+    // is still healthy. Timestamps are never 0 once a heartbeat has been seen.
+    // Checked under stateMutex, matching the paired flag+timestamp writes in
+    // parseCAN_chs, so a heartbeat landing mid-check cannot be cleared.
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    if (received_haldex_alive_bus0 &&
+        (now - received_haldex_alive_bus0_ms) > canHealthTimeoutMs)
+    {
+      received_haldex_alive_bus0 = false;
+    }
+    if (received_drivetrain_state_ok &&
+        (now - received_drivetrain_state_ms) > canHealthTimeoutMs)
+    {
+      received_drivetrain_state_ok = false;
+    }
+    xSemaphoreGive(stateMutex);
+
     // Low-power WiFi management.
     // Standalone: Haldex bus fps. OEM: chassis bus fps.
     //

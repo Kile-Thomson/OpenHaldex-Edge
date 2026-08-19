@@ -265,6 +265,13 @@ uint8_t tempCounter;
 // Haldex learn table: index = correction factor (0-100%), value = observed engagement (0-100%)
 uint8_t haldexLearnTable[101];
 bool haldexLearnTableValid = false;
+// Snapshot of the table taken by startHaldexLearn before the sweep wipes it.
+// Restored by haldexLearnTask when the sweep is cancelled or speed-aborted, so
+// an interrupted learn does not destroy the previous good calibration (and,
+// via motor11_use_bpk_packing keying off learn_table_valid, silently flip the
+// user from BPK back to V3 packing).
+uint8_t haldexLearnTableBackup[101];
+bool haldexLearnTableBackupValid = false;
 volatile bool haldexLearnActive = false;
 volatile bool haldexLearnCancel = false;
 volatile uint8_t haldexLearnStep = 0;   // 0-100 = current step, 101 = complete

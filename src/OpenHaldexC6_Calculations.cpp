@@ -551,6 +551,13 @@ void startHaldexLearn()
     return; // already running
   }
 
+  // Snapshot the current calibration before wiping, so a cancelled or
+  // speed-aborted sweep can restore it instead of leaving the user with no
+  // table at all (which also silently flipped BPK packing back to V3 for
+  // anyone relying on learn_table_valid).
+  memcpy(haldexLearnTableBackup, haldexLearnTable, sizeof(haldexLearnTableBackup));
+  haldexLearnTableBackupValid = haldexLearnTableValid;
+
   memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
   haldexLearnTableValid = false; // wiped table is no longer valid until the task republishes
   haldexLearnCancel = false;
@@ -559,7 +566,19 @@ void startHaldexLearn()
   haldexLearnActive = true;
   xSemaphoreGive(stateMutex);
 
-  xTaskCreate(haldexLearnTask, "haldexLearn", 4096, nullptr, 1, nullptr);
+  if (xTaskCreate(haldexLearnTask, "haldexLearn", 4096, nullptr, 1, nullptr) != pdPASS)
+  {
+    // Task never started, so nothing will republish the table or clear the
+    // active flag. Undo everything: restore the snapshot (same path as a
+    // cancelled sweep) and release the learn state so a retry is possible.
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    haldexLearnStep = learn_finalize(haldexLearnTable, &haldexLearnTableValid,
+                                     haldexLearnTableBackup, haldexLearnTableBackupValid,
+                                     true /*cancelled*/, false, haldexLearnStep);
+    haldexLearnActive = false;
+    xSemaphoreGive(stateMutex);
+    DEBUG("startHaldexLearn: xTaskCreate failed - learn aborted, previous table restored");
+  }
 }
 
 // editFramesGen1: per-generation CAN frame edits factored out of getLockData.
@@ -1707,6 +1726,33 @@ uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_rec
   // keeps lookup_learn_correction_factor coherent and glazes an all-zero (dropout)
   // window back to the last good reading in one place.
   return (median < prev_recorded) ? prev_recorded : median;
+}
+
+// Learn-sweep finalization. See the header for the contract; kept free of
+// Arduino/FreeRTOS symbols so the native tests exercise this exact code.
+uint8_t learn_finalize(uint8_t* table, bool* valid,
+                       const uint8_t* backup, bool backup_valid,
+                       bool cancelled, bool speed_aborted, uint8_t current_step)
+{
+  if (cancelled || speed_aborted)
+  {
+    // Interrupted sweep: restore the pre-learn calibration snapshotted by
+    // startHaldexLearn, so a cancel at CF=5 doesn't destroy a good table and
+    // silently revert the user to the default CF formula (and V3 packing).
+    memcpy(table, backup, 101);
+    *valid = backup_valid;
+    return speed_aborted ? 103 : current_step; // 103 = aborted: vehicle moving
+  }
+
+  // Completed sweep: only mark valid if at least one non-zero engagement was
+  // recorded.
+  bool anyNonZero = false;
+  for (uint8_t i = 0; i <= 100; i++)
+  {
+    if (table[i] > 0) { anyNonZero = true; break; }
+  }
+  *valid = anyNonZero;
+  return anyNonZero ? 101 : 102; // 101 = complete OK, 102 = complete but no data
 }
 
 // Decide whether the MQB Motor_11 (0x0A7) frame should use the DBC-correct BPK

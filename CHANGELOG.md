@@ -14,6 +14,31 @@ limiting - are Forbes's own work and are not repeated here.
 
 ### Fixed
 
+- **Cancelling a Haldex learn no longer destroys the previous calibration.**
+  Starting a learn wiped the table before the sweep began, so a cancel (or the
+  speed interlock aborting mid-sweep) left the device with no table at all -
+  silently reverting to the default CF formula and, because the BPK packing
+  selector keys off table validity, potentially flipping Motor_11 from BPK back
+  to V3 packing. The previous table is now snapshotted before the sweep and
+  restored on cancel or abort; only a completed sweep replaces it.
+
+- **Gen2/Gen5-0AY standalone Motor_5 rolling counter now actually rolls.** A
+  copy-paste bug incremented Bremse_1's counter instead of Motor_5's, freezing
+  the Motor_5 counter byte forever and pushing the Bremse_1 counter past its
+  expected wrap band between frames, glitching that frame's continuity counter.
+  Present in both the Gen2 and Gen5 (0AY) frame builders.
+
+- **Gen41 heartbeat liveness now goes stale when the Haldex is unplugged.** The
+  0x1CF/0x331 "alive" flags were set on frame arrival and never cleared, so the
+  dashboard kept reporting the FDCM as alive after disconnection. Each flag now
+  ages out off its own last-seen timestamp using the same 1 s health timeout as
+  the rest of the CAN liveness logic.
+
+- **Gen41 standalone 0x1C3 counter byte no longer clocked by dashboard
+  housekeeping.** The 25 ms frame's D7 was fed from a main-loop debug counter
+  whose rate depended on WiFi work, making the wire byte nondeterministic. It
+  now uses a dedicated rolling counter stepped once per frame.
+
 - **Drive mode no longer resets on reboot.** Changing the haldex generation in
   Settings wrote the generation number (1/2/4/41/50/51) into the stored drive
   mode, which is a separate 0-5 value. On the next boot that out-of-range value

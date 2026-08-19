@@ -55,23 +55,17 @@ void haldexLearnTask(void *arg)
     haldexLearnTable[cf] = prevRecorded;
   }
 
-  if (speedAborted)
+  // Publish the outcome (restore on cancel/speed-abort, validate on complete)
+  // together with the valid flag under the lock so the hot path never sees a
+  // valid flag pointing at a half-scanned table. The decision itself lives in
+  // learn_finalize (Calculations.cpp), a pure seam pinned by test_learn.
   {
-    haldexLearnStep = 103; // 103 = aborted: vehicle started moving (table stays invalid)
-  }
-  else if (!haldexLearnCancel)
-  {
-    // Publish the finished table and the valid flag together under the lock so
-    // the hot path never sees a valid flag pointing at a half-scanned table
+    bool tableValid;
     xSemaphoreTake(stateMutex, portMAX_DELAY);
-    // only mark valid if at least one non-zero engagement was recorded
-    bool anyNonZero = false;
-    for (uint8_t i = 0; i <= 100; i++)
-    {
-      if (haldexLearnTable[i] > 0) { anyNonZero = true; break; }
-    }
-    haldexLearnTableValid = anyNonZero;
-    haldexLearnStep = anyNonZero ? 101 : 102; // 101 = complete OK, 102 = complete but no data
+    haldexLearnStep = learn_finalize(haldexLearnTable, &tableValid,
+                                     haldexLearnTableBackup, haldexLearnTableBackupValid,
+                                     haldexLearnCancel, speedAborted, haldexLearnStep);
+    haldexLearnTableValid = tableValid;
     xSemaphoreGive(stateMutex);
   }
 

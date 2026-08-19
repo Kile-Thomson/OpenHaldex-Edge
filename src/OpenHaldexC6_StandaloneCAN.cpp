@@ -556,8 +556,6 @@ void Gen2_frames20()
   twai_transmit_v2(twai_bus_1, &frame, 0);
 
   // PQ Motor_5 (0x480, DLC 8) - tertiary engine broadcast (vw_pq.dbc: Motor_5, multiplexed).
-  // NOTE: the if(++BRAKES1_counter > 255) below increments BRAKES1_counter (not MOTOR5_counter)
-  // - looks like a copy-paste bug, left as-is per "comment-only" pass.
   frame.identifier = MOTOR5_ID;   // 0x1A0
   frame.data_length_code = 8;     // DLC 8
   frame.data[0] = 0xFE;           // ASR 0x04 sets bit 4.  0x08 removes set.  Coupling open/closed - MO5_Mp_Code mux
@@ -568,10 +566,7 @@ void Gen2_frames20()
   frame.data[5] = 0x00;           // was 0xFE miasrs no effect - reserved
   frame.data[6] = 0x00;           // was 0x00 - reserved
   frame.data[7] = MOTOR5_counter; // checksum / rolling counter
-  if (++BRAKES1_counter > 255)
-  {                      // 0xF (NOTE: increments BRAKES1_counter - copy-paste artefact)
-    BRAKES1_counter = 0; // 0
-  }
+  MOTOR5_counter++;               // 8-bit rolling counter, natural wrap at 255
   twai_transmit_v2(twai_bus_1, &frame, 0);
 
   // PQ Bremse_10 (0x3A0, DLC 8) - extended ABS/ESP frame (NOT in vw_pq.dbc).
@@ -1460,7 +1455,13 @@ void Gen41_frames25()
   frame.data[4] = 0x00;
   frame.data[5] = 0x00;
   frame.data[6] = 0xFE;
-  frame.data[7] = tempCounter;
+  // D7 rolling counter: previously fed from the main-loop tempCounter debug
+  // variable, whose rate depends on WiFi/dashboard housekeeping - a wire byte
+  // must not be clocked by that. Dedicated counter, one step per 25 ms frame.
+  {
+    static uint8_t gen41_1c3_counter = 0;
+    frame.data[7] = gen41_1c3_counter++;
+  }
   twai_transmit_v2(twai_bus_0, &frame, 0);
 
   // 0x191 (Bus0) - EngineData, OEM 23ms cadence
@@ -2627,8 +2628,6 @@ void Gen5_0AY_frames20()
   twai_transmit_v2(twai_bus_1, &frame, 0);
 
   // PQ Motor_5 (0x480, DLC 8) - tertiary engine broadcast (vw_pq.dbc: Motor_5, multiplexed).
-  // NOTE: the if(++BRAKES1_counter > 255) below increments BRAKES1_counter (not MOTOR5_counter)
-  // - looks like a copy-paste bug, left as-is per "comment-only" pass.
   frame.identifier = MOTOR5_ID;   // 0x1A0
   frame.data_length_code = 8;     // DLC 8
   frame.data[0] = 0xFE;           // ASR 0x04 sets bit 4.  0x08 removes set.  Coupling open/closed - MO5_Mp_Code mux
@@ -2639,10 +2638,7 @@ void Gen5_0AY_frames20()
   frame.data[5] = 0x00;           // was 0xFE miasrs no effect - reserved
   frame.data[6] = 0x00;           // was 0x00 - reserved
   frame.data[7] = MOTOR5_counter; // checksum / rolling counter
-  if (++BRAKES1_counter > 255)
-  {                      // 0xF (NOTE: increments BRAKES1_counter - copy-paste artefact)
-    BRAKES1_counter = 0; // 0
-  }
+  MOTOR5_counter++;               // 8-bit rolling counter, natural wrap at 255
   twai_transmit_v2(twai_bus_1, &frame, 0);
 }
 
