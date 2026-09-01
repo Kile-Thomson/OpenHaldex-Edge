@@ -22,9 +22,18 @@ carried by those upstream portions travel with this fork.
 
 - **Author / Upstream:** ABangingDonk
 - **Project:** OpenHaldex / OpenHaldexT4 - https://github.com/ABangingDonk/OpenHaldexT4
+- **License:** No license file is published in the upstream repository, so no
+  explicit redistribution grant is on record for this work.
 - **Relationship:** The OpenHaldex lineage started from ABangingDonk's original
   OpenHaldex codebase for Generation 1 Haldex control. Gen1 control concepts and
   code descend from this work.
+
+> **Attribution note:** the ABangingDonk OpenHaldexT4 repository does not carry a
+> LICENSE file, so the permission basis for redistributing Gen1-derived code is not
+> formally documented upstream. This fork credits the original author and does not
+> claim a grant that is not on record. Anyone redistributing Gen1-derived portions
+> should confirm the permission basis with the original author; if a grant cannot be
+> established, the affected portions should be treated accordingly.
 
 ---
 
@@ -48,7 +57,7 @@ carried by those upstream portions travel with this fork.
 ```
 MIT License
 
-Copyright (c) OpenHaldex-S3 contributors (SpringfieldVW / Chris "meatro")
+Copyright (c) 2026 SpringfieldVW.com
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

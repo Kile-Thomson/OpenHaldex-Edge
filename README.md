@@ -107,6 +107,7 @@ Origin attribution and the FASL v1.0 license are preserved unchanged.
 - [Hardware](#hardware)
 - [Acknowledgements](#acknowledgements)
 - [Upstream](#upstream)
+  - [Divergence from upstream](#divergence-from-upstream)
 - [Disclaimer](#disclaimer)
 
 ---
