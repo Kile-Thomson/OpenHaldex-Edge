@@ -107,6 +107,7 @@ Origin attribution and the FASL v1.0 license are preserved unchanged.
 - [Hardware](#hardware)
 - [Acknowledgements](#acknowledgements)
 - [Upstream](#upstream)
+  - [Divergence from upstream](#divergence-from-upstream)
 - [Disclaimer](#disclaimer)
 
 ---
@@ -427,6 +428,7 @@ For physical installation instructions, wiring diagrams, and connector pinouts, 
 
 - **Forbes Automotive** - Lead development of the OpenHaldex C6 platform, including reverse-engineering and open-source implementation for Gen2, Gen4 and Gen5 Haldex systems, along with ongoing maintenance of the project
 - **A Banging Donk** - [Original OpenHaldex project](https://github.com/ABangingDonk/OpenHaldexT4) for Gen1 vehicles
+- **Chris "meatro" (SpringfieldVW)** - [OpenHaldex-S3](https://github.com/meatro/OpenHaldex-S3), origin of the CAN analyzer / GVRET (SavvyCAN) tooling (MIT). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 - **Arwid Vasilev** - PCB redesign (V1.02)
 - **LVT Technologies** - OTA update integration (now deprecated, but still appreciated)
 
@@ -443,6 +445,26 @@ git merge upstream/main
 ```
 
 For official, supported hardware and firmware go to the upstream project and [Forbes Automotive](https://forbes-automotive.com/). This fork is unofficial and experimental.
+
+### Divergence from upstream
+
+This is a hard fork with an independent history, not a live mirror. It is a large
+superset of the upstream firmware source, so an "N commits behind" count against
+upstream is not meaningful - most of the source has been rewritten or extended here.
+A few upstream items are **deliberately not adopted**:
+
+- **Hardware design files** (Enclosure, PCB, Gerbers, BOM, release binaries) - this
+  repo is firmware source only. The upstream project remains the source for hardware.
+- **VAG TP2.0 / KWP2000 diagnostic transport** - upstream reads certain Gen2 Haldex
+  diagnostic values (oil/plate temp, clutch duty) over TP2.0. This fork does not run
+  TP2.0 and excludes those tester IDs on purpose; the MQB live-data path uses UDS.
+- **Per-frame "frame edit" mask** - upstream can toggle individual synthesized CAN
+  frames on/off from the UI per Haldex generation. That is a bench/bring-up tool; this
+  fork's per-car Calibrate and learn flow covers car setup from a different angle, so
+  it is not carried here.
+
+Third-party attribution obligations from the shared upstream lineage are recorded in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ---
 

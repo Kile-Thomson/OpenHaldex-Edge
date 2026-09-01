@@ -12,6 +12,14 @@ limiting - are Forbes's own work and are not repeated here.
 
 ## Unreleased - v8.00.18
 
+### Added
+
+- **THIRD_PARTY_NOTICES.md** documenting the upstream lineage this fork derives
+  from, including the MIT attribution for the meatro/OpenHaldex-S3 CAN analyzer /
+  GVRET tooling and the ABangingDonk Gen1 origin. The README acknowledgements and
+  a divergence note (what upstream items are deliberately not adopted, and why)
+  were added to match.
+
 ### Fixed
 
 - **Cancelling a Haldex learn no longer destroys the previous calibration.**
