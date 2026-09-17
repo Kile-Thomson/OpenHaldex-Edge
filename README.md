@@ -13,9 +13,9 @@
 > [!IMPORTANT]
 > **This is a personal, non-commercial firmware fork** of [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6). It exists to:
 >
-> 1. **Introduce motorsport-oriented features** for track and performance use.
-> 2. **Enhance stability** by fixing confirmed bugs before adding anything new.
-> 3. **Improve features for power users** - finer control, better tuning tools, a host-runnable test suite that pins wire-byte correctness, and WiFi-AP security hardening.
+> 1. **Add motorsport-oriented features** for track and performance use.
+> 2. **Keep things stable** by validating the platform with a host-runnable test suite before adding anything new.
+> 3. **Extend the tools for power users** - finer control, better tuning tools, a host-runnable test suite that pins wire-byte correctness, and WiFi-AP security hardening.
 >
 > **This repo contains firmware source only.** Hardware design files, Gerbers, BOM and enclosure STLs live in the upstream project - for supported hardware, go to [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6) and [forbes-automotive.com](https://forbes-automotive.com/). Ready-to-flash binaries of this fork are attached to each [release](https://github.com/Kile-Thomson/OpenHaldex-Edge/releases); the upstream project remains the source for official, supported firmware.
 >
@@ -33,7 +33,11 @@ OpenHaldex is an open-source **Haldex AWD controller** for Volkswagen and Audi G
 
 The firmware runs on an **ESP32-C6** and reads CAN bus messages from the vehicle, allowing the controller to modify or generate commands so the Haldex differential behaves exactly as you've configured. It can operate using OEM CAN signals or in Standalone mode, which is useful for conversions where no chassis bus is present.
 
-![OpenHaldex-C6](/Images/openHaldexUI.png)
+This fork takes Forbes Automotive's platform further and puts the day-to-day usability first: the whole controller is driven from a phone over WiFi, with a reworked dark web UI, a live engagement gauge and lock-response trace, a 3D expert map, per-car calibration, and browser-based over-the-air updates. Everything below runs on the same hardware Forbes builds.
+
+![OpenHaldex Edge web UI - dashboard, expert 3D map, diagnostics, basic modes, calibrate, settings and OTA](/Images/openHaldexUI.png)
+
+*The OpenHaldex Edge web UI, served straight from the device over its own WiFi access point. No app to install; open a browser on your phone.*
 
 ## Improvements over upstream
 
@@ -50,13 +54,13 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 ### Correctness fixes
 
 - **Recovers from a CAN fault on its own.** After a bus-off event the controller detects the recovery and brings each bus back by itself, no power cycle needed.
-- **Corrected Gen5 checksum.** The Gen5 ESP_10 (0x116) frame now uses the correct E2E checksum DataID. (Still to be confirmed against a real Gen5 unit on the bench.)
-- **Diagnostic reads return real data.** The built-in ECU read returns the full response rather than an empty buffer.
+- **Gen5 checksum alignment.** The Gen5 ESP_10 (0x116) frame uses the E2E checksum DataID the MQB bus expects. (Still to be confirmed against a real Gen5 unit on the bench.)
+- **Diagnostic reads return the full response.** The built-in ECU read surfaces the complete response payload.
 
-### Robustness under the hood
+### Under the hood
 
 - **Shared control state is mutex-guarded.** The settings and mode fields that the web handlers and the CAN tasks touch concurrently are serialised behind a single lock, so a web write can't tear a value a CAN task is mid-read on.
-- **Storage consolidated onto one flash namespace.** Settings moved from around 29 separate NVS namespaces to a single `openhaldex` namespace with a one-time migration from the old layout, and dead first-run default seeding was fixed so a fresh device comes up with correct defaults.
+- **Storage consolidated onto one flash namespace.** Settings moved from around 29 separate NVS namespaces to a single `openhaldex` namespace with a one-time migration from the old layout, and first-run default seeding was reworked so a fresh device comes up with correct defaults.
 
 ### Added driving features
 
@@ -74,7 +78,7 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 
 - **Restyled dashboard.** A dark dashboard with a semi-circular engagement gauge and a target tick, touch and reduced-motion polish, and polling that pauses while the page is hidden so it isn't hitting the device in your pocket. The gauge arc, the bars and the live operating-point dot ease between polls instead of snapping, so the readout tracks smoothly while driving.
 - **Live lock-response trace.** A rolling 15-second strip chart under the gauge plots what you asked the lock to do against what it actually did, so coupling lag and the effect of the rate limits read at a glance while tuning. It clears on a dropped link, so a reconnect never draws a line across the outage.
-- **Connection-status badge.** A live/reconnecting/offline badge in the header. A dropped access-point link used to leave the last gauge values frozen on screen looking current; the badge now flips to reconnecting after the first missed poll and offline after three, so stale numbers can't be mistaken for live data while driving.
+- **Connection-status badge.** A live/reconnecting/offline badge in the header. It tracks the link to the access point, flipping to reconnecting after the first missed poll and offline after three, so the numbers on screen are always clearly marked live or stale while driving.
 - **Expert map 3D surface.** The Expert editor renders the lock table as an isometric 3D surface - speed and throttle on the ground plane, lock percent as height - the same read you'd get from a 3-axis map on a standalone ECU, with a live operating-point dot riding the surface as you drive. It is read-only and doesn't change what's written to the Haldex.
 - **Learn calibration chart.** Once your Haldex has a learned table, the Learn section plots it - commanded correction factor against measured engagement, with a 1:1 reference line - so where your unit over- or under-responds reads at a glance. Render-only from data the device already returns; no extra load on the module.
 - **Install it like an app, full-screen.** The web UI is an installable PWA (manifest, icon set, service worker) so it can go on a phone home screen and open full-screen. A full-screen toggle in the header also works over plain http with no install step, for a clean dashboard on an unmodified phone. Live telemetry and control always hit the device - the service worker never caches the API or POSTs.
@@ -145,7 +149,7 @@ Expert mode allows lock targets to be configured based on **speed and throttle s
 
 ![ExpertMode](/Images/expertmode.jpg)
 
-*Expert mode grid configuration interface within the OpenHaldex C6 UI.*
+*Expert mode in the OpenHaldex Edge UI: a colour-coded lock table over speed and throttle, with the live 3D surface below and an operating-point dot that rides it as you drive.*
 
 Below the grid, a read-only curve view plots the same lock surface so the table reads as lines while you tune. Toggle between **lock vs speed** (one line per throttle band) and **lock vs throttle** (one line per speed band); it redraws as you edit and never changes what is sent to the Haldex.
 
@@ -233,8 +237,10 @@ data[7] = pedal_value
 > **First power-up:** on a fresh or factory-reset device, step 2 redirects to `/setup` instead of the main UI. Set a password there (8-63 characters). Once submitted the setup page closes permanently and the main UI loads. See [Setting your password](#setting-your-password-first-connection) below.
 
 <p align="center">
-  <img src="/Images/UIDemo.png" alt="OpenHaldex C6 Web UI" width="900" style="max-width:100%;">
+  <img src="/Images/UIDemo.png" alt="OpenHaldex Edge web UI - dashboard, expert 3D map and diagnostics" width="900" style="max-width:100%;">
 </p>
+
+<p align="center"><em>Dashboard, Expert 3D map and Diagnostics on a phone.</em></p>
 
 ### Setting your password (first connection)
 
@@ -266,7 +272,7 @@ The controller is designed to live on a **permanent +12 V** feed. With Low Power
 | Awake (CAN activity detected or WiFi client connected) | ~50 mA |
 
 > [!WARNING]
-> Estimated, inherited from upstream — **not yet measured on this fork.** These current-draw figures are order-of-magnitude expectations only, pending a bench-meter measurement (see the bench-pending note below).
+> Estimated, inherited from upstream - **not yet measured on this fork.** These current-draw figures are order-of-magnitude expectations only, pending a bench-meter measurement (see the bench-pending note below).
 
 ### Layer 1 - Idle AP shutdown (always active)
 
@@ -278,18 +284,18 @@ Controlled by the **CAN Sleep** toggle in Settings and **on out of the box**. Th
 
 ### Layer 3 - CAN sleep aggressive (opt-in, builds on Layer 2)
 
-Off by default — enable **CAN Sleep (Aggressive)** in Settings to turn it on. The CAN transceiver chips shut down completely, CPU minimum clock drops to 10 MHz, and WiFi AP transmit power is trimmed. Wake is interrupt-driven from a GPIO ISR on each CAN_RX line.
+Off by default - enable **CAN Sleep (Aggressive)** in Settings to turn it on. The CAN transceiver chips shut down completely, CPU minimum clock drops to 10 MHz, and WiFi AP transmit power is trimmed. Wake is interrupt-driven from a GPIO ISR on each CAN_RX line.
 
 ### Setting it up
 
 Low Power Mode works out of the box, but the wake threshold is calibratable because every car idles its CAN bus at a different rate.
 
-The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the module stays awake while the **Chassis fps** rate is at or above the threshold and sleeps when it drops below it — so the default keeps the module awake while the vehicle is actively driving the chassis bus (typically well above 1100 fps) and lets it sleep once the bus goes quiet.
+The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the module stays awake while the **Chassis fps** rate is at or above the threshold and sleeps when it drops below it - so the default keeps the module awake while the vehicle is actively driving the chassis bus (typically well above 1100 fps) and lets it sleep once the bus goes quiet.
 
 1. Park and lock the car. Wait 30 minutes or until the Chassis bus goes fully quiet.
 2. Stay connected to the OpenHaldex WiFi AP while you check (the controller stays awake while a client is connected).
 3. Open the Web UI and watch the **Chassis fps** and **Haldex fps** counters in Settings.
-4. Set **LP Wake Threshold (fps)** above the parked-bus reading and below the driving-bus reading — the default of 1100 fps suits most installs; lower it only if your car's active chassis-bus rate sits below 1100 fps.
+4. Set **LP Wake Threshold (fps)** above the parked-bus reading and below the driving-bus reading - the default of 1100 fps suits most installs; lower it only if your car's active chassis-bus rate sits below 1100 fps.
 5. **CAN Sleep** is already enabled; optionally enable **CAN Sleep (Aggressive)** in Settings.
 6. Disconnect from the WiFi AP.
 
@@ -300,7 +306,7 @@ The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the mo
 > **Switched-ignition installs:** if the module is already powered off with the ignition, Low Power Mode saves little and is optional.
 
 > [!NOTE]
-> **Bench-pending on this fork:** the following hardware-only behaviours are inherited from upstream and have **not yet been measured on real metal** for this fork — the sleeping/awake current draw, the wake latency, transceiver standby in Layer 3, and the exact standalone-threshold value. They are flagged pending a bench-rig measurement increment.
+> **Bench-pending on this fork:** the following hardware-only behaviours are inherited from upstream and have **not yet been measured on real metal** for this fork - the sleeping/awake current draw, the wake latency, transceiver standby in Layer 3, and the exact standalone-threshold value. They are flagged pending a bench-rig measurement.
 
 ---
 
