@@ -306,7 +306,7 @@ The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the mo
 > **Switched-ignition installs:** if the module is already powered off with the ignition, Low Power Mode saves little and is optional.
 
 > [!NOTE]
-> **Bench-pending on this fork:** the following hardware-only behaviours are inherited from upstream and have **not yet been measured on real metal** for this fork - the sleeping/awake current draw, the wake latency, transceiver standby in Layer 3, and the exact standalone-threshold value. They are flagged pending a bench-rig measurement increment.
+> **Bench-pending on this fork:** the following hardware-only behaviours are inherited from upstream and have **not yet been measured on real metal** for this fork - the sleeping/awake current draw, the wake latency, transceiver standby in Layer 3, and the exact standalone-threshold value. They are flagged pending a bench-rig measurement.
 
 ---
 
