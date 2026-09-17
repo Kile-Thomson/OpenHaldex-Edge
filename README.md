@@ -33,7 +33,11 @@ OpenHaldex is an open-source **Haldex AWD controller** for Volkswagen and Audi G
 
 The firmware runs on an **ESP32-C6** and reads CAN bus messages from the vehicle, allowing the controller to modify or generate commands so the Haldex differential behaves exactly as you've configured. It can operate using OEM CAN signals or in Standalone mode, which is useful for conversions where no chassis bus is present.
 
-![OpenHaldex-C6](/Images/openHaldexUI.png)
+This fork takes Forbes Automotive's platform further and puts the day-to-day usability first: the whole controller is driven from a phone over WiFi, with a reworked dark web UI, a live engagement gauge and lock-response trace, a 3D expert map, per-car calibration, and browser-based over-the-air updates. Everything below runs on the same hardware Forbes builds.
+
+![OpenHaldex Edge web UI - dashboard, expert 3D map, diagnostics, basic modes, calibrate, settings and OTA](/Images/openHaldexUI.png)
+
+*The OpenHaldex Edge web UI, served straight from the device over its own WiFi access point. No app to install; open a browser on your phone.*
 
 ## Improvements over upstream
 
@@ -145,7 +149,7 @@ Expert mode allows lock targets to be configured based on **speed and throttle s
 
 ![ExpertMode](/Images/expertmode.jpg)
 
-*Expert mode grid configuration interface within the OpenHaldex C6 UI.*
+*Expert mode in the OpenHaldex Edge UI: a colour-coded lock table over speed and throttle, with the live 3D surface below and an operating-point dot that rides it as you drive.*
 
 Below the grid, a read-only curve view plots the same lock surface so the table reads as lines while you tune. Toggle between **lock vs speed** (one line per throttle band) and **lock vs throttle** (one line per speed band); it redraws as you edit and never changes what is sent to the Haldex.
 
@@ -233,8 +237,10 @@ data[7] = pedal_value
 > **First power-up:** on a fresh or factory-reset device, step 2 redirects to `/setup` instead of the main UI. Set a password there (8-63 characters). Once submitted the setup page closes permanently and the main UI loads. See [Setting your password](#setting-your-password-first-connection) below.
 
 <p align="center">
-  <img src="/Images/UIDemo.png" alt="OpenHaldex C6 Web UI" width="900" style="max-width:100%;">
+  <img src="/Images/UIDemo.png" alt="OpenHaldex Edge web UI - dashboard, expert 3D map and diagnostics" width="900" style="max-width:100%;">
 </p>
+
+<p align="center"><em>Dashboard, Expert 3D map and Diagnostics on a phone.</em></p>
 
 ### Setting your password (first connection)
 
@@ -266,7 +272,7 @@ The controller is designed to live on a **permanent +12 V** feed. With Low Power
 | Awake (CAN activity detected or WiFi client connected) | ~50 mA |
 
 > [!WARNING]
-> Estimated, inherited from upstream — **not yet measured on this fork.** These current-draw figures are order-of-magnitude expectations only, pending a bench-meter measurement (see the bench-pending note below).
+> Estimated, inherited from upstream - **not yet measured on this fork.** These current-draw figures are order-of-magnitude expectations only, pending a bench-meter measurement (see the bench-pending note below).
 
 ### Layer 1 - Idle AP shutdown (always active)
 
@@ -278,18 +284,18 @@ Controlled by the **CAN Sleep** toggle in Settings and **on out of the box**. Th
 
 ### Layer 3 - CAN sleep aggressive (opt-in, builds on Layer 2)
 
-Off by default — enable **CAN Sleep (Aggressive)** in Settings to turn it on. The CAN transceiver chips shut down completely, CPU minimum clock drops to 10 MHz, and WiFi AP transmit power is trimmed. Wake is interrupt-driven from a GPIO ISR on each CAN_RX line.
+Off by default - enable **CAN Sleep (Aggressive)** in Settings to turn it on. The CAN transceiver chips shut down completely, CPU minimum clock drops to 10 MHz, and WiFi AP transmit power is trimmed. Wake is interrupt-driven from a GPIO ISR on each CAN_RX line.
 
 ### Setting it up
 
 Low Power Mode works out of the box, but the wake threshold is calibratable because every car idles its CAN bus at a different rate.
 
-The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the module stays awake while the **Chassis fps** rate is at or above the threshold and sleeps when it drops below it — so the default keeps the module awake while the vehicle is actively driving the chassis bus (typically well above 1100 fps) and lets it sleep once the bus goes quiet.
+The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the module stays awake while the **Chassis fps** rate is at or above the threshold and sleeps when it drops below it - so the default keeps the module awake while the vehicle is actively driving the chassis bus (typically well above 1100 fps) and lets it sleep once the bus goes quiet.
 
 1. Park and lock the car. Wait 30 minutes or until the Chassis bus goes fully quiet.
 2. Stay connected to the OpenHaldex WiFi AP while you check (the controller stays awake while a client is connected).
 3. Open the Web UI and watch the **Chassis fps** and **Haldex fps** counters in Settings.
-4. Set **LP Wake Threshold (fps)** above the parked-bus reading and below the driving-bus reading — the default of 1100 fps suits most installs; lower it only if your car's active chassis-bus rate sits below 1100 fps.
+4. Set **LP Wake Threshold (fps)** above the parked-bus reading and below the driving-bus reading - the default of 1100 fps suits most installs; lower it only if your car's active chassis-bus rate sits below 1100 fps.
 5. **CAN Sleep** is already enabled; optionally enable **CAN Sleep (Aggressive)** in Settings.
 6. Disconnect from the WiFi AP.
 
@@ -300,7 +306,7 @@ The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the mo
 > **Switched-ignition installs:** if the module is already powered off with the ignition, Low Power Mode saves little and is optional.
 
 > [!NOTE]
-> **Bench-pending on this fork:** the following hardware-only behaviours are inherited from upstream and have **not yet been measured on real metal** for this fork — the sleeping/awake current draw, the wake latency, transceiver standby in Layer 3, and the exact standalone-threshold value. They are flagged pending a bench-rig measurement increment.
+> **Bench-pending on this fork:** the following hardware-only behaviours are inherited from upstream and have **not yet been measured on real metal** for this fork - the sleeping/awake current draw, the wake latency, transceiver standby in Layer 3, and the exact standalone-threshold value. They are flagged pending a bench-rig measurement increment.
 
 ---
 
