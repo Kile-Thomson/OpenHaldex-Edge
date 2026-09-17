@@ -13,9 +13,9 @@
 > [!IMPORTANT]
 > **This is a personal, non-commercial firmware fork** of [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6). It exists to:
 >
-> 1. **Introduce motorsport-oriented features** for track and performance use.
-> 2. **Enhance stability** by fixing confirmed bugs before adding anything new.
-> 3. **Improve features for power users** - finer control, better tuning tools, a host-runnable test suite that pins wire-byte correctness, and WiFi-AP security hardening.
+> 1. **Add motorsport-oriented features** for track and performance use.
+> 2. **Keep things stable** by validating the platform with a host-runnable test suite before adding anything new.
+> 3. **Extend the tools for power users** - finer control, better tuning tools, a host-runnable test suite that pins wire-byte correctness, and WiFi-AP security hardening.
 >
 > **This repo contains firmware source only.** Hardware design files, Gerbers, BOM and enclosure STLs live in the upstream project - for supported hardware, go to [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6) and [forbes-automotive.com](https://forbes-automotive.com/). Ready-to-flash binaries of this fork are attached to each [release](https://github.com/Kile-Thomson/OpenHaldex-Edge/releases); the upstream project remains the source for official, supported firmware.
 >
@@ -54,13 +54,13 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 ### Correctness fixes
 
 - **Recovers from a CAN fault on its own.** After a bus-off event the controller detects the recovery and brings each bus back by itself, no power cycle needed.
-- **Corrected Gen5 checksum.** The Gen5 ESP_10 (0x116) frame now uses the correct E2E checksum DataID. (Still to be confirmed against a real Gen5 unit on the bench.)
-- **Diagnostic reads return real data.** The built-in ECU read returns the full response rather than an empty buffer.
+- **Gen5 checksum alignment.** The Gen5 ESP_10 (0x116) frame uses the E2E checksum DataID the MQB bus expects. (Still to be confirmed against a real Gen5 unit on the bench.)
+- **Diagnostic reads return the full response.** The built-in ECU read surfaces the complete response payload.
 
-### Robustness under the hood
+### Under the hood
 
 - **Shared control state is mutex-guarded.** The settings and mode fields that the web handlers and the CAN tasks touch concurrently are serialised behind a single lock, so a web write can't tear a value a CAN task is mid-read on.
-- **Storage consolidated onto one flash namespace.** Settings moved from around 29 separate NVS namespaces to a single `openhaldex` namespace with a one-time migration from the old layout, and dead first-run default seeding was fixed so a fresh device comes up with correct defaults.
+- **Storage consolidated onto one flash namespace.** Settings moved from around 29 separate NVS namespaces to a single `openhaldex` namespace with a one-time migration from the old layout, and first-run default seeding was reworked so a fresh device comes up with correct defaults.
 
 ### Added driving features
 
@@ -78,7 +78,7 @@ What this fork adds on top is a focused security, correctness and testing pass, 
 
 - **Restyled dashboard.** A dark dashboard with a semi-circular engagement gauge and a target tick, touch and reduced-motion polish, and polling that pauses while the page is hidden so it isn't hitting the device in your pocket. The gauge arc, the bars and the live operating-point dot ease between polls instead of snapping, so the readout tracks smoothly while driving.
 - **Live lock-response trace.** A rolling 15-second strip chart under the gauge plots what you asked the lock to do against what it actually did, so coupling lag and the effect of the rate limits read at a glance while tuning. It clears on a dropped link, so a reconnect never draws a line across the outage.
-- **Connection-status badge.** A live/reconnecting/offline badge in the header. A dropped access-point link used to leave the last gauge values frozen on screen looking current; the badge now flips to reconnecting after the first missed poll and offline after three, so stale numbers can't be mistaken for live data while driving.
+- **Connection-status badge.** A live/reconnecting/offline badge in the header. It tracks the link to the access point, flipping to reconnecting after the first missed poll and offline after three, so the numbers on screen are always clearly marked live or stale while driving.
 - **Expert map 3D surface.** The Expert editor renders the lock table as an isometric 3D surface - speed and throttle on the ground plane, lock percent as height - the same read you'd get from a 3-axis map on a standalone ECU, with a live operating-point dot riding the surface as you drive. It is read-only and doesn't change what's written to the Haldex.
 - **Learn calibration chart.** Once your Haldex has a learned table, the Learn section plots it - commanded correction factor against measured engagement, with a 1:1 reference line - so where your unit over- or under-responds reads at a glance. Render-only from data the device already returns; no extra load on the module.
 - **Install it like an app, full-screen.** The web UI is an installable PWA (manifest, icon set, service worker) so it can go on a phone home screen and open full-screen. A full-screen toggle in the header also works over plain http with no install step, for a clean dashboard on an unmodified phone. Live telemetry and control always hit the device - the service worker never caches the API or POSTs.
