@@ -10,7 +10,7 @@ limiting - are Forbes's own work and are not repeated here.
 
 ---
 
-## Unreleased - v8.00.18
+## v8.00.18 - 2026-09-17
 
 ### Added
 
@@ -78,7 +78,7 @@ limiting - are Forbes's own work and are not repeated here.
 
 ---
 
-## Unreleased - v8.00.17
+## v8.00.17 - 2026-09-17
 
 ### Added
 
