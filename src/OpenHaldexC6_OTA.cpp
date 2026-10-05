@@ -756,6 +756,7 @@ void setupOTA() {
     json += "\"mounted\":" + String(mounted ? "true" : "false") + ",";
     json += "\"fsVersion\":\"" + fsVer + "\",";
     json += "\"fwVersion\":\"" + String(FW_VERSION) + "\"";
+    if (!(mounted && hasIndex)) json += ",\"error\":\"web UI filesystem is not usable\"";
     json += "}";
     request->send(200, "application/json", json);
   });

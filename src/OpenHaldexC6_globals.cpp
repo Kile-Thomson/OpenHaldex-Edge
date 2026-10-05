@@ -459,6 +459,7 @@ uint16_t lockReleaseRampMs = 500; // ms for a full lock release; 0 = instant
 uint16_t lockEngageRampMs = 0;    // ms for a full lock-up; 0 = instant
 bool lockReleaseEnabled = true;  // when false, lock target changes are instantaneous
 bool steeringScaleEnabled = true; // when false, steering-angle lock scaling is bypassed (full lock)
+uint8_t boardRev = BOARD_REV_TWAI; // only the TWAI board exists today; the CAN FD board will set this at boot
 uint8_t forceModesPriority = 0; // 0=Haz>TC>Ext, 1=TC>Haz>Ext, 2=Haz>Ext>TC, 3=TC>Ext>Haz, 4=Ext>TC>Haz, 5=Ext>Haz>TC
 
 // setup - main inputs

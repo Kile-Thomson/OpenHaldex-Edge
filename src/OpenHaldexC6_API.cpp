@@ -7,6 +7,7 @@
 #include <OpenHaldexC6_WebAccess.h> // setupWebAccess(), isDeviceProvisioned()
 #include <OpenHaldexC6_Access.h>    // access_ap_password_valid()
 #include <OpenHaldexC6_Settings.h> // applyDrivingSetting()
+#include <OpenHaldexC6_EEP.h>      // mapSlot* (on-device map slots)
 
 #include <cstring>
 #include <vector>    // /api/wifi/scan de-dup
@@ -378,6 +379,8 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     JsonDocument data;
     // values
     data["haldexGeneration"] = haldexGeneration;
+    data["forceModesPriority"] = forceModesPriority;
+    data["boardRev"] = boardRev;
     data["tcForceModeValue"] = tcForceModeValue;
     data["hazardForceModeValue"] = hazardForceModeValue;
     data["extBtnForceModeValue"] = extBtnForceModeValue;
@@ -737,7 +740,18 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
     }
     if (data["benchMode"].is<bool>())
     {
-        benchMode = data["benchMode"];
+        // Bench mode only makes sense with no CAN on either bus. Turning it on
+        // while CAN is up is skipped for this key alone: the rest of the body
+        // (a backup import sends benchMode with everything else) is still applied.
+        const bool want = data["benchMode"];
+        if (!want || !(hasCANChassis || hasCANHaldex))
+            benchMode = want;
+    }
+    if (data["forceModesPriority"].is<uint8_t>())
+    {
+        const uint8_t v = (uint8_t)constrain((int)data["forceModesPriority"], 0, 5);
+        StateLock lk;
+        forceModesPriority = v;
     }
     if (data["bleEnabled"].is<bool>())
     {
@@ -1009,6 +1023,101 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
     sendJSON(request, 200, resp);
 }
 
+// POST /api/maps/save - store the editor's tune into an on-device slot.
+// Body: {index, name, speedArray, throttleArray, lockArray}. Validated the same
+// way as /api/tune (lengths, strictly ascending axes, 0-100 lock values) so a
+// saved slot can never mis-interpolate when it is loaded later. Slots are in
+// their own NVS namespace and the arrays here are staged copies, so the live
+// tune and its mutex are not involved.
+static void mapsError(AsyncWebServerRequest *request, int code, const char *msg)
+{
+    JsonDocument resp;
+    resp["ok"] = false;
+    resp["error"] = msg;
+    sendJSON(request, code, resp);
+}
+
+static void mapsSaveIncoming(AsyncWebServerRequest *request, const String &body)
+{
+    JsonDocument data;
+    if (deserializeJson(data, body) != DeserializationError::Ok) { mapsError(request, 400, "Invalid JSON"); return; }
+    if (!data["index"].is<int>()) { mapsError(request, 400, "Missing 'index'"); return; }
+    int idx = data["index"].as<int>();
+    if (idx < 0 || idx >= MAP_SLOT_COUNT) { mapsError(request, 400, "Slot index out of range"); return; }
+    const char *name = data["name"] | "";
+    if (name[0] == '\0') { mapsError(request, 400, "Missing 'name'"); return; }
+
+    JsonArray speedArrayJSON = data["speedArray"].as<JsonArray>();
+    JsonArray throttleArrayJSON = data["throttleArray"].as<JsonArray>();
+    JsonArray lockArrayJSON = data["lockArray"].as<JsonArray>();
+    if (speedArrayJSON.size() != speedArrayCount || throttleArrayJSON.size() != throttleArrayCount)
+    {
+        mapsError(request, 400, "Invalid array length");
+        return;
+    }
+    if (lockArrayJSON.size() != throttleArrayCount) { mapsError(request, 400, "Invalid lock array"); return; }
+
+    uint8_t stagedThrottle[throttleArrayCount];
+    uint16_t stagedSpeed[speedArrayCount];
+    uint8_t stagedLock[throttleArrayCount][speedArrayCount];
+    for (uint8_t i = 0; i < throttleArrayCount; i++)
+        stagedThrottle[i] = (uint8_t)(throttleArrayJSON[i] | 0);
+    for (uint8_t i = 0; i < speedArrayCount; i++)
+        stagedSpeed[i] = (uint16_t)(speedArrayJSON[i] | 0);
+
+    uint16_t throttleAxis[throttleArrayCount];
+    for (uint8_t i = 0; i < throttleArrayCount; i++)
+        throttleAxis[i] = stagedThrottle[i];
+    if (!is_strictly_ascending_u16(throttleAxis, throttleArrayCount) ||
+        !is_strictly_ascending_u16(stagedSpeed, speedArrayCount))
+    {
+        mapsError(request, 400, "Non-ascending axis");
+        return;
+    }
+
+    for (uint8_t throttle = 0; throttle < throttleArrayCount; throttle++)
+    {
+        JsonArray throttleRow = lockArrayJSON[throttle].as<JsonArray>();
+        if (throttleRow.size() != speedArrayCount) { mapsError(request, 400, "Invalid lock array"); return; }
+        for (uint8_t speed = 0; speed < speedArrayCount; speed++)
+        {
+            const int v = (int)(throttleRow[speed] | 0);
+            if (v < 0 || v > 100) { mapsError(request, 400, "Lock table values must be 0-100"); return; }
+            stagedLock[throttle][speed] = (uint8_t)v;
+        }
+    }
+
+    if (!mapSlotSave((uint8_t)idx, name, stagedSpeed, stagedThrottle, stagedLock))
+    {
+        mapsError(request, 500, "Storage write failed");
+        return;
+    }
+    JsonDocument resp;
+    resp["ok"] = true;
+    resp["index"] = idx;
+    sendJSON(request, 200, resp);
+}
+
+// POST /api/maps/delete - clear an on-device slot. Body: {index}.
+static void mapsDeleteIncoming(AsyncWebServerRequest *request, const String &body)
+{
+    JsonDocument data;
+    if (deserializeJson(data, body) != DeserializationError::Ok || !data["index"].is<int>())
+    {
+        mapsError(request, 400, "Missing 'index'");
+        return;
+    }
+    int idx = data["index"].as<int>();
+    if (idx < 0 || idx >= MAP_SLOT_COUNT || !mapSlotDelete((uint8_t)idx))
+    {
+        mapsError(request, 400, "Slot index out of range");
+        return;
+    }
+    JsonDocument resp;
+    resp["ok"] = true;
+    sendJSON(request, 200, resp);
+}
+
 // Served at "/" when the web UI filesystem is missing, broken or empty (a
 // filesystem OTA that failed, a fresh chip with only firmware on it). Needs
 // nothing from LittleFS: two uploads straight to the OTA endpoints, web UI
@@ -1027,12 +1136,12 @@ button:disabled{opacity:.5}.s{margin-top:8px;font-size:14px;color:#9c9}.e{color:
 function diag(){var x=new XMLHttpRequest();x.open('GET','/ota/fsdiag');x.onload=function(){try{var d=JSON.parse(x.responseText),o='';for(var k in d)o+=k+': '+d[k]+'\n';document.getElementById('dg').textContent=o}catch(e){document.getElementById('dg').textContent=x.responseText}};x.send()}
 document.getElementById('dgb').onclick=diag;diag();
 function up(k,url,field,done,then){var f=document.getElementById(k).files[0],b=document.getElementById(k+'b'),s=document.getElementById(k+'s'),p=document.getElementById(k+'p');
-if(!f){s.textContent='Pick the file first.';s.className='s e';return}b.disabled=true;s.className='s';s.textContent='Uploading…';
+if(!f){s.textContent='Pick the file first.';s.className='s e';return}b.disabled=true;s.className='s';s.textContent='Uploading...';
 var d=new FormData();d.append(field,f,f.name);var x=new XMLHttpRequest();x.open('POST',url+'?size='+f.size);
 x.upload.onprogress=function(e){if(e.lengthComputable)p.style.width=Math.round(e.loaded/e.total*100)+'%'};
 x.onload=function(){if(x.status===200){s.textContent=done;if(then)then()}else{s.className='s e';s.textContent=x.responseText||('Failed ('+x.status+')');b.disabled=false}};
 x.onerror=function(){s.className='s e';s.textContent='Upload failed - check the connection and retry.';b.disabled=false};x.send(d)}
-document.getElementById('fsb').onclick=function(){up('fs','/ota/update/fs','filesystem','Web UI installed - opening it…',function(){setTimeout(function(){location.reload()},1500)})};
+document.getElementById('fsb').onclick=function(){up('fs','/ota/update/fs','filesystem','Web UI installed - opening it...',function(){setTimeout(function(){location.reload()},1500)})};
 document.getElementById('fwb').onclick=function(){up('fw','/ota/update','firmware','Firmware installed - rebooting. Reload this page in ~20 s.')};
 </script></body></html>)HTML";
 
@@ -1246,6 +1355,74 @@ void setupAPI()
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
             parseJSON(request, data, len, index, total, tuneIncoming);
+        });
+
+    // ===== On-device map slots (Edge contract) =====
+
+    // GET /api/maps - list the save slots (names only, empty = free)
+    webServer.on("/api/maps", HTTP_GET, [](AsyncWebServerRequest *request)
+                 {
+        char names[MAP_SLOT_COUNT][MAP_NAME_MAX];
+        mapSlotNames(names);
+        JsonDocument resp;
+        resp["count"] = MAP_SLOT_COUNT;
+        resp["nameMax"] = MAP_NAME_MAX - 1; // usable chars (excludes NUL)
+        JsonArray slots = resp["slots"].to<JsonArray>();
+        for (uint8_t i = 0; i < MAP_SLOT_COUNT; i++)
+        {
+            JsonObject s = slots.add<JsonObject>();
+            s["index"] = i;
+            s["name"] = names[i];
+            s["used"] = names[i][0] != '\0';
+        }
+        sendJSON(request, 200, resp); });
+
+    // GET /api/maps/get?index=N - one slot's tune, in the shape /api/tune takes
+    webServer.on("/api/maps/get", HTTP_GET, [](AsyncWebServerRequest *request)
+                 {
+        if (!request->hasParam("index")) { mapsError(request, 400, "Missing 'index'"); return; }
+        int idx = request->getParam("index")->value().toInt();
+        uint16_t s[speedArrayCount];
+        uint8_t t[throttleArrayCount];
+        uint8_t l[throttleArrayCount][speedArrayCount];
+        char name[MAP_NAME_MAX];
+        if (idx < 0 || idx >= MAP_SLOT_COUNT || !mapSlotLoad((uint8_t)idx, s, t, l, name))
+        {
+            mapsError(request, 404, "Empty or invalid slot");
+            return;
+        }
+        JsonDocument resp;
+        resp["ok"] = true;
+        resp["index"] = idx;
+        resp["name"] = name;
+        JsonArray sa = resp["speedArray"].to<JsonArray>();
+        for (uint8_t i = 0; i < speedArrayCount; i++) sa.add(s[i]);
+        JsonArray ta = resp["throttleArray"].to<JsonArray>();
+        for (uint8_t i = 0; i < throttleArrayCount; i++) ta.add(t[i]);
+        JsonArray la = resp["lockArray"].to<JsonArray>();
+        for (uint8_t r = 0; r < throttleArrayCount; r++)
+        {
+            JsonArray row = la.add<JsonArray>();
+            for (uint8_t c = 0; c < speedArrayCount; c++) row.add(l[r][c]);
+        }
+        sendJSON(request, 200, resp); });
+
+    // POST /api/maps/save - store the editor's tune into a slot
+    webServer.on(
+        "/api/maps/save", HTTP_POST, [](AsyncWebServerRequest *request)
+        { (void)request; }, nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+        {
+            parseJSON(request, data, len, index, total, mapsSaveIncoming);
+        });
+
+    // POST /api/maps/delete - clear a slot
+    webServer.on(
+        "/api/maps/delete", HTTP_POST, [](AsyncWebServerRequest *request)
+        { (void)request; }, nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+        {
+            parseJSON(request, data, len, index, total, mapsDeleteIncoming);
         });
 
     // POST /api/learn/start - begin the learn sweep
