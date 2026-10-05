@@ -45,7 +45,8 @@ static uint32_t lpHaldexFps          = 0;
 // Bench mode support (PR #39): latches true the first time real CAN traffic is
 // seen on either bus this power cycle. Once set, benchMode stops suppressing
 // sleep - the unit is demonstrably harnessed - so a forgotten toggle can't
-// weaken the parked-car battery protection. Not persisted; resets on boot.
+// weaken the parked-car battery protection. The latch resets on boot; the
+// benchMode setting is also switched off (and persisted) at the same moment.
 static bool everSawCANThisSession = false;
 
 // Aggressive-mode state.
@@ -395,7 +396,15 @@ void updateTriggers(void *arg)
     }
 
     if (hasCANChassis || hasCANHaldex)
+    {
       everSawCANThisSession = true; // real bus seen: bench mode (if on) stops holding WiFi up from here on
+      // Clear the setting itself too, not just its effect for this power cycle.
+      // Otherwise a unit left with Bench Mode on boots next time with the car
+      // asleep (no CAN yet), holds WiFi up, and drains the battery until the car
+      // wakes. writeEEP persists the change on its next pass.
+      if (benchMode)
+        benchMode = false;
+    }
 
     // Gen41 Bus0 heartbeat liveness: parseCAN_chs only ever sets these true on
     // frame arrival, so unplugging the Haldex left the dashboard reporting

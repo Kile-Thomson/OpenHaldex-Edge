@@ -360,7 +360,7 @@ If your module is on a switched ignition feed, low power mode saves little and i
 
 The module cannot tell a harnessed car that is asleep from no harness at all: both look like zero CAN traffic. So on the bench with CAN Sleep on, the WiFi drops after five minutes. **Bench Mode** (Settings, under CAN Sleep) holds the WiFi up regardless.
 
-It clears itself. The moment either CAN bus shows traffic in a power cycle, Bench Mode stops applying and normal sleep resumes, so it cannot weaken the battery protection once the unit is in the car. The UI also greys the switch out while CAN is detected, and the module ignores an attempt to turn it on while CAN is live.
+It clears itself. The moment either CAN bus shows traffic, Bench Mode switches itself off and saves that, and normal sleep resumes, so it cannot weaken the battery protection once the unit is in the car. The UI also greys the switch out while CAN is detected, and the module ignores an attempt to turn it on while CAN is live.
 
 ---
 
