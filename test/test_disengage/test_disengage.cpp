@@ -2,7 +2,7 @@
 //
 // Pins the behaviour of speed_disengage_ok(speed, under, above) in
 // src/OpenHaldexC6_Calculations.cpp, which lock_enabled() consults for the
-// passive drive modes (5050/6040/7525); expert mode bypasses this gate. Lock is
+// passive drive modes (5050/6040/7525); in v9 Expert and force modes use it too (see test_v9port). Lock is
 // permitted only while the vehicle speed is at or ABOVE `under` AND at or BELOW
 // `above`; a bound of 0 disables that side.
 //

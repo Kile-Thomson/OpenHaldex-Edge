@@ -7,10 +7,10 @@ namespace OpenHaldexC6
     class UDS
     {
     public:
-        // With rxQueue set, responses are read from that queue (filled by a
-        // parse-task tap) instead of twai_receive_v2 - a direct bus read from
-        // anywhere but the owning parse task steals and discards gateway
-        // frames. Pass a queue whenever the target bus has a parse task.
+        // rxQueue: when given, responses are read from this queue (filled by a
+        // copy-tap in the parse task for that bus) instead of the TWAI driver,
+        // so the helper never competes with the gateway for frames. Only the
+        // bench/no-bridge case should leave it null.
         explicit UDS(twai_handle_t canBus = twai_bus_0, QueueHandle_t rxQueue = nullptr);
 
         // requestId: ECU request listener, usually 0x7E0 (physical) for VW
@@ -57,3 +57,9 @@ namespace OpenHaldexC6
 // Sends requests to 0x771 on Bus 1; reads responses from udsRxQueue
 // (parseCAN_hdx routes 0x779 frames there when udsRxQueue != nullptr).
 void udsMQBTask(void *arg);
+
+// KWP2000-over-VW-TP2.0 diagnostic task (Gen2 / Gen4 PQ Haldex).
+// Opens a TP2.0 channel to the AWD module (see KWP_TP20_* in defs.h), starts a
+// KWP session and sweeps measuring-block groups, dumping the raw response bytes
+// into kwpTp20RawDump for capture. Frames are routed via tp20RxQueue.
+void kwpTp20Task(void *arg);

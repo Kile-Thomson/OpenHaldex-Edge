@@ -18,3 +18,4 @@ static inline BaseType_t xTaskCreate(TaskFunction_t /*fn*/,
 
 static inline void vTaskDelay(TickType_t) {}
 static inline void vTaskDelete(TaskHandle_t) {}
+

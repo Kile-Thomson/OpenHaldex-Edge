@@ -15,3 +15,7 @@
 // Defined on-target in OpenHaldexC6_tasks.cpp; invoked by startHaldexLearn()
 // in _Calculations.cpp via xTaskCreate. No-op off-target.
 void haldexLearnTask(void * /*arg*/) {}
+
+// Long Learn task body (OpenHaldexC6_tasks.cpp): startLongLearn() spawns it via
+// xTaskCreate. No-op off-target.
+void longLearnTask(void * /*arg*/) {}

@@ -8,18 +8,14 @@
   </a>
 </p>
 
-# OpenHaldex-C6-Edge
+# OpenHaldex Edge
 
 > [!IMPORTANT]
-> **This is a personal, non-commercial firmware fork** of [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6). It exists to:
+> **OpenHaldex Edge is a fork of [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6).** Forbes did the hard work: the reverse engineering, the Gen2, Gen4 and Gen5 logic, the hardware and the open-source release. Edge starts from their V9.00.0 firmware and adds to it. Same hardware, same wiring, same modes.
 >
-> 1. **Add motorsport-oriented features** for track and performance use.
-> 2. **Keep things stable** by validating the platform with a host-runnable test suite before adding anything new.
-> 3. **Extend the tools for power users** - finer control, better tuning tools, a host-runnable test suite that pins wire-byte correctness, and WiFi-AP security hardening.
+> Edge uses the **same MIT licence** as upstream, with nothing added to it. There are no plans to restrict it, now or later. Edge's own code is contributed under the same terms. See [Licensing](#licensing).
 >
-> **This repo contains firmware source only.** Hardware design files, Gerbers, BOM and enclosure STLs live in the upstream project - for supported hardware, go to [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6) and [forbes-automotive.com](https://forbes-automotive.com/). Ready-to-flash binaries of this fork are attached to each [release](https://github.com/Kile-Thomson/OpenHaldex-Edge/releases); the upstream project remains the source for official, supported firmware.
->
-> All original design, reverse-engineering, and credit belong to **Forbes Automotive** and the upstream contributors listed under [Acknowledgements](#acknowledgements). The Forbes Automotive copyright and the [LICENSE](LICENSE.md) (FASL v1.0) are preserved unchanged. This fork is not affiliated with or endorsed by Forbes Automotive. See [Upstream](#upstream) for tracking the original and [Improvements over upstream](#improvements-over-upstream) for what has changed here.
+> For assembled modules, official firmware and support, go to [forbes-automotive.com](https://forbes-automotive.com/). Edge is a personal project, not affiliated with or endorsed by Forbes Automotive. Credit for the platform is in [Acknowledgements](#acknowledgements); what Edge adds is in [What Edge adds](#what-edge-adds) and the [CHANGELOG](CHANGELOG.md).
 
 <p align="center">
 
@@ -29,90 +25,83 @@
 
 </p>
 
-OpenHaldex is an open-source **Haldex AWD controller** for Volkswagen and Audi Group vehicles using Haldex Generation 1, 2, 4 (PQ Chassis) and 5 (MQB) differentials.
+OpenHaldex is an open-source **Haldex AWD controller** for Volkswagen and Audi Group vehicles with Haldex Generation 1, 2, 4 (PQ chassis) and 5 (MQB) differentials.
 
-The firmware runs on an **ESP32-C6** and reads CAN bus messages from the vehicle, allowing the controller to modify or generate commands so the Haldex differential behaves exactly as you've configured. It can operate using OEM CAN signals or in Standalone mode, which is useful for conversions where no chassis bus is present.
+The firmware runs on an **ESP32-C6**. It sits between the car and the Haldex, reads the CAN bus, and changes or generates the Haldex's commands so the differential locks the way you configured. It can work from the car's own CAN signals, or in Standalone mode for conversions with no chassis bus.
 
-This fork takes Forbes Automotive's platform further and puts the day-to-day usability first: the whole controller is driven from a phone over WiFi, with a reworked dark web UI, a live engagement gauge and lock-response trace, a 3D expert map, per-car calibration, and browser-based over-the-air updates. Everything below runs on the same hardware Forbes builds.
+Edge takes Forbes's platform and puts day-to-day use first. The whole controller is set up from a phone: a dark web UI served by the module itself, a live engagement gauge and lock trace, a 3D expert map, per-car calibration, backup and restore, and updates straight from GitHub.
 
-![OpenHaldex Edge web UI - dashboard, expert 3D map, diagnostics, basic modes, calibrate, settings and OTA](/Images/openHaldexUI.png)
+![OpenHaldex Edge web UI: dashboard, expert 3D map, Long Learn, basic modes, home WiFi and Bluetooth, and update from GitHub](/Images/openHaldexUI.png)
 
-*The OpenHaldex Edge web UI, served straight from the device over its own WiFi access point. No app to install; open a browser on your phone.*
+*The Edge web UI, served by the module over its own WiFi access point. No app to install; open a browser on your phone. These screenshots come from the UI running against a simulator, so the numbers are made up and the layout is real.*
 
-## Improvements over upstream
+## What Edge adds
 
-This fork tracks Forbes Automotive's **V8.00.2** firmware and builds directly on it. Same hardware, same modes, same wiring. Most of the driving features - the MQB live-data readout over UDS, hazard force-open, lock-release rate limiting and the low-power sleep system - are Forbes's own work and ship in the V8.00.2 base this fork starts from. Full credit for the platform and its reverse-engineering belongs to them.
+Everything below runs on the Forbes hardware.
 
-What this fork adds on top is a focused security, correctness and testing pass, a handful of optional driving features, over-the-air updates from the browser, and a reworked web UI. Every item below was checked against the V8.00.2 source before it was listed here, so the list reflects what actually differs from the current upstream, not an older release. The change-by-change breakdown is in [CHANGELOG.md](CHANGELOG.md).
+**From Forbes Automotive (V9.00.0, all included):**
 
-### Security hardening
+- Gen1, Gen2, Gen4 (PQ, GM/SAAB) and Gen5 (MQB 0CQ, 0AY, VAQ) control, Standalone mode, Expert mode with the speed/throttle table.
+- Learn Haldex, Long Learn and per-generation CAN frame blocks.
+- Live diagnostics: UDS for Gen5, KWP2000 over TP2.0 for Gen2 and Gen4.
+- CAN sniffing for SavvyCAN, low power sleep, force modes from TC / hazards / external button.
+- Home WiFi (bridge mode), Backup & Restore and Bench Mode, contributed by louij2 (PR #39).
+- Bluetooth LE for the DashCAN app, contributed by danati (PR #44).
+- OTA updates with rollback protection, plus the release channels from PR #43.
+- The PCB, enclosure and BOM files, now in this repo too.
 
-- **No default password; you set your own on the device.** Nothing is committed in source and there is no build step. On first power-up the access point runs open just long enough to reach the setup page, where you choose a WPA2 password (8-63 characters).
-- **Joining the WiFi AP is the single gate.** Once the password is set, being on the AP is the one auth boundary: anyone on the network has full control, anyone who cannot join has none. There is no separate HTTP login to manage.
-- **CAN injection stays closed until the AP is secured.** Host-to-device CAN injection over the analyzer port is refused while the AP is still open, so the car's behaviour cannot change until the network itself is locked. Passive sniffing (receive only) always works.
+**Added by Edge:**
 
-### Correctness fixes
-
-- **Recovers from a CAN fault on its own.** After a bus-off event the controller detects the recovery and brings each bus back by itself, no power cycle needed.
-- **Gen5 checksum alignment.** The Gen5 ESP_10 (0x116) frame uses the E2E checksum DataID the MQB bus expects. (Still to be confirmed against a real Gen5 unit on the bench.)
-- **Diagnostic reads return the full response.** The built-in ECU read surfaces the complete response payload.
-
-### Under the hood
-
-- **Shared control state is mutex-guarded.** The settings and mode fields that the web handlers and the CAN tasks touch concurrently are serialised behind a single lock, so a web write can't tear a value a CAN task is mid-read on.
-- **Storage consolidated onto one flash namespace.** Settings moved from around 29 separate NVS namespaces to a single `openhaldex` namespace with a one-time migration from the old layout, and first-run default seeding was reworked so a fresh device comes up with correct defaults.
-
-### Added driving features
-
-- **Optional steering-gain reduction.** Off by default. Winds lock back as steering angle increases, so the rear axle isn't fighting the front through tight corners and car parks. The angle is decoded from the MQB LWI_01 (0x086) frame; you choose where the reduction starts, where it bottoms out, and the minimum it can drop to. If the steering signal goes stale or is flagged faulty the reduction switches itself off and behaviour returns to normal. The live angle and applied gain show on the Diagnostics page so you can confirm the reading on your car before turning it on.
-- **Lock-rate sliders wired through, in real time units.** The lock-release rate slider and enable toggle are honoured end to end, and a separate engage rate is added, so both lock-up and release can be slewed instead of snapping on and off. Both are set in milliseconds for a full 0-100% sweep (0 = instant), so a rate reads as the time the change takes.
-- **Per-corner slip and drive-mode over the diagnostic bus.** OpenHaldex answers three supplier-specific UDS DIDs on the Haldex address, the same channel that already carries clutch temps and PWM, so a tester on the OBD port (such as the Rokketek gauge) can read lock and geometry-compensated per-corner wheel slip and set the drive mode, even though the car's gateway won't forward the passive broadcasts that far. Slip is each wheel's real speed against what the steering geometry predicts, so a straight launch and a mid-corner break-loose both read as true slip. The four slip values are also on the web dashboard JSON. Geometry constants are Audi TT Mk3 defaults and want on-car calibration.
-- **Per-car lock calibration for Gen5.** The BPK packing calibration value is now adjustable per car, so a car whose Haldex under- or over-responds to the lock command can be dialled in to match. Run a Learn and nudge it until the lock you command matches what the Haldex actually delivers (the Sent vs Returned line sitting on the 1:1 diagonal). It is not a strength dial - higher does not lock harder, it just shifts the calibration, and there is one correct value per car. Default is unchanged, so nothing moves unless you tune it. Under the hood the packing math was widened past its old 8-bit cap, and the standalone and passthrough copies were merged into one host-tested function so they can't drift apart.
-- **Launch PWM floor (experimental).** A tunable slider (0-100%, defaults to 0 = unchanged) that raises the ESP_14 `BR_Vorg_*_Min` bytes the Haldex sees while lock is commanded. Upstream pinned these `Min` bytes at 0, letting the Haldex settle to its own minimum clutch PWM under load; raising the floor forces it to hold higher, useful on a launch where you want the rear coupled hard off the line. The floor rides on the same lock-target gating as the `Max` bytes, so it collapses to 0 off-throttle, in FWD and while coasting (no always-engaged effect), and is clamped strictly below `Max` so the Haldex keeps room to modulate. Watch the reported engagement while you tune: if clutch PWM climbs but engagement was already ~100%, the extra PWM is just heat, not more lock. Applied on both the CAN-passthrough and standalone frame paths.
-
-### Updates
-
-- **Update over the air, one file, from the browser.** A Software Update card on the Settings page shows the current version, the live safe-state gate and its blocking reason, and a single upload slot with progress. Feed it the release's merged image - the same file used for a USB flash - and it updates both the firmware and the web UI in one go, splitting the image by flash offset and skipping the bootloader, partition table and NVS so your settings and learn table survive. This fork builds a UI on top of the existing OTA endpoints and extends over-the-air updates to cover the web UI itself. Every update stays behind the same safety gate (car stationary, buses healthy, no temperature fault) and the firmware path keeps dual-slot auto-rollback.
-
-### Web interface
-
-- **Restyled dashboard.** A dark dashboard with a semi-circular engagement gauge and a target tick, touch and reduced-motion polish, and polling that pauses while the page is hidden so it isn't hitting the device in your pocket. The gauge arc, the bars and the live operating-point dot ease between polls instead of snapping, so the readout tracks smoothly while driving.
-- **Live lock-response trace.** A rolling 15-second strip chart under the gauge plots what you asked the lock to do against what it actually did, so coupling lag and the effect of the rate limits read at a glance while tuning. It clears on a dropped link, so a reconnect never draws a line across the outage.
-- **Connection-status badge.** A live/reconnecting/offline badge in the header. It tracks the link to the access point, flipping to reconnecting after the first missed poll and offline after three, so the numbers on screen are always clearly marked live or stale while driving.
-- **Expert map 3D surface.** The Expert editor renders the lock table as an isometric 3D surface - speed and throttle on the ground plane, lock percent as height - the same read you'd get from a 3-axis map on a standalone ECU, with a live operating-point dot riding the surface as you drive. It is read-only and doesn't change what's written to the Haldex.
-- **Learn calibration chart.** Once your Haldex has a learned table, the Learn section plots it - commanded correction factor against measured engagement, with a 1:1 reference line - so where your unit over- or under-responds reads at a glance. Render-only from data the device already returns; no extra load on the module.
-- **Install it like an app, full-screen.** The web UI is an installable PWA (manifest, icon set, service worker) so it can go on a phone home screen and open full-screen. A full-screen toggle in the header also works over plain http with no install step, for a clean dashboard on an unmodified phone. Live telemetry and control always hit the device - the service worker never caches the API or POSTs.
-- **On-device saved tune slots.** Five named map slots persist in the device's own storage with list/save/load/delete, so a tune saved from one phone is visible from any phone. Replaces the earlier phone-side file export/import.
-- **Calibrate tab with a soft "not calibrated" gate.** Everything you set up per car - Generation, Learn, Lock calibration, and the Launch PWM floor - is grouped on one Calibrate tab with a numbered setup order, an inline intro plus a tappable (i) explainer per control, and a live calibration status chip. Until a learn table exists, a dismissible banner on the Dashboard warns that lock is running on an estimate and drives worse than Stock until you run the Learn. Nothing is disabled - it guides rather than blocks.
-- **Plain-English help throughout.** The drive-mode drawer describes what each mode actually does, and the previously bare controls (Haldex generation, brake/handbrake follow, the controller and connectivity toggles) now carry inline hints. Copy only - no behaviour change.
-
-### Built and tested
-
-- **A test suite that runs on any computer.** A host-runnable native test suite pins the core maths and safety logic - checksums, expert-map interpolation, lock-response rate limiting and steering-gain reduction - so a change can't quietly alter what the Haldex sees, no hardware needed.
-- **Release build profile.** A separate build with debug output disabled.
-
-Origin attribution and the FASL v1.0 license are preserved unchanged.
-
----
+- A restyled web UI: dashboard with engagement gauge, live lock trace and connection badge, drive-mode drawer, 3D expert map, tune slots saved on the module, Calibrate tab, installable as a phone app.
+- A web-access rule for the home network: a browser reaching the module through your router signs in with the WiFi password. See [Home WiFi](#home-wifi-bridge-mode).
+- A forced WiFi password on first power-up, and no CAN injection from the analyzer port until it is set.
+- Updating from one file: the release's merged image updates firmware and web UI together.
+- Lock engage and release timed in milliseconds, a steering-angle lock taper, per-car geometry for the slip readout, a per-car torque ceiling and a Launch PWM floor.
+- Safety work: the learn sweep refuses to run in a moving car, stale CAN inputs fall back to safe values, control state is mutex-guarded, a stalled CAN controller revives itself.
+- A host-runnable test suite (`pio test -e native`) and a release build with debug output off.
 
 ## Contents
 
+- [Before you flash: upgrading from Edge v8 or upstream](#before-you-flash-upgrading-from-edge-v8-or-upstream)
 - [Supported platforms](#supported-platforms)
 - [Modes](#modes)
+- [Basic tab: when lock is allowed](#basic-tab-when-lock-is-allowed)
 - [Expert mode](#expert-mode)
-- [Haldex learning](#haldex-learning)
+- [Calibrate: Learn, lock calibration and geometry](#calibrate-learn-lock-calibration-and-geometry)
+- [Long Learn](#long-learn)
+- [Frame blocks](#frame-blocks)
 - [Changing modes](#changing-modes)
-- [Mode numbers](#mode-numbers-can-byte-0)
-- [Broadcasted state](#broadcasted-state)
-- [WiFi setup](#wi-fi-setup)
-- [Low power mode](#low-power-mode)
-- [Flashing firmware](#flashing-firmware)
+- [WiFi setup](#wifi-setup)
+- [Home WiFi (bridge mode)](#home-wifi-bridge-mode)
+- [Backup & Restore](#backup--restore)
+- [DashCAN app (Bluetooth)](#dashcan-app-bluetooth)
+- [Low power mode and Bench Mode](#low-power-mode-and-bench-mode)
+- [Live diagnostics](#live-diagnostics)
 - [CAN sniffing](#can-sniffing-savvycan--gvret)
-- [Hardware](#hardware)
+- [Installation](#installation)
+- [Flashing and updating](#flashing-and-updating)
+- [Building from source](#building-from-source)
+- [PCB and enclosure](#pcb-and-enclosure)
 - [Acknowledgements](#acknowledgements)
 - [Upstream](#upstream)
-  - [Divergence from upstream](#divergence-from-upstream)
+- [Licensing](#licensing)
 - [Disclaimer](#disclaimer)
+
+---
+
+## Before you flash: upgrading from Edge v8 or upstream
+
+> [!IMPORTANT]
+> **The first v9 flash is over USB.** The Bluetooth release changed the flash layout: the firmware slots got bigger (0x1C0000 each) and the web UI partition smaller (0x70000 at 0x390000). A partition table cannot be changed over the air, so a unit on Edge v8, or on an upstream build from before the Bluetooth release, needs one USB flash. After that, updates work over WiFi again. The update page tells you so if you try a file that will not fit.
+
+Things worth knowing when you move from Edge v8:
+
+- **Settings keys are unchanged.** The module still stores everything in the one `openhaldex` settings area, so a flash that leaves that area alone keeps your settings. The merged image is one file covering flash from 0x0 to the end of the web UI partition, and the settings area inside that range is filled with blank flash, so a merged-image USB flash is a factory reset. To keep your settings, flash the separate parts instead, as shown under [First flash over USB](#first-flash-over-usb). Edge v8 has no Backup & Restore, so write down your Expert table or screenshot it either way. v9 units can export a backup (see [Backup & Restore](#backup--restore)).
+- **The speed window now gates every lock path.** Disengage under speed, disengage above speed and minimum throttle apply to force modes (TC, hazards, external button) and to Expert mode, not only to the fixed-ratio modes. On Edge v8 those two bypassed the window. If you relied on a force mode locking the car below your "disengage under" speed, lower that setting.
+- **From a home network the UI asks for a login.** Over the module's own WiFi nothing changes. See [Home WiFi](#home-wifi-bridge-mode).
+- **The learn sweep needs the car stationary** (5 km/h or less). It refuses to start, or aborts, in a moving car.
+- **The steering-angle lock taper is on by default on a fresh unit**, with the curve described under [Basic tab](#basic-tab-when-lock-is-allowed). A unit that carries Edge v8 settings keeps whatever its steering setting was.
+- **The default correction factor** used before you run a learn stays Edge's (lock + 20)/2, which matches the fit written in the source. Upstream's code currently computes lock/2 + 20; a pull request to line the two up is open upstream. Run the learn and it stops mattering.
 
 ---
 
@@ -121,12 +110,15 @@ Origin attribution and the FASL v1.0 license are preserved unchanged.
 - Generation 1 - PQ
 - Generation 2 - PQ
 - Generation 4 - PQ
-- Generation 4 - GM
+- Generation 4 - GM / SAAB
 - Generation 4 - Ford (ongoing)
 - Generation 5 - MQB (0CQ)
+- Generation 5 - MQB (0CQ VAQ)
 - Generation 5 - PQ (0AY)
 
-> Gen3 is currently unsupported.
+> Gen3 is not supported. The generation list shows a "Generation 3 - Volvo" entry, but there is no Gen3 drive logic behind it.
+
+Pick the generation on the **Calibrate** tab. It has to match the car, or nothing else will behave.
 
 ---
 
@@ -134,343 +126,524 @@ Origin attribution and the FASL v1.0 license are preserved unchanged.
 
 | Mode | Behaviour | LED colour |
 |------|-----------|------------|
-| Stock | OEM behaviour | Red |
+| Stock | OEM behaviour (frames pass through untouched) | Red |
 | FWD | Zero lock | Green |
-| 7525 | 30% lock | Cyan |
-| 6040 | 40% lock | Neon pink |
-| 5050 | 100% lock | Blue |
-| Expert | User-defined lock profile | White |
+| 75:25 | 30% lock | Cyan |
+| 60:40 | 40% lock | Neon pink |
+| 50:50 | 100% lock | Blue |
+| Expert | Lock from your speed/throttle table | White |
+
+The percentages are the lock the controller asks for. In Stock the controller edits nothing: the car's own signals reach the Haldex as they are. In Standalone mode there is no car to pass through from, so Stock holds the clutch open, and the mode button skips Expert.
+
+If you turn on **Disable Controller** (Settings), the module drops to Stock, and mode changes from the web UI and the app are refused until you turn it back on.
+
+![OpenHaldex Edge web UI: dashboard, live lock trace, expert 3D map and diagnostics](/Images/UIDemo.png)
+
+*Dashboard with the engagement gauge, the last 15 seconds of target against actual lock, the Expert 3D map and Diagnostics.*
+
+---
+
+## Basic tab: when lock is allowed
+
+The Basic tab holds three guards that apply to every lock path: the fixed-ratio modes, Expert, and the force modes.
+
+| Setting | What it does | Default |
+|---------|--------------|---------|
+| Disable under speed | No lock below this speed. Car parks, tight manoeuvres. | 0 (off) |
+| Disable above speed | No lock above this speed. | 0 (off) |
+| Disable under throttle | No lock until the pedal passes this percentage. Coasting. | 0 (off) |
+
+A bound of 0 switches that side off. Lock is allowed only while speed sits inside the window and the pedal is above the threshold.
+
+**Lock response times.** How long the commanded lock takes to ramp, in milliseconds for a full 0 to 100% travel. *Engage* (lock-up) defaults to 0, instant. *Release* defaults to 500 ms. A higher number is slower. The **Enable Rate Limiting** switch turns both ramps off for instant changes either way. The same release ramp is what the DashCAN app's "gradual lock release" setting changes.
+
+**Steering gain taper.** Lowers the lock request as the steering angle grows, so the rear axle is not fighting the front in tight turns and car parks. It works on Gen2, Gen4 and Gen5 (0CQ and VAQ) and applies to every mode that produces lock. The default curve is 100% up to 45 degrees, 80% at 90, 50% at 180 and 20% at 360. In the UI you set where the taper starts, where it is fully applied, and the minimum it drops to. If the steering signal is missing or stale, the taper switches itself off and lock goes back to the full request. The live angle and applied gain are on the Diagnostics tab, so you can check the reading on your car.
 
 ---
 
 ## Expert mode
 
-Expert mode allows lock targets to be configured based on **speed and throttle setpoints** using a table inside the Web UI. Full control over your Haldex system with no guesswork. Requires OEM CAN messages to be present for throttle and speed inputs.
+Expert mode sets the lock target from **speed and throttle** using a table in the web UI. It needs the car's CAN signals for speed and throttle, so it is not available in Standalone.
 
-![ExpertMode](/Images/expertmode.jpg)
+![Expert mode: speed by throttle lock table with the 3D surface below](/Images/expertmode.jpg)
 
-*Expert mode in the OpenHaldex Edge UI: a colour-coded lock table over speed and throttle, with the live 3D surface below and an operating-point dot that rides it as you drive.*
+*Expert mode in the Edge UI: a colour-coded 7 by 7 table over speed and throttle, the live 3D surface below, and a dot that rides the surface as you drive.*
 
-Below the grid, a read-only curve view plots the same lock surface so the table reads as lines while you tune. Toggle between **lock vs speed** (one line per throttle band) and **lock vs throttle** (one line per speed band); it redraws as you edit and never changes what is sent to the Haldex.
+- **Editing.** Tap a cell to edit it. Press and hold to select several cells at once.
+- **3D surface.** The same table drawn as a surface: speed and throttle on the floor, lock as height. The operating-point dot shows where you are right now. It is a view; it does not change what is sent.
+- **Curve view.** Below the grid, toggle between lock against speed (one line per throttle band) and lock against throttle (one line per speed band).
+- **Tune slots.** Five named slots are stored on the module, with save, load and delete. A tune saved from one phone shows on any other phone.
+- **Apply / Restore Defaults.** Nothing is written to the Haldex until you apply.
+
+The speed window and the steering taper on the Basic tab apply to Expert too.
 
 ---
 
-## Haldex learning
+## Calibrate: Learn, lock calibration and geometry
 
-The controller can learn the actual engagement curve of your specific Haldex unit by cycling through all available lock percentages. Use the **Learn Haldex** option on the Calibrate tab. It takes a couple of minutes, after which the controller knows exactly how to hit the lock percentage you request. Once a table is learned it is plotted as a curve - commanded correction factor against measured engagement, with a 1:1 reference line - so you can see where your Haldex over- or under-responds.
+Set this up once per car, top to bottom. Until a learn table exists, the Dashboard shows a dismissible banner saying lock is running on an estimate, and an uncalibrated guess drives worse than Stock. The tab does not block anything; it only nags.
 
-### Gen5 'Fix hunting' (planned, not yet built)
+1. **Generation.** Match the car. See [Supported platforms](#supported-platforms).
+2. **Learn Haldex.** The controller steps through every lock percentage and records what your Haldex actually delivers, so a request for 40% gives 40%. Run it with the engine running, the car stationary (5 km/h or less) and Haldex CAN live. It takes a couple of minutes. If you cancel, or the car starts moving, the previous table is put back. Only a finished sweep replaces it. When a table exists the tab plots it: the commanded correction factor against the measured engagement, with a dashed 1:1 reference line. Points above the line mean your Haldex over-responds, below means it under-responds.
+3. **Lock calibration** (Gen5). The torque ceiling in Nm, default 220. It lines up the lock you command with the lock the Haldex delivers. Run a Learn, then adjust it until the Sent against Returned line sits on the diagonal. It is not a strength dial: higher does not lock harder, and there is one correct value per car. Leave it alone unless the learn chart shows a gap.
+4. **Launch PWM floor** (experimental, default 0%). Raises the minimum clutch PWM the Haldex is told to hold while lock is commanded, so engagement builds faster off the line. It only applies while lock is commanded, and it is kept below the maximum so the Haldex can still modulate. Watch the reported engagement as you tune: if the clutch PWM climbs but engagement was already near 100%, the extra PWM is only heat.
+5. **Car geometry** (optional). Wheelbase, front and rear track, steering ratio and the speed below which slip is ignored. The defaults are for an Audi TT Mk3 (2505 mm, 1572 mm, 1543 mm, 15.0:1, 5 km/h). They only feed the per-wheel slip card on the Dashboard. They do not change how lock behaves, so leave them alone unless you want that card to be accurate on another car.
 
-> [!NOTE]
-> Not implemented in this fork yet. Certain Generation 5 controllers, specifically those running the **554K** variant, use a different torque model to calculate the lock request, so the standard learning process does not produce accurate results on them. A dedicated **Fix Hunt** calibration path is planned to handle this. It needs a 554K unit to characterise how it responds to the sweep before the corrected algorithm can be written. Tracked upstream at [Forbes-Automotive/OpenHaldex-C6#37](https://github.com/Forbes-Automotive/OpenHaldex-C6/issues/37).
+**Gen5 Fix Hunting.** Some Gen5 controllers, specifically the 554K variant, take the torque request in a different packing and can hunt at partial lock. Fix Hunting (default off) switches the Motor_11 packing to the other format. The v9 web UI does not have a switch for it; Long Learn tries it for you on Gen5 when the baseline learn is not smooth, and keeps it only if the result is better.
+
+---
+
+## Long Learn
+
+If a normal learn is not clean (jumps, plateaus, never reaches 100%), Long Learn automates the manual loop of adding or removing a [frame block](#frame-blocks) and learning again. It is on the Calibrate tab. Run it with the car stationary, the engine running and Haldex CAN live. Allow 10 to 20 minutes.
+
+The phases:
+
+1. **Initial Sweep.** Every frame block for your generation is switched on and one learn runs at your current Launch PWM floor. This gives a baseline.
+2. **BPK Adjust** (Gen5 0CQ and VAQ only, and only if the baseline is not smooth or does not reach about 90%). It tries Fix Hunting and keeps it only if the sweep improves. If lock is still short it raises the torque ceiling in 40 Nm steps, up to 500 Nm, until the target is reached.
+3. **Sweeping Blocks.** Each extra block (anything outside your generation's default set) is removed one at a time and checked with a release-to-0-then-back-to-100% cycle. A block whose removal makes things worse goes back on. One that makes things better is flagged "affects, better without". One that makes no difference stays off. Tick *Also test the default (core) blocks* to test those as well; that takes longer and can leave the Haldex with no lock command for part of a sweep.
+4. **Confirmation.** A full sweep is stored against the final block set.
+
+The tracker shows the phase, the sweep count, the block under test, the current floor and torque ceiling, a reference score and live Sent and Returned bars. Cancelling, or losing Haldex data during the first sweep, puts back the blocks, floor, torque ceiling, Fix Hunting setting and learn table you had before. Moving above 5 km/h aborts the run the same way.
+
+A **chassis notes** box (saved on the module, up to 200 characters) and **Export report (.txt)** produce a plain text record of the car, the calibration values, the recommended block set, the sweep log and the stored table. It is useful for sharing a known good layout for a chassis.
+
+---
+
+## Frame blocks
+
+On the Calibrate tab, the **Frame blocks** list shows each CAN frame OpenHaldex can edit for your generation, with a switch for each. Switched off, the car's own message passes through untouched. Switched on, OpenHaldex modifies or generates that frame. Changes apply immediately and are saved per generation, and **Reset to Defaults** restores the generation's standard set.
+
+You would use this to find which edited frame upsets a learn or raises a fault code, or to tailor a car that behaves unusually. Most users never need to touch it; Long Learn does the same job automatically. It applies in both normal and Standalone mode, and only to the generation currently selected.
 
 ---
 
 ## Changing modes
 
-**On-board button**
+**On-board button.** A short press cycles Stock, FWD, 50:50, 60:40, 75:25, Expert, then back to Stock. In Standalone mode Expert is skipped. A long press clears the WiFi password and restores the default network name, then the access point restarts in first-run setup mode. See [WiFi setup](#wifi-setup).
 
-Press the `Mode` button to cycle through modes. Long-press disconnects WiFi.
+**External button.** A short press cycles modes the same way. If you set **External button** to "Hold: Force Mode" in Settings, a short press does nothing and a long press engages the force mode you chose for it.
 
-**External button**
+**WiFi.** The web UI at `192.168.1.1` or `openhaldex.local`.
 
-Long-press the external button to engage force mode; release to exit it.
+**CAN.** Send a mode number to the module. This needs **Broadcast over CAN** switched on in Settings (on by default on a fresh unit). The module listens on `0x6A0` and reads Byte 0 as the mode number.
 
-**WiFi**
+| Byte 0 | Mode |
+|--------|------|
+| 0 | Stock |
+| 1 | FWD |
+| 2 | 50:50 |
+| 3 | 60:40 |
+| 4 | 75:25 |
+| 5 | Expert |
 
-Use the Web UI at `192.168.1.1` or `openhaldex.local`.
-
-**CAN**
-
-Send a CAN message containing the mode number in Byte 0 (see [Mode numbers](#mode-numbers-can-byte-0)).
-
-**CAN - Force mode (TC / ESP button, hazard switch)**
-
-Force mode can be triggered from CAN signals already present on the bus, with no extra wiring:
-
-- **TC / ESP button** - the parser reads the ESP/ASR-disabled bit (byte 7 on PQ, byte 6 on MQB). Pressing the traction control button to disable ESP triggers force mode.
-- **Hazard switch (MQB)** - while the hazards flash, the coupling is forced fully open (FWD), overriding every other mode. Decoded from Blinkmodi_02 (`0x366`, byte 2 bit 4), confirmed live on-car and against the upstream V8.00.2 firmware. Useful for towing, recovery or limping home without the rear axle binding. The upstream request is [Forbes-Automotive/OpenHaldex-C6#36](https://github.com/Forbes-Automotive/OpenHaldex-C6/issues/36).
-
-Both are optional and enabled in the Settings page.
-
----
-
-## Mode numbers (CAN Byte 0)
-
-```
-Stock  = 0
-FWD    = 1
-5050   = 2
-6040   = 3
-7525   = 4
-Expert = 5
-```
-
----
-
-## Broadcasted state
-
-The module broadcasts its current state on the CAN bus (default ID `0x6B0`). This can be read by aftermarket ECUs or FIS displays.
-
-> [!NOTE]
-> Broadcasting can conflict with other devices on the same ID. The CAN ID can be adjusted in code if required.
+The same switch makes the module broadcast its state every cycle on `0x6B0`. Turning it on adds those two CAN IDs to your bus, so check nothing else already uses them.
 
 ```
 data[0] = reserved (always 0)
-data[1] = standalone_flag (1 when standalone mode is active)
-data[2] = actual_engagement (raw engagement byte returned by the differential)
-data[3] = lock_target_percent (lock requested by the firmware, 0-100)
-data[4] = vehicle_speed
-data[5] = mode_override_flag
-data[6] = current_mode_number
-data[7] = pedal_value
+data[1] = 1 when Standalone mode is on, otherwise 0
+data[2] = engagement raw byte returned by the Haldex
+data[3] = lock target percent requested by the firmware (0-100)
+data[4] = vehicle speed in km/h, clamped at 255
+data[5] = mode override flag
+data[6] = current mode number (0-5)
+data[7] = pedal value (0-100%)
 ```
+
+**Force modes from the car's own signals.** Each of these is optional, off by default, and set up in Settings. Each has its own target mode (default 50:50). A priority setting decides which one wins when more than one is active.
+
+- **TC / ESP button.** Pressing the traction control button to switch ESP off triggers force mode. The module reads the ESP-disabled bit (byte 7 on PQ, byte 6 on MQB).
+- **Hazard switch.** While the hazards flash, the force target applies. Read from Blinkmodi_02 (`0x366`) on MQB. Pick FWD as the target and you get a way to open the coupling for towing, recovery or limping home.
+- **External button.** The hold behaviour above.
 
 ---
 
 ## WiFi setup
 
-1. Connect to the access point **OpenHaldex-C6**.
-2. Open a browser and navigate to `192.168.1.1` or `openhaldex.local`.
+1. Join the access point **OpenHaldex-C6** (you can rename it).
+2. Open `192.168.1.1` or `openhaldex.local` in a browser.
 
-> [!NOTE]
-> **First power-up:** on a fresh or factory-reset device, step 2 redirects to `/setup` instead of the main UI. Set a password there (8-63 characters). Once submitted the setup page closes permanently and the main UI loads. See [Setting your password](#setting-your-password-first-connection) below.
+### First power-up: set a password
 
-<p align="center">
-  <img src="/Images/UIDemo.png" alt="OpenHaldex Edge web UI - dashboard, expert 3D map and diagnostics" width="900" style="max-width:100%;">
-</p>
+A fresh or factory-reset module has no password. The access point comes up open, but only so you can reach one page: the browser is sent to `/setup`, which asks for a WiFi password and confirmation. Nothing else on the module answers until you set it, and CAN injection from the analyzer port is refused. Once you submit, the access point restarts protected with that password and the setup page closes. The password is the **WPA2 password of the access point** and also the sign-in for the [home-network side](#home-wifi-bridge-mode). It must be 8 to 64 characters.
 
-<p align="center"><em>Dashboard, Expert 3D map and Diagnostics on a phone.</em></p>
+There is no default password and nothing to build or flash to set one.
 
-### Setting your password (first connection)
+**Changing it later.** The WiFi Access Point card on the Diagnostics tab changes the network name and password. The access point always needs a password, so there is no "open" option there.
 
-There is no default password and no build step - you do not compile or flash anything to set one.
+**Forgotten it?** Long-press the mode button on the unit. That clears the password and restores the default network name, and the setup page asks for a new one. Anyone with physical access to the module can do this, which is the intent: the unit is in your hands.
 
-On a fresh or factory-reset device, connect to the access point, open `192.168.1.1`, and the device sends you straight to a short setup page. Enter a password and confirm it (8-63 characters). That becomes the **WiFi AP (WPA2) password** - the single auth boundary: anyone who can join the AP can use the UI and flash updates, anyone who cannot, cannot. The AP restarts secured and the main UI loads.
+### Connecting from a phone
 
-Until you set it, the AP runs open so you can reach the setup page - and while it is open, host-to-device CAN injection over the analyzer port is refused and the dashboard keeps redirecting to setup.
+Use your phone's normal WiFi settings, not its Personal Hotspot. The module is the access point: it broadcasts its own network like a router does, and your phone joins it.
 
-**Changing it later.** Rotate the password from the WiFi Access Point card on the Diagnostics tab (or `POST /api/wifi`). Long-pressing the mode button resets the AP back to open.
-
-**The WiFi access point is open by default** so you can reach the setup page on first connection. Securing the AP behind a password you set, and refusing CAN injection until it is secured, are what keep the CAN bus safe: passive sniffing is receive-only and transmits nothing to the bus, so nothing can change the car's behaviour until the network itself is locked.
+The module has no internet connection and does not need one. Your phone will say the network has no internet. That is expected. If your phone keeps dropping the network because of that warning, choose "Stay connected". The module does not act as a captive portal and does not hand out a gateway or DNS, so the phone keeps using mobile data for everything else.
 
 ---
 
-## Low power mode
+## Home WiFi (bridge mode)
 
-Low Power Mode ships in this fork and is **enabled by default**. It is three layers of power saving, each building on the previous, all configured from the **Settings** page:
+Optional. The module can also join a home or garage WiFi network as a client while keeping its own access point running. Then it is reachable at `openhaldex.local`, or at the address the card shows, from any phone or laptop already on that network. Leave the field blank and nothing changes.
 
-- **Layer 1 - Idle AP shutdown** is always active (no toggle).
-- **Layer 2 - CAN Sleep** is **on by default** (`canSleepEnabled = true`).
-- **Layer 3 - CAN Sleep (Aggressive)** is **opt-in / off by default** (`canSleepAggressive = false`).
+Set it up on the **Diagnostics** tab under **Home WiFi (Bridge Mode)**: pick the network from the scan (or type a hidden one), enter its password, press **Save & Apply**. The card then shows the connection state, the address and the signal strength. The same card is repeated on the **Update** tab, because the phone needs internet to check GitHub for updates, and this is how it gets both.
 
-The controller is designed to live on a **permanent +12 V** feed. With Low Power Mode active it draws approximately:
+> [!IMPORTANT]
+> Putting the module on your home network means other devices on that network can reach it. So a browser coming in through the home network has to sign in: user name `admin`, password your access point's WiFi password. The check covers every page and every `/api` and `/ota` request. A phone joined directly to the module's own access point does not sign in; joining that network already needed the password. The CAN analyzer's host-to-CAN injection is also refused for home-network clients.
 
-| State | Current |
-|-------|---------|
-| Sleeping (car off, WiFi off, CAN quiet) | ~14 mA |
-| Awake (CAN activity detected or WiFi client connected) | ~50 mA |
+Things to know:
 
-> [!WARNING]
-> Estimated, inherited from upstream - **not yet measured on this fork.** These current-draw figures are order-of-magnitude expectations only, pending a bench-meter measurement (see the bench-pending note below).
-
-### Layer 1 - Idle AP shutdown (always active)
-
-After **5 minutes** with no WiFi clients connected and no CAN activity, the controller automatically shuts down the WiFi AP and turns off the LED. WiFi is restored automatically as soon as CAN traffic resumes.
-
-### Layer 2 - CAN sleep (enabled by default)
-
-Controlled by the **CAN Sleep** toggle in Settings and **on out of the box**. The ESP32-C6 CPU enters light sleep when idle; the TWAI peripheral powers down but preserves its receive queue; the first incoming CAN frame wakes the controller immediately.
-
-### Layer 3 - CAN sleep aggressive (opt-in, builds on Layer 2)
-
-Off by default - enable **CAN Sleep (Aggressive)** in Settings to turn it on. The CAN transceiver chips shut down completely, CPU minimum clock drops to 10 MHz, and WiFi AP transmit power is trimmed. Wake is interrupt-driven from a GPIO ISR on each CAN_RX line.
-
-### Setting it up
-
-Low Power Mode works out of the box, but the wake threshold is calibratable because every car idles its CAN bus at a different rate.
-
-The **LP Wake Threshold (fps)** defaults to **1100 fps**. In OEM installs the module stays awake while the **Chassis fps** rate is at or above the threshold and sleeps when it drops below it - so the default keeps the module awake while the vehicle is actively driving the chassis bus (typically well above 1100 fps) and lets it sleep once the bus goes quiet.
-
-1. Park and lock the car. Wait 30 minutes or until the Chassis bus goes fully quiet.
-2. Stay connected to the OpenHaldex WiFi AP while you check (the controller stays awake while a client is connected).
-3. Open the Web UI and watch the **Chassis fps** and **Haldex fps** counters in Settings.
-4. Set **LP Wake Threshold (fps)** above the parked-bus reading and below the driving-bus reading - the default of 1100 fps suits most installs; lower it only if your car's active chassis-bus rate sits below 1100 fps.
-5. **CAN Sleep** is already enabled; optionally enable **CAN Sleep (Aggressive)** in Settings.
-6. Disconnect from the WiFi AP.
-
-> [!NOTE]
-> **Standalone mode:** with no chassis bus, the module wakes on a fixed **50 fps** Haldex-bus threshold. This is independent of the LP Wake Threshold slider, which only governs the chassis-bus decision in OEM installs.
-
-> [!NOTE]
-> **Switched-ignition installs:** if the module is already powered off with the ignition, Low Power Mode saves little and is optional.
-
-> [!NOTE]
-> **Bench-pending on this fork:** the following hardware-only behaviours are inherited from upstream and have **not yet been measured on real metal** for this fork - the sleeping/awake current draw, the wake latency, transceiver standby in Layer 3, and the exact standalone-threshold value. They are flagged pending a bench-rig measurement.
+- **One radio.** The ESP32-C6 shares one radio between its access point and the home connection. A scan or connection attempt pulls it off the access point's channel for a second or two. So the module only looks for your home network for 20 seconds after starting, then once every 5 minutes. A saved network cannot keep interrupting the access point while the car is away from home.
+- **Sleep.** Bridge mode mostly does not change [low power mode](#low-power-mode-and-bench-mode). With no CAN traffic and nobody using the UI, the module still sleeps after five minutes and drops off the home network. A browser that has the UI open through your router counts as a user, so an update over the bridge is not cut off.
+- **Open networks.** A blank home-network password connects to an open network. The module accepts it; think before you do.
+- **The backup tool.** `tools/openhaldex_config.py` does not send a login. Use it while joined to the module's own WiFi.
 
 ---
 
-## Flashing firmware
+## Backup & Restore
 
-You can either flash a pre-built release binary or build from source with PlatformIO.
+A USB flash can wipe the settings, and nobody wants to re-type an Expert table. **Diagnostics > Backup & Restore** exports the Expert tune, saved map slots, the frame-block choices, every setting and the WiFi names to a JSON file, and imports them back in one go.
 
-### Pre-built release binary
+WiFi passwords are write-only on the device. They are never written to the file, and after an import you are asked once for any that were set. The Bluetooth pairing code is also left out of the file.
 
-Each tagged release on this fork's [Releases page](https://github.com/Kile-Thomson/OpenHaldex-Edge/releases) attaches a single merged image, `openhaldex-c6-<tag>-merged.bin`. It bundles the bootloader, partition table, firmware and the LittleFS web UI, so it is a complete flash-from-scratch build - no separate filesystem upload needed. Flash it at offset `0x0`:
+The same file works from a computer with [`tools/openhaldex_config.py`](tools/openhaldex_config.py):
 
-```sh
-esptool.py --chip esp32c6 write_flash 0x0 openhaldex-c6-<tag>-merged.bin
+```
+python tools/openhaldex_config.py export backup.json
+python tools/openhaldex_config.py import backup.json
+python tools/openhaldex_config.py import backup.json --tune-only
+python tools/openhaldex_config.py --host openhaldex.local export backup.json
 ```
 
-Or drag it into a browser flasher such as [ESP Web Tools](https://web.esptool.js.org/). `SHA256SUMS.txt` is attached so you can verify the download. The separate `app` and `littlefs` binaries are also attached for partial or OTA updates.
+The default address is `192.168.1.1`. The tool needs to be on the module's WiFi (see the note under [Home WiFi](#home-wifi-bridge-mode)). A backup made with Bench Mode on is imported without switching Bench Mode on while CAN is live. Export before you re-flash. Backup & Restore and Bench Mode were contributed upstream by louij2 (PR #39).
 
-> These binaries are a non-commercial fork build, distributed free of charge under the [FASL v1.0](LICENSE.md); the changes over upstream V8.00.2 are in [CHANGELOG.md](CHANGELOG.md). For official, supported firmware use the upstream project - see [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater). The upstream binary is the official, supported build; this fork's build adds the changes listed in the CHANGELOG.
+---
 
-### Build and flash via USB
+## DashCAN app (Bluetooth)
 
-```sh
-pio run -e esp32c6 --target upload
-```
+The module talks Bluetooth LE to the **DashCAN** phone app, so the basics are on the phone without joining the module's WiFi. The web UI stays the place for everything else (Expert map, learning, generation, frame blocks, updates). Bluetooth was contributed upstream by danati (PR #44).
 
-Connect the controller using a **data-capable USB-C cable**. Power-only cables will not work.
+**From the app:**
 
-To reproduce the release's single merged image locally:
+- **Live.** Mode buttons, controller on/off, lock target and actual, speed, throttle, rpm, boost, steering angle, CAN health and Haldex warnings.
+- **Settings.** The ones you change per situation: force modes, brake and handbrake release, the speed and throttle window, steering-angle scaling, gradual lock release and its rate, live diagnostics and LED brightness. A change on the web UI shows in the app and the other way round.
+- **Haldex diagnostics.** Temperatures, supply voltage, clutch current and duty (and oil pressure and estimated torque on Gen4). Needs [Live diagnostics](#live-diagnostics) switched on.
+- **Gauges.** AWD Lock, AWD Lock Target, Steering and the Haldex temperatures for the app's dashboards and drive recordings.
 
-```sh
-pio run -e esp32c6-release
-pio run -e esp32c6-release -t buildfs
-python scripts/merge_firmware.py --build-dir .pio/build/esp32c6-release
-esptool.py --chip esp32c6 write_flash 0x0 .pio/build/esp32c6-release/firmware-merged.bin
-```
+**Connecting.** Bluetooth is on by default. The module appears as `OpenHaldex-XXXX` (the last two bytes of its address) and the app connects to the first one in range, or you pick it on the app's Bluetooth screen. Live data needs no pairing. The first change from a phone pairs it:
 
-**Build a release image (debug output disabled):**
+- The **first phone** pairs without a code (it may just ask you to confirm).
+- After that, **every new phone needs a 6-digit pairing code**, shown on an already paired phone and in the web UI.
 
-```sh
-pio run -e esp32c6-release
-```
+**On the module.** The Bluetooth card on the Diagnostics tab has the enable switch, a phone-connected indicator, the pairing code and **Forget Paired Phones**. Forgetting removes every paired phone, makes a new code, and lets the next phone pair without one (also forget the device in the phone's own Bluetooth settings). Bluetooth sleeps with the WiFi in [low power mode](#low-power-mode-and-bench-mode).
 
-**OTA update:**
+> [!NOTE]
+> Until the first phone has paired, on a new module or right after Forget Paired Phones, anyone in Bluetooth range could be that first phone. Pair yours straight away. Firmware is never updated over Bluetooth.
 
-The easiest path is the **Software Update** card on the Settings tab of the web
-UI: it shows the current version and safe-state, and has a single upload slot
-with progress. Give it the release's merged image (the same single file used
-for USB flashing) and it updates the firmware and the web UI in one go - the
-device splits the image by flash offset and skips the bootloader, partition
-table and NVS regions, so settings and the learn table are kept. A bare
-`firmware.bin` or `littlefs.bin` works too when only one half changed. Access
-is gated by the WiFi AP password - anyone on the AP can update; there is no
-separate HTTP login.
+The protocol is written up in [`documents/MOBILE_APP_OPENHALDEX.md`](documents/MOBILE_APP_OPENHALDEX.md), so other apps can use it.
 
-From the command line, the device accepts an HTTP upload to `/ota/update`
-(merged image, firmware, or LittleFS image - it classifies the file from its
-first bytes) or `/ota/updatefs` (explicitly the web-UI LittleFS image). It
-does not speak the espota protocol, so PlatformIO's `--upload-port <ip>` will
-not work:
+---
 
-```sh
-# everything in one file
-curl -F "update=@.pio/build/esp32c6-release/firmware-merged.bin" \
-  http://192.168.1.1/ota/update
+## Low power mode and Bench Mode
 
-# or just one half
-pio run -e esp32c6
-curl -F "update=@.pio/build/esp32c6/firmware.bin" \
-  http://192.168.1.1/ota/update
+The module is made to live on a **permanent +12 V** feed. With low power mode working, upstream's figures are about 14 mA asleep (car off, WiFi off, CAN quiet) and about 50 mA awake. Those numbers are inherited from upstream and have not been measured on Edge builds. Treat them as a guide.
 
-pio run -e esp32c6 -t buildfs
-curl -F "filesystem=@.pio/build/esp32c6/littlefs.bin" \
-  http://192.168.1.1/ota/updatefs
-```
+Everything is on the Settings tab.
 
-Any update is refused unless the safety checks pass (vehicle stationary,
-buses healthy, no Haldex temperature fault); check `GET /ota/check` first. A
-filesystem or merged update briefly takes the web UI offline and reboots the
-module when it completes; if a filesystem upload fails partway the firmware is
-untouched, so recovery is just re-uploading the image.
+- **CAN Sleep** (on by default). After 5 minutes with no one connected to the WiFi, no one with the UI open, and CAN traffic below the wake threshold, the module shuts the WiFi access point and the LED off and lets the CPU light-sleep. The first CAN frame above the threshold brings it back. Bluetooth sleeps and wakes with the WiFi. With CAN Sleep switched off, none of this happens and the WiFi stays up.
+- **CAN Sleep (Aggressive)** (off by default). Also puts the CAN transceivers in standby, drops the CPU minimum clock to 10 MHz and trims the WiFi transmit power. Waking is by interrupt on the CAN receive lines. Use it if the car sits for days and you want the lowest standby current.
+- **LP Wake Threshold** (default 1100 frames per second). In an OEM install the module stays awake while the chassis bus is at or above this rate and sleeps below it. Set it above your car's parked-bus rate and below its driving rate. To find the parked rate: park and lock the car, wait until the chassis bus goes quiet, join the module's WiFi (it stays awake while you are connected), and watch the **Chassis fps** and **Haldex fps** counters on the Settings tab. In Standalone mode there is no chassis bus, so the module wakes on a fixed 50 frames per second of Haldex traffic and this slider does not apply.
+- **USB.** A computer on the module's USB port keeps the WiFi up, so you can use the dashboard on the bench without a CAN source.
 
-For a ready-to-flash binary of this fork, see [Pre-built release binary](#pre-built-release-binary) above. For official, supported firmware, use the upstream build from [Forbes Automotive](https://forbes-automotive.com/pages/module-software-updater); this fork's build adds the changes listed in the [CHANGELOG](CHANGELOG.md).
+If your module is on a switched ignition feed, low power mode saves little and is optional.
+
+### Bench Mode
+
+The module cannot tell a harnessed car that is asleep from no harness at all: both look like zero CAN traffic. So on the bench with CAN Sleep on, the WiFi drops after five minutes. **Bench Mode** (Settings, under CAN Sleep) holds the WiFi up regardless.
+
+It clears itself. The moment either CAN bus shows traffic, Bench Mode switches itself off and saves that, and normal sleep resumes, so it cannot weaken the battery protection once the unit is in the car. The UI also greys the switch out while CAN is detected, and the module ignores an attempt to turn it on while CAN is live.
+
+---
+
+## Live diagnostics
+
+OpenHaldex can ask the Haldex for live measurements and show them in the web UI, as a scan tool would. This uses the module's diagnostic channel, so it is **off by default** (Settings > **Enable Live Diagnostics**). It picks the protocol from the generation you set.
+
+- **Gen5 (0CQ, 0AY, VAQ): UDS.** Terminal voltage, control module temperature, clutch temperature, cooling fin temperature, clutch current, PWM and voltage. Clutch and fin temperatures show `--` when the decoded value is not plausible.
+- **Gen2 and Gen4: KWP2000 over VW TP2.0.** Oil temperature, clutch plate temperature, supply voltage, oil pressure, estimated torque, clutch valve duty and current. Gen4 values are decoded; the raw measuring-block bytes are also exposed.
+
+If VCDS, ODIS or another scan tool is connected, the module detects its requests on the bus and pauses its own polling until the tool goes quiet, so the two do not collide. If a tool still will not connect, switch Live Diagnostics off. Extra CAN traffic can cause spurious dash errors.
+
+**Diagnostic tester reads.** Separately from the polling above, OpenHaldex answers three supplier-specific data identifiers on the Haldex address, so a tester on the OBD port (such as the Rokketek gauge) can use them: the lock command and engagement (`0xFDA0`), per-corner wheel slip (`0xFDA1`), and a write to set the drive mode (`0xFDA2`). The slip values are each wheel's speed against what the steering geometry predicts, so a straight launch and a mid-corner break-loose both read as real slip. The four slip values are also on the Dashboard.
 
 ---
 
 ## CAN sniffing (SavvyCAN / GVRET)
 
-Enable **Analyzer Mode** in the Settings page to capture CAN frames.
+Switch on **Analyzer Mode** in Settings to capture CAN frames from both buses.
 
 > [!WARNING]
-> Enabling Analyzer Mode disables active Haldex control and returns the device to OEM pass-through behaviour.
+> Analyzer Mode turns off active Haldex control and puts the module back to OEM pass-through. It also stops the `0x6B0` broadcast.
 
-> [!NOTE]
-> In this fork, host-to-device CAN injection via the analyzer port (GVRET transmit) is refused until the WiFi AP password has been set - the secured AP is the single auth boundary. Passive sniffing (receive only) is unaffected.
+The analyzer speaks GVRET to SavvyCAN, over WiFi (TCP port 23) or over the USB serial port. Choose with the **SavvyCAN via WiFi** and **SavvyCAN via Serial** switches.
 
-The analyzer speaks the GVRET protocol for SavvyCAN, over the WiFi AP (TCP
-port 23) or over the USB serial port. Pick the transport with the **SavvyCAN
-via WiFi** and **SavvyCAN via Serial** toggles in the Settings page; both buses
-are captured.
+1. Join the module's WiFi and enable SavvyCAN via WiFi in Settings.
+2. In SavvyCAN: Connection > Add New Device Connection > Network Connection (GVRET).
+3. IP `192.168.1.1`, port `23`, CAN speed `500000`.
 
-### SavvyCAN (GVRET)
+For USB, enable SavvyCAN via Serial and add a Serial Connection (GVRET) at 500000 on the module's COM port.
 
-1. Connect to the OpenHaldex WiFi AP.
-2. In Settings, enable **SavvyCAN via WiFi**.
-3. In SavvyCAN: **Connection > Add New Device Connection > Network Connection (GVRET)**
-4. IP: `192.168.1.1`, Port: `23`, speed: `500000`
+Receiving is always allowed. **Host-to-CAN injection** (sending frames from SavvyCAN onto the car's bus) is refused until the access point password is set, and always refused for a client that came in through the home network.
 
 ---
 
-## Hardware
+## Installation
 
-This fork is firmware source only. Hardware design files, Gerbers, BOM and enclosure STLs live in the upstream project:
+> [!TIP]
+> ### Optional Plug & Play Harness (Recommended)
+>
+> Recommended for quick installation (and removal)  -  typically **<10 minutes** on Generation 1 Controllers.
+> The latest harnesses for Generation 5 are even simpler and you'll be experiencing your Haldex controller in less than 30 seconds:
 
-**[Forbes-Automotive/OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6)**
+- Lift the rear seat
+- Split the factory 6-pin Haldex connector
+- Install your new harness & OpenHaldexC6 Controller
+- Drive it (you could put the seat back down too, if you want!)
 
-Assembled modules are available from Forbes Automotive:
+> For Generation 1 Controllers:
 
-**[OpenHaldex C6 Controller - Forbes Automotive](https://forbes-automotive.com/products/openhaldex-controller?utm_source=github&utm_medium=readme&utm_campaign=openhaldex)**
+- Remove original connector and install the long end of the harness onto the differential.
+- Route the long end along with the original connector back into the boot floor via. the OEM grommet
+- Install and secure the OpenHaldexC6 Controller to the new harness, pairing it with the original plug
 
-For physical installation instructions, wiring diagrams, and connector pinouts, see the upstream README and the [OpenHaldex Installation Guide](https://openhaldex.com/docs/OpenHaldex_Installation_Guide.pdf).
+Forbes's step-by-step instructions are in the **[OpenHaldex Installation Guide](https://openhaldex.com/docs/OpenHaldex_Installation_Guide.pdf)**. This section is carried over from the Forbes README.
+
+Video: **Installation demo (YouTube Short):** https://youtube.com/shorts/iUkNh9NbyKY?si=IhgqLIi0WM8wXqe9
+
+Video: **Installation demo (YouTube Short):** https://youtu.be/Wu-u-Dz1444
+
+> [!WARNING]
+> ### Manual Wiring (No Harness)
+>
+> Modules sold without a harness include connector pins for manual wiring. This is a little harder and more involved than using the optional harness, but following the installation guide above it can still be completed easily. 
+
+Gen1:
+- Chassis Connector: `1J0-973-714`
+- Haldex Connector: `1J0-973-814`
+
+Gen4:
+- Haldex Connector  -  `VW 1J0-973-713`
+- Vehicle Connector  -  `VW 1J0-973-813`
+
+Build this as a **Y-branch** harness between the two VW 8 or 6-pin connectors, with a long tail to the MX plug.
+
+Routing summary:
+
+- **Permanent power (Term30) and ground must also be branched to the OpenHaldex controller**:
+  - Term30 -> MX Pin 1
+  - Ground -> MX Pin 2
+  
+- Chassis CAN is taken from the Vehicle side and sent to the controller:
+  - Vehicle Pin 5 -> MX Pin 3 (Chassis CAN Low)
+  - Vehicle Pin 6 -> MX Pin 4 (Chassis CAN High)
+
+- Returned CAN from the controller then goes to the Haldex side:
+  - MX Pin 5 -> Haldex Pin 5 (Haldex CAN Low)
+  - MX Pin 6 -> Haldex Pin 6 (Haldex CAN High)
+
+Generation 1 to 4:
+- Vehicle Connector  -  `VW 1J0-973-714`:
+
+| Pin | Signal | Notes |
+|----|------|------|
+| 1 | Term15 | Pass-through: Vehicle -> Haldex |
+| 2 | Ground | Pass-through: Vehicle -> Haldex and branch to MX Pin 2 |
+| 3 | Brake Light | Pass-through: Vehicle -> Haldex |
+| 4 | Handbrake | Pass-through: Vehicle -> Haldex |
+| 5 | K-Line | Pass-through: Vehicle -> Haldex |
+| 6 | N/A | Not Used |
+| 7 | Chassis Low | To MX Pin 3 (chassis side) |
+| 8 | Chassis High | To MX Pin 4 (chassis side) |
+
+- Haldex Connector  -  `VW 1J0-973-814`:
+
+| Pin | Signal | Notes |
+|----|------|------|
+| 1 | Term15 | Pass-through: Vehicle -> Haldex |
+| 2 | Ground | Pass-through: Vehicle -> Haldex and branch to MX Pin 2 |
+| 3 | Brake Light | Pass-through: Vehicle -> Haldex |
+| 4 | Handbrake | Pass-through: Vehicle -> Haldex |
+| 5 | K-Line | Pass-through: Vehicle -> Haldex |
+| 6 | N/A | Not Used |
+| 7 | Chassis Low | To MX Pin 5 (Haldex side) |
+| 8 | Chassis High | To MX Pin 6 (Haldex side) |
+
+Generation 5:
+- Vehicle Connector  -  `VW 1J0-973-813`:
+
+| Pin | Signal | Notes |
+|----|------|------|
+| 1 | Term15 | Pass-through: Vehicle -> Haldex |
+| 2 | Ground | Pass-through: Vehicle -> Haldex and branch to MX Pin 2 |
+| 3 | Term30 | Pass-through: Vehicle -> Haldex and branch to MX Pin 1 |
+| 4 | N/A | Not used |
+| 5 | Chassis Low | To MX Pin 3 (chassis side) |
+| 6 | Chassis High | To MX Pin 4 (chassis side) |
+
+- Haldex Connector  -  `VW 1J0-973-713`:
+
+| Pin | Signal | Notes |
+|----|------|------|
+| 1 | Term15 | Pass-through: Vehicle -> Haldex |
+| 2 | Ground/MALT | Pass-through from Vehicle side |
+| 3 | Term30 | Pass-through from Vehicle side |
+| 4 | N/A | Not used |
+| 5 | Haldex Low | From MX Pin 5 (Haldex side) |
+| 6 | Haldex High | From MX Pin 6 (Haldex side) |
+
+![Gen4/Gen5 Y-Branch Harness Diagram](/Images/Gen4_Gen5_Y_Branch_Harness.png)
+
+### MX23A12NF Connector Pinout
+
+| Pin | Signal | Notes |
+|----|------|------|
+| 1 | Vbatt | +12 V |
+| 2 | Ground/MALT | Ground |
+| 3 | Chassis CAN Low | To chassis/ECU side |
+| 4 | Chassis CAN High | To chassis/ECU side |
+| 5 | Haldex CAN Low | To Haldex differential |
+| 6 | Haldex CAN High | To Haldex differential |
+| 7 | Switch Mode External | +12 V to activate |
+| 8 | Brake Switch In | +12 V input |
+| 9 | Brake Switch Out | Gen1 / 2 differentials only |
+|10 | Handbrake Switch In | +12 V input |
+|11 | Handbrake Switch Out | Gen1 differentials only |
+
+---
+
+## Flashing and updating
+
+### First flash over USB
+
+Connect the module with a **data-capable USB-C cable**; power-only cables will not work.
+
+Each tagged [release](https://github.com/Kile-Thomson/OpenHaldex-Edge/releases) attaches one merged image, `openhaldex-c6-<tag>-merged.bin`. It holds the bootloader, partition table, firmware and web UI, so it is a complete flash-from-scratch build. Flash it at offset `0x0`:
+
+```sh
+esptool.py --chip esp32c6 write_flash 0x0 openhaldex-c6-<tag>-merged.bin
+```
+
+Or drag it into a browser flasher such as [ESP Web Tools](https://web.esptool.js.org/). `SHA256SUMS.txt` is attached so you can check the download. The release also carries the separate app, littlefs, bootloader and partition binaries.
+
+The merged image blanks the settings area, so flashing it resets the module's settings.
+
+**Keeping your settings (Edge v8 to v9).** The settings area sits at the same place (`0x9000`) on v8 and v9, and v9 reads v8's settings unchanged. To keep them, flash the separate parts instead of the merged image, and clear the boot selector so the module starts the new firmware:
+
+```sh
+esptool.py --chip esp32c6 erase_region 0xd000 0x2000
+esptool.py --chip esp32c6 write_flash \
+  0x0      bootloader.bin \
+  0x8000   partitions.bin \
+  0x10000  openhaldex-c6-<tag>-app.bin \
+  0x390000 openhaldex-c6-<tag>-littlefs.bin
+```
+
+The offsets come from the v9 partition table; the release's `manifest.json` on the `ota` branch lists the same ones. Write down your Expert table anyway, in case something goes wrong. Once you are on v9, export a backup before any USB flash.
+
+### Updating over WiFi
+
+Once a module is on the v9 flash layout, update it from its **Update** tab. Nothing on the module fetches from the internet itself: your browser gets the files and pushes them to the module.
+
+**Update from GitHub.** The browser needs internet while it can still reach the module. The reliable way is [bridge mode](#home-wifi-bridge-mode): join the module to your router, put the phone on the same network, and open the address the Home WiFi card shows. (On the module's own access point most phones turn mobile data off, so that route is best effort.)
+
+1. Press **Check for updates**. The page contacts the module first, then fetches the release list from this repository's `ota` branch on GitHub, with a mirror as a fallback. If there is no internet it reads the module's bridge status and tells you what to do: join the network the module is on, fix a dropped link, or set up Home WiFi.
+2. Pick a version. Newer stable releases are listed; tick **Show beta / older versions** for the rest. The **Latest build** channel also offers the newest release again, for when its files were rebuilt in place after a fix landed. Going backwards is allowed, and the confirm warns that an older release may not have this page.
+3. Press **Install**. The page shows six stages (get UI, flash UI, verify, get firmware, flash firmware, reboot) with elapsed time. The web UI goes first, then the firmware, and the page waits for the reboot.
+
+Keep the page open and the screen on during an install.
+
+**Update from a File.** A card on the same tab takes a file you already downloaded, with no internet needed. Give it the release's merged image (it updates firmware and web UI together) or a bare `firmware.bin` or `littlefs.bin`; it works out which from the file's first bytes. A merged image is split by flash offset, and the bootloader, partition table and settings are never touched.
+
+**From the command line.** The module takes an HTTP upload to `/ota/update` (merged image, firmware or web UI image) or `/ota/update/fs` (web UI image only). It does not speak espota, so PlatformIO's `--upload-port <ip>` will not work.
+
+```sh
+curl -F "update=@firmware-merged.bin" http://192.168.1.1/ota/update
+curl -F "filesystem=@littlefs.bin" http://192.168.1.1/ota/update/fs
+```
+
+Through the home network add `-u admin:<your WiFi password>`. `GET /ota/check` reports whether an update is allowed right now and why not.
+
+**Safety gate.** In the bench (no CAN detected) updates are allowed any time. In the car, an update needs the car stationary, both CAN buses healthy and no Haldex temperature fault; the module drops to Stock when an update starts. A new firmware image boots in a pending state and is confirmed only after the web UI has been reached on it or after 60 seconds of uptime. If it crash-loops before then, the bootloader goes back to the previous firmware. A web UI update unmounts the filesystem while it writes, and if one fails partway the module serves a built-in recovery page at `/` where you can upload again, so a bad web UI flash does not strand the unit.
+
+> [!NOTE]
+> USB remains the way to do a first flash or to recover a module that will not boot. OTA is for modules already running v9.
+
+---
+
+## Building from source
+
+```sh
+pio run -e esp32c6 --target upload       # build and flash over USB
+pio run -e esp32c6-release                # release build, debug output off
+pio run -e esp32c6-release -t buildfs     # web UI image
+python scripts/merge_firmware.py --build-dir .pio/build/esp32c6-release
+pio test -e native                        # host test suite, no hardware needed
+```
+
+`tools/mock_ui_server.py` serves the web UI from `data/` against a fake API, so you can work on the UI in a desktop browser with no module attached.
+
+CI builds, tests and packages each tagged release, and publishes the update feed that the Update tab reads.
+
+---
+
+## PCB and enclosure
+
+The Gerbers, schematic, BOM and 3D model are in [`PCB/`](PCB/), and the enclosure STLs in [`Enclosure/`](Enclosure/), as published by Forbes Automotive. Use them to make your own units if you wish. Pinout and function stay the same across the supported enclosure versions.
+
+![OpenHaldex-C6 PCB, top](/Images/BoardTop.png)
+![OpenHaldex-C6 PCB, bottom](/Images/BoardBottom.png)
+
+Assembled modules are available from Forbes Automotive: **[OpenHaldex C6 Controller](https://forbes-automotive.com/products/openhaldex-controller?utm_source=github&utm_medium=readme&utm_campaign=openhaldex)**.
 
 ---
 
 ## Acknowledgements
 
-- **Forbes Automotive** - Lead development of the OpenHaldex C6 platform, including reverse-engineering and open-source implementation for Gen2, Gen4 and Gen5 Haldex systems, along with ongoing maintenance of the project
-- **A Banging Donk** - [Original OpenHaldex project](https://github.com/ABangingDonk/OpenHaldexT4) for Gen1 vehicles
-- **Chris "meatro" (SpringfieldVW)** - [OpenHaldex-S3](https://github.com/meatro/OpenHaldex-S3), origin of the CAN analyzer / GVRET (SavvyCAN) tooling (MIT). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-- **Arwid Vasilev** - PCB redesign (V1.02)
-- **LVT Technologies** - OTA update integration (now deprecated, but still appreciated)
+- **Forbes Automotive** - the OpenHaldex-C6 platform: the reverse engineering and open-source implementation for Gen2, Gen4 and Gen5 Haldex systems, the hardware, and the continued work on all of it. Edge exists because of it.
+- **louij2** (Luca C) - Home WiFi bridge mode, Backup & Restore and Bench Mode (upstream PR #39).
+- **danati** - Bluetooth LE for the DashCAN app, bigger OTA slots and the lock-release fix (upstream PR #44).
+- **A Banging Donk** - [the original OpenHaldex project](https://github.com/ABangingDonk/OpenHaldexT4) for Gen1 vehicles.
+- **Chris "meatro" (SpringfieldVW)** - [OpenHaldex-S3](https://github.com/meatro/OpenHaldex-S3) (MIT), the origin of the CAN analyzer / GVRET (SavvyCAN) tooling and parts of the map editor. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- **Arwid Vasilev** - PCB redesign (V1.02).
+- **LVT Technologies** - OTA update integration (now deprecated, still appreciated).
 
 ---
 
 ## Upstream
 
-This fork tracks **[Forbes-Automotive/OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6)** as its upstream. To pull source changes from the original project:
+Edge keeps Forbes's history and tracks **[Forbes-Automotive/OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6)** as its upstream. To pull their changes:
 
-```bash
+```sh
 git remote add upstream https://github.com/Forbes-Automotive/OpenHaldex-C6.git
 git fetch upstream
 git merge upstream/main
 ```
 
-For official, supported hardware and firmware go to the upstream project and [Forbes Automotive](https://forbes-automotive.com/). This fork is unofficial and experimental.
+For assembled hardware, official firmware and support, go to the upstream project and [Forbes Automotive](https://forbes-automotive.com/). Their updater page flashes their build, not Edge's.
 
-### Divergence from upstream
+Edge's firmware is built on upstream V9.00.0 plus its follow-up pull requests. The Forbes `Releases/` binary folder and Discord workflow are not part of this repo; Edge publishes through tagged GitHub releases. Third-party attribution from the shared lineage is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-This is a hard fork with an independent history, not a live mirror. It is a large
-superset of the upstream firmware source, so an "N commits behind" count against
-upstream is not meaningful - most of the source has been rewritten or extended here.
-A few upstream items are **deliberately not adopted**:
+---
 
-- **Hardware design files** (Enclosure, PCB, Gerbers, BOM, release binaries) - this
-  repo is firmware source only. The upstream project remains the source for hardware.
-- **VAG TP2.0 / KWP2000 diagnostic transport** - upstream reads certain Gen2 Haldex
-  diagnostic values (oil/plate temp, clutch duty) over TP2.0. This fork does not run
-  TP2.0 and excludes those tester IDs on purpose; the MQB live-data path uses UDS.
-- **Per-frame "frame edit" mask** - upstream can toggle individual synthesized CAN
-  frames on/off from the UI per Haldex generation. That is a bench/bring-up tool; this
-  fork's per-car Calibrate and learn flow covers car setup from a different angle, so
-  it is not carried here.
+## Licensing
 
-Third-party attribution obligations from the shared upstream lineage are recorded in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+OpenHaldex Edge is open source under the [MIT License](LICENSE.md), the same licence as upstream. The firmware, web UI, tools and hardware design files are published so you can build, inspect, modify, redistribute and fabricate a controller for any purpose, commercial use included, as long as you keep the copyright and licence notices.
+
+- Forbes Automotive's original code and hardware design files: MIT, copyright Forbes Automotive.
+- Edge's own additions: the same MIT terms, copyright Kile Thomson.
+- Portions derived from OpenHaldex-S3 (meatro): MIT, notice preserved.
+- The original OpenHaldex (Gen1, ABangingDonk): see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+If you redistribute source or binaries, keep LICENSE.md and THIRD_PARTY_NOTICES.md with them.
 
 ---
 
@@ -481,4 +654,4 @@ Third-party attribution obligations from the shared upstream lineage are recorde
 >
 > The unit may behave unpredictably and could increase drivetrain wear.
 >
-> **Use at your own risk.** Forbes Automotive is not responsible for damages resulting from the use of this device or software.
+> **Use at your own risk.** Forbes Automotive and the Edge contributors are not responsible for damages resulting from the use of this device or software.

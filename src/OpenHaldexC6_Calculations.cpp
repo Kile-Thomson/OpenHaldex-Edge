@@ -1,9 +1,107 @@
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_tasks.h>
+#include <math.h> // tanf/sqrtf/fabsf for the per-corner slip geometry
 #include <cstdlib> // malloc/free for http_body_alloc
 #include <cstring> // memset/memcpy for the request-body buffer helpers
 #include <cstdint> // SIZE_MAX for the overflow guard in http_body_alloc
-#include <math.h>  // tanf/sqrtf/fabsf for the per-corner slip geometry
+
+// Geometry-compensated per-corner slip. Adopted from OpenHaldex-Edge by Rekt
+// (Kile Thomson) - https://github.com/Kile-Thomson/OpenHaldex-Edge - see
+// THIRD_PARTY_NOTICES.md. At steering road-wheel angle delta,
+// pure Ackermann puts the turn centre on the rear-axle line R = wheelbase /
+// tan(delta) from the centreline. Each wheel traces its own radius, so with
+// zero real slip the wheel speeds are proportional to those radii. We build the
+// four geometric radii, turn them into expected speeds sharing the measured
+// mean, and report each corner's fractional excess as slip. On a straight this
+// reduces to "speed vs. the average of the others" with no special-casing.
+bool compute_corner_slip(const uint16_t wheel_raw[4], int16_t steer_wheel_tenths,
+                         float steering_ratio, uint16_t wheelbase_mm,
+                         uint16_t track_front_mm, uint16_t track_rear_mm,
+                         uint16_t min_speed_raw, int8_t slip_out[4])
+{
+  slip_out[0] = slip_out[1] = slip_out[2] = slip_out[3] = 0;
+
+  if (wheelbase_mm == 0 || track_front_mm == 0 || track_rear_mm == 0 ||
+      steering_ratio < 1.0f)
+    return false;
+
+  const uint32_t sum_raw =
+      (uint32_t)wheel_raw[0] + wheel_raw[1] + wheel_raw[2] + wheel_raw[3];
+  const float mean_actual = sum_raw * 0.25f;
+  if (mean_actual < (float)min_speed_raw || mean_actual <= 0.0f)
+    return false;
+
+  const float L = (float)wheelbase_mm;
+  const float half_tf = (float)track_front_mm * 0.5f;
+  const float half_tr = (float)track_rear_mm * 0.5f;
+
+  const float delta_deg = ((float)steer_wheel_tenths * 0.1f) / steering_ratio;
+  const float delta = fabsf(delta_deg) * (float)M_PI / 180.0f;
+
+  float rad[4]; // [FL, FR, RL, RR]
+  const float kStraight = 0.0005f;
+  if (delta < kStraight)
+  {
+    rad[0] = rad[1] = rad[2] = rad[3] = 1.0f;
+  }
+  else
+  {
+    float R = L / tanf(delta);
+    const float min_R = (half_tf > half_tr ? half_tf : half_tr) + 1.0f;
+    if (R < min_R)
+      R = min_R;
+
+    const float r_rear_inner = R - half_tr;
+    const float r_rear_outer = R + half_tr;
+    const float r_front_inner = sqrtf(L * L + (R - half_tf) * (R - half_tf));
+    const float r_front_outer = sqrtf(L * L + (R + half_tf) * (R + half_tf));
+
+    if (delta_deg > 0.0f)
+    {
+      // Turning right: right-side wheels are inner (shorter radius, slower).
+      rad[0] = r_front_outer; // FL
+      rad[1] = r_front_inner; // FR
+      rad[2] = r_rear_outer;  // RL
+      rad[3] = r_rear_inner;  // RR
+    }
+    else
+    {
+      rad[0] = r_front_inner; // FL
+      rad[1] = r_front_outer; // FR
+      rad[2] = r_rear_inner;  // RL
+      rad[3] = r_rear_outer;  // RR
+    }
+  }
+
+  const float mean_rad = (rad[0] + rad[1] + rad[2] + rad[3]) * 0.25f;
+  if (mean_rad <= 0.0f)
+    return false;
+
+  for (int i = 0; i < 4; i++)
+  {
+    const float expected = mean_actual * (rad[i] / mean_rad);
+    if (expected <= 0.0f)
+    {
+      slip_out[i] = 0;
+      continue;
+    }
+    float slip_pct = ((float)wheel_raw[i] / expected - 1.0f) * 100.0f;
+    if (slip_pct > 127.0f)
+      slip_pct = 127.0f;
+    else if (slip_pct < -100.0f)
+      slip_pct = -100.0f;
+    slip_out[i] = (int8_t)(slip_pct < 0.0f ? slip_pct - 0.5f : slip_pct + 0.5f);
+  }
+  return true;
+}
+
+// Global lock gate: the "Disengage Under/Above Speed" and "Minimum Throttle
+// Before Lock" settings. Applies to EVERY lock-producing path - the selected
+// mode (50:50 / 60:40 / 75:25 / Expert) AND any force-mode trigger (TC,
+// hazards, external button) - so a forced 50:50 in a car park still obeys the
+// under-speed cut-off. A bound of 0 means that side of the window is disabled.
+// Expert mode used to bypass this entirely (its map has its own speed axis);
+// it is now gated too, matching the UI hint "disable ANY lock below...".
 
 // Speed-disengage gate. See include/OpenHaldexC6_Calculations.h for the full
 // rationale. Lock is permitted only while speed is at or above the lower bound
@@ -81,28 +179,14 @@ bool is_strictly_ascending_u16(const uint16_t* arr, uint8_t count)
   return true;
 }
 
-// Only executed when in MODE_FWD/MODE_5050/MODE_Expert
+
 static inline bool lock_enabled()
 {
-  bool throttle_ok = false;
-  bool speed_ok = false;
-
-  if (state.mode != MODE_EXPERT)
-  {
-    throttle_ok = (state.pedal_threshold == 0) || (int(received_pedal_value) >= state.pedal_threshold);
-    speed_ok = speed_disengage_ok(received_vehicle_speed, disengageUnderSpeed, disengageAboveSpeed);
-    return throttle_ok && speed_ok;
-  }
-
-  if (state.mode == MODE_EXPERT)
-  {
-    // todo - add in override functions?
-    throttle_ok = true;
-    speed_ok = true;
-    return throttle_ok && speed_ok;
-  }
-
-  return false;
+  const bool throttle_ok = (state.pedal_threshold == 0) || (int(received_pedal_value) >= state.pedal_threshold);
+  // Lock is allowed only within the window [disengageUnderSpeed, disengageAboveSpeed]
+  // (a 0 bound disables that side). Pure seam: speed_disengage_ok().
+  const bool speed_ok = speed_disengage_ok(received_vehicle_speed, disengageUnderSpeed, disengageAboveSpeed);
+  return throttle_ok && speed_ok;
 }
 
 static float get_expert_lock_target()
@@ -175,6 +259,130 @@ static float get_expert_lock_target()
   return int(v);            // return lock target as an integer percentage (0-100)
 }
 
+// Inverse of steering_curve_from_taper for display: the lock stays 100% up to
+// start (the breakpoint before the first value below 100), reaches the floor (the
+// last value) at full (the first breakpoint holding the floor). Exact for curves
+// built by steering_curve_from_taper, best effort for hand-edited ones. Pure.
+void steering_taper_from_curve(const uint16_t *arr, const uint8_t *scale, uint8_t count,
+                               uint16_t &start_deg, uint16_t &full_deg, uint8_t &floor_pct)
+{
+  floor_pct = scale[count - 1];
+  start_deg = arr[count - 1];
+  for (uint8_t i = 1; i < count; i++)
+  {
+    if (scale[i] < 100)
+    {
+      start_deg = arr[i - 1];
+      break;
+    }
+  }
+  full_deg = arr[count - 1];
+  for (uint8_t i = 0; i < count; i++)
+  {
+    if (scale[i] == floor_pct && (i == 0 || scale[i - 1] > floor_pct))
+    {
+      full_deg = arr[i];
+      break;
+    }
+  }
+}
+
+// Piecewise-linear steering curve: lock multiplier (0-100) for a steering-wheel
+// angle magnitude (deg). Past the last breakpoint the last value holds. Pure.
+float steering_curve_percent(float angle, const uint16_t *arr, const uint8_t *scale, uint8_t count)
+{
+  if (count < 2)
+    return 100.0f;
+  angle = constrain(angle, 0, (float)arr[count - 1]);
+  if (angle >= arr[count - 1])
+    return constrain((float)scale[count - 1], 0, 100);
+
+  for (uint8_t i = 0; i < count - 1; i++)
+  {
+    if (angle <= arr[i + 1])
+    {
+      const float denom = (float)arr[i + 1] - (float)arr[i];
+      const float ratio = (denom > 0) ? ((angle - arr[i]) / denom) : 0;
+      const float v0 = scale[i];
+      const float v1 = scale[i + 1];
+      return constrain(v0 + ((v1 - v0) * ratio), 0, 100);
+    }
+  }
+  return 100.0f;
+}
+
+// Build the 5-point curve for Edge's three-knob taper (start / full / floor):
+// 100% up to start_deg, a straight line down to floor_pct at full_deg, floor
+// beyond. Lets the Calibrate-tab keys steeringGainStartDeg / FullDeg / Floor and
+// the upstream breakpoint curve be one implementation. Pure.
+void steering_curve_from_taper(uint16_t start_deg, uint16_t full_deg, uint8_t floor_pct,
+                               uint16_t arr[steeringArrayCount], uint8_t scale[steeringArrayCount])
+{
+  if (floor_pct > 100)
+    floor_pct = 100;
+  if (full_deg < start_deg)
+    full_deg = start_deg;
+  arr[0] = 0;
+  arr[1] = start_deg;
+  arr[2] = (uint16_t)(((uint32_t)start_deg + full_deg) / 2);
+  arr[3] = full_deg;
+  arr[4] = (full_deg < 360) ? 360 : (uint16_t)(full_deg + 1);
+  scale[0] = 100;
+  scale[1] = 100;
+  scale[2] = (uint8_t)((100 + floor_pct) / 2);
+  scale[3] = floor_pct;
+  scale[4] = floor_pct;
+}
+
+// Steering-angle third axis (FWD bias): returns a 0-100% multiplier for the
+// lock target based on |steering-wheel angle|. Max lock at low angle, reduced
+// lock as angle grows. Only gens with a steering source (2/4/50/52) use it;
+// unsupported gens or stale/absent steering data return 100 (no reduction).
+static float get_steering_lock_scale()
+{
+  const bool supported = (haldexGeneration == 2 || haldexGeneration == 4 ||
+                          haldexGeneration == 50 || haldexGeneration == 52);
+  if (!supported)
+    return 100.0f;
+  if (!steeringScaleEnabled)
+    return 100.0f; // feature disabled -> full lock, no reduction
+  if (received_steering_ms == 0 || (millis() - received_steering_ms) > steeringStaleMs)
+    return 100.0f; // no/stale steering -> full lock, bias off
+
+  return steering_curve_percent(fabsf(received_steering_angle), steeringArray, steeringLockScaleArray, steeringArrayCount);
+}
+
+// Scale a lock target by the steering-angle curve. Applied to lock-producing
+// modes only (not Stock passthrough or FWD).
+// Telemetry captured for the UI engagement-split display: last requested
+// (pre-scale) and applied (post-scale) lock, and whether scaling ran this cycle.
+static float s_steer_requested = 0.0f;
+static float s_steer_applied = 0.0f;
+static bool s_steer_applied_flag = false;
+
+static inline float apply_steering_scale(float lock)
+{
+  const float scaled = lock * get_steering_lock_scale() / 100.0f;
+  s_steer_requested = lock;
+  s_steer_applied = scaled;
+  s_steer_applied_flag = true;
+  return scaled;
+}
+
+// Steering-scale telemetry accessors (used by the API live-status endpoint).
+bool steering_scale_is_active()
+{
+  return s_steer_applied_flag && (s_steer_applied + 0.5f < s_steer_requested);
+}
+uint8_t steering_scale_requested_pct()
+{
+  return (uint8_t)constrain((int)(s_steer_requested + 0.5f), 0, 100);
+}
+uint8_t steering_scale_result_pct()
+{
+  return (uint8_t)constrain((int)(s_steer_applied + 0.5f), 0, 100);
+}
+
 // Which force-mode value applies right now: 0..5 (Stock/FWD/5050/6040/7525/Expert)
 // when an enabled trigger's flag is active, or -1 when no force mode applies.
 // Priority between simultaneous triggers is user-configurable via
@@ -210,11 +418,11 @@ int get_forced_mode_value()
       {2, 1, 0}, // 5: Ext > Hazard > TC
   };
 
-  const uint8_t pri = (forceModesPriority < 6) ? forceModesPriority : 0;
+  const uint8_t priority = (forceModesPriority < 6) ? forceModesPriority : 0;
 
   for (uint8_t i = 0; i < 3; i++)
   {
-    const uint8_t idx = priorityOrders[pri][i];
+    const uint8_t idx = priorityOrders[priority][i];
     if (triggers[idx].enabled && triggers[idx].flag)
     {
       return triggers[idx].value;
@@ -225,17 +433,22 @@ int get_forced_mode_value()
 
 float get_lock_target_adjustment()
 {
+  s_steer_applied_flag = false; // reset; apply_steering_scale sets it when used this cycle
+
   // The return value is a torque COMMAND: standalone packs it into the frames it
   // synthesizes, and the inline gateway packs it into edited chassis frames. It
-  // must therefore never mirror received_haldex_engagement back - engagement 100
+  // must never mirror received_haldex_engagement back - engagement 100
   // commanding 100 closes a positive feedback loop that latches the clutch shut
-  // (the stuck-at-100% field bug). Stock as a command is zero forced lock; true
+  // until FWD or a power cycle. Stock as a command is zero forced lock; true
   // stock PASSTHROUGH is the caller's job (parseCAN_chs skips frame edits
   // entirely when the effective mode is Stock).
-  // const MODE_NAMES = ['Stock', 'FWD', '50:50', '60:40', '75:25', 'Expert']; // mode names as Strings
+  // const MODE_NAMES = ['Stock', 'FWD', '50:50', '60:40', '75:25', 'Expert'];
   const int forced = get_forced_mode_value();
   if (forced >= 0)
   {
+    // Forced lock modes go through the same speed/throttle gate as the
+    // selected mode below, so lock_target (and the dashboard "Requested"
+    // figure) never reads 100% below the under-speed cut-off.
     switch (forced)
     {
     case 0:
@@ -243,13 +456,13 @@ float get_lock_target_adjustment()
     case 1:
       return 0; // FWD
     case 2:
-      return 100; // 50:50
+      return lock_enabled() ? apply_steering_scale(100) : 0; // 50:50
     case 3:
-      return 40; // 60:40
+      return lock_enabled() ? apply_steering_scale(40) : 0; // 60:40
     case 4:
-      return 30; // 75:25
+      return lock_enabled() ? apply_steering_scale(30) : 0; // 75:25
     case 5:
-      return get_expert_lock_target(); // Expert
+      return lock_enabled() ? apply_steering_scale(get_expert_lock_target()) : 0; // Expert
     default:
       return 0; // error - zero lock
     }
@@ -259,7 +472,7 @@ float get_lock_target_adjustment()
   switch (state.mode)
   {
   case MODE_STOCK:
-    return 0; // Stock -> no forced lock. In standalone there is nothing to pass through, so Stock behaves as an open clutch; inline stock never reaches here (parseCAN_chs forwards frames untouched).
+    return 0; // Stock -> no forced lock. Standalone has nothing to pass through, so Stock is an open clutch; inline Stock never reaches here (parseCAN_chs forwards frames untouched).
 
   case MODE_FWD:
     return 0; // zero lock
@@ -267,28 +480,28 @@ float get_lock_target_adjustment()
   case MODE_5050:
     if (lock_enabled())
     {
-      return 100; // 100% lock
+      return apply_steering_scale(100); // 100% lock
     }
     return 0; // lock not enabled, zero lock
 
   case MODE_6040:
     if (lock_enabled())
     {
-      return 40; // 40% lock
+      return apply_steering_scale(40); // 40% lock
     }
     return 0; // lock not enabled, zero lock
 
   case MODE_7525:
     if (lock_enabled())
     {
-      return 30; // 30% lock
+      return apply_steering_scale(30); // 30% lock
     }
     return 0; // lock not enabled, zero lock
 
   case MODE_EXPERT:
     if (lock_enabled())
     {
-      return get_expert_lock_target();
+      return apply_steering_scale(get_expert_lock_target());
     }
     return 0; // lock not enabled, zero lock
 
@@ -340,7 +553,7 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert)
   }
   else
   {
-    // VAG Haldex default — linear fit: engagement = 2 * CF - 20  →  CF = (target + 20) / 2
+    // VAG Haldex default - linear fit: engagement = 2 * CF - 20, so CF = (target + 20) / 2
     correction_factor = (uint8_t)constrain(((float)lock_target + 20.0f) / 2.0f, 0, 100);
   }
 
@@ -352,141 +565,173 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert)
   return (invert ? 0xFE : 0x00); // if lock not enabled, return 0 (or inverted)
 }
 
-// Steering-gain taper: percentage (floor..100) to scale the lock target by for
-// a given steering angle. 100% at or below start_deg, linear ramp down to
-// floor_percent at full_deg. Angles are compared in 0.1-degree units so the
-// LWI_01 wire value is used directly.
-uint8_t steering_gain_percent(uint16_t angle_tenths, uint16_t start_deg, uint16_t full_deg, uint8_t floor_percent)
+void fill_esp19_wheel_speeds(uint8_t data[8])
 {
-  if (floor_percent > 100)
+  // Wheel speed MUST keep changing or the Haldex slowly disengages - a
+  // static value fades over time and eventually stops. This is the original,
+  // proven keep-alive dither (all 4 corners share the same small swing).
+  //
+  // A lock_target-proportional front/rear delta (simulating real slip, like
+  // the Gen42/Ford wheel-speed code does) was tried here and made things
+  // worse on real hardware - reported lock still faded from 100% and then
+  // collapsed to 0%, rather than holding. Likely reading to the Haldex as
+  // excessive/implausible sustained slip and triggering a separate
+  // protection cutoff. Reverted; do not reintroduce without confirming on
+  // the car first.
+  if (wsBaseRaw == 0)
   {
-    floor_percent = 100;
-  }
+    // Legacy behaviour: all four corners driven from the free-running counters.
+    const uint8_t hlLo = get_lock_target_adjusted_value(ESP_19_counter2, false);
+    const uint8_t hlHi = get_lock_target_adjusted_value(ESP_19_counter, false);
+    const uint8_t vlLo = get_lock_target_adjusted_value(ESP_19_counter2 + 0xBA, false);
 
-  const uint32_t start_tenths = (uint32_t)start_deg * 10;
-  const uint32_t full_tenths = (uint32_t)full_deg * 10;
-
-  if (angle_tenths <= start_tenths)
-  {
-    return 100;
-  }
-
-  // Degenerate window (full <= start): step straight to the floor instead of
-  // dividing by zero.
-  if (full_tenths <= start_tenths || angle_tenths >= full_tenths)
-  {
-    return floor_percent;
-  }
-
-  // Linear ramp between the breakpoints, rounded to nearest percent. Products
-  // stay far below 2^32: span and offset are <= 7200 (720 deg), (100-floor) <= 100.
-  const uint32_t span = full_tenths - start_tenths;
-  const uint32_t into = (uint32_t)angle_tenths - start_tenths;
-  const uint32_t reduction = ((uint32_t)(100 - floor_percent) * into + span / 2) / span;
-  return (uint8_t)(100 - reduction);
-}
-
-// Geometry-compensated per-corner slip. See the header for the full contract.
-// Model: at steering road-wheel angle delta, pure Ackermann puts the turn centre
-// on the rear-axle line a distance R = wheelbase / tan(delta) from the vehicle
-// centreline. Each wheel then traces a circle of its own radius, so with zero
-// actual slip the wheel speeds are proportional to those radii. We compute the
-// four geometric radii, turn them into expected speeds that share the measured
-// mean, and report each corner's fractional excess over its expected speed as
-// slip. On a straight (delta ~ 0) all radii are equal, so this cleanly reduces to
-// "speed vs. the average of the others" - the drag-mode behaviour - with no
-// special-casing.
-bool compute_corner_slip(const uint16_t wheel_raw[4], int16_t steer_wheel_tenths,
-                         float steering_ratio, uint16_t wheelbase_mm,
-                         uint16_t track_front_mm, uint16_t track_rear_mm,
-                         uint16_t min_speed_raw, int8_t slip_out[4])
-{
-  slip_out[0] = slip_out[1] = slip_out[2] = slip_out[3] = 0;
-
-  // Need a plausible car and a real steering ratio, or the geometry is nonsense.
-  // Zero track collapses the left/right corners onto the centreline, so it is
-  // just as degenerate as a zero wheelbase.
-  if (wheelbase_mm == 0 || track_front_mm == 0 || track_rear_mm == 0 ||
-      steering_ratio < 1.0f)
-    return false;
-
-  // Too slow to trust: ABS wheel-speed quantisation and standstill jitter swamp
-  // any real slip, and dividing by a near-zero expected speed explodes.
-  const uint32_t sum_raw =
-      (uint32_t)wheel_raw[0] + wheel_raw[1] + wheel_raw[2] + wheel_raw[3];
-  const float mean_actual = sum_raw * 0.25f;
-  if (mean_actual < (float)min_speed_raw || mean_actual <= 0.0f)
-    return false;
-
-  const float L = (float)wheelbase_mm;
-  const float half_tf = (float)track_front_mm * 0.5f;
-  const float half_tr = (float)track_rear_mm * 0.5f;
-
-  // Road-wheel angle in radians from the steering-wheel angle and the rack ratio.
-  const float delta_deg = ((float)steer_wheel_tenths * 0.1f) / steering_ratio;
-  const float delta = fabsf(delta_deg) * (float)M_PI / 180.0f;
-
-  // Radii in [FL, FR, RL, RR] order.
-  float rad[4];
-  const float kStraight = 0.0005f; // ~0.03 deg road angle: below this treat as straight
-  if (delta < kStraight)
-  {
-    rad[0] = rad[1] = rad[2] = rad[3] = 1.0f; // all equal -> pure relative slip
+    data[0] = hlLo; // HL (rear left) low
+    data[1] = hlHi; // HL (rear left) high
+    data[2] = hlLo; // HR (rear right) low
+    data[3] = hlHi; // HR (rear right) high
+    data[4] = vlLo; // VL (front left) low
+    data[5] = hlHi; // VL (front left) high
+    data[6] = vlLo; // VR (front right) low
+    data[7] = hlHi; // VR (front right) high
+    if (wsLeftRightDeltaRaw != 0)
+    {
+      // VAQ lever: split the front axle left vs right around the legacy value.
+      const int32_t base = (int32_t)((uint16_t)hlHi << 8 | vlLo);
+      int32_t vl = base + wsLeftRightDeltaRaw / 2;
+      int32_t vr = base - wsLeftRightDeltaRaw / 2;
+      if (vl < 0) vl = 0; if (vl > 0xFFFF) vl = 0xFFFF;
+      if (vr < 0) vr = 0; if (vr > 0xFFFF) vr = 0xFFFF;
+      data[4] = (uint8_t)(vl & 0xFF); data[5] = (uint8_t)(vl >> 8);
+      data[6] = (uint8_t)(vr & 0xFF); data[7] = (uint8_t)(vr >> 8);
+    }
   }
   else
   {
-    float R = L / tanf(delta); // distance from turn centre to rear-axle centre
-    // Guard an unrealistically tight radius (R below half-track) so an inner
-    // radius can never go negative and invert the ratios.
-    const float min_R = (half_tf > half_tr ? half_tf : half_tr) + 1.0f;
-    if (R < min_R)
-      R = min_R;
+    // Explicit mode: a fixed base speed per corner, optionally dithered, with
+    // an optional front-axle offset. Lets the "does the Haldex hunt because
+    // the simulated wheel speed keeps moving?" question be tested directly -
+    // set wsDitherRaw 0 for a genuinely static speed.
+    static bool phase = false;
+    phase = !phase;
+    const int32_t dither = wsDitherRaw ? (phase ? (int32_t)wsDitherRaw : -(int32_t)wsDitherRaw) : 0;
+    int32_t rear = (int32_t)wsBaseRaw + dither;
+    int32_t front = rear + wsFrontDeltaRaw;
+    // VAQ lever: front left-vs-right split (a transverse lock reacts to VL vs VR).
+    int32_t vl = front + wsLeftRightDeltaRaw / 2;
+    int32_t vr = front - wsLeftRightDeltaRaw / 2;
+    if (rear < 0) rear = 0;
+    if (vl < 0) vl = 0;
+    if (vr < 0) vr = 0;
+    const uint16_t r = (uint16_t)(rear > 0xFFFF ? 0xFFFF : rear);
+    const uint16_t l16 = (uint16_t)(vl > 0xFFFF ? 0xFFFF : vl);
+    const uint16_t r16 = (uint16_t)(vr > 0xFFFF ? 0xFFFF : vr);
 
-    const float r_rear_inner = R - half_tr;
-    const float r_rear_outer = R + half_tr;
-    const float r_front_inner = sqrtf(L * L + (R - half_tf) * (R - half_tf));
-    const float r_front_outer = sqrtf(L * L + (R + half_tf) * (R + half_tf));
-
-    if (delta_deg > 0.0f)
-    {
-      // Turning right: right-side wheels are inner (shorter radius, slower).
-      rad[0] = r_front_outer; // FL
-      rad[1] = r_front_inner; // FR
-      rad[2] = r_rear_outer;  // RL
-      rad[3] = r_rear_inner;  // RR
-    }
-    else
-    {
-      // Turning left: left-side wheels are inner.
-      rad[0] = r_front_inner; // FL
-      rad[1] = r_front_outer; // FR
-      rad[2] = r_rear_inner;  // RL
-      rad[3] = r_rear_outer;  // RR
-    }
+    data[0] = (uint8_t)(r & 0xFF);   // HL low
+    data[1] = (uint8_t)(r >> 8);     // HL high
+    data[2] = (uint8_t)(r & 0xFF);   // HR low
+    data[3] = (uint8_t)(r >> 8);     // HR high
+    data[4] = (uint8_t)(l16 & 0xFF); // VL low
+    data[5] = (uint8_t)(l16 >> 8);   // VL high
+    data[6] = (uint8_t)(r16 & 0xFF); // VR low
+    data[7] = (uint8_t)(r16 >> 8);   // VR high
   }
 
-  const float mean_rad = (rad[0] + rad[1] + rad[2] + rad[3]) * 0.25f;
-  if (mean_rad <= 0.0f)
-    return false;
-
-  for (int i = 0; i < 4; i++)
+  if (!wsFreeze)
   {
-    // Expected speed for this corner: the measured mean scaled by how much longer
-    // or shorter this corner's arc is than the average arc.
-    const float expected = mean_actual * (rad[i] / mean_rad);
-    if (expected <= 0.0f)
-    {
-      slip_out[i] = 0;
-      continue;
-    }
-    float slip_pct = ((float)wheel_raw[i] / expected - 1.0f) * 100.0f;
-    if (slip_pct > 127.0f)
-      slip_pct = 127.0f;
-    else if (slip_pct < -100.0f)
-      slip_pct = -100.0f;
-    slip_out[i] = (int8_t)(slip_pct < 0.0f ? slip_pct - 0.5f : slip_pct + 0.5f);
+    ESP_19_counter++;
+    ESP_19_counter2++;
+    if (ESP_19_counter > 0x10)
+      ESP_19_counter = 0x0A;
+    if (ESP_19_counter2 > 0x2F)
+      ESP_19_counter2 = 0x2E;
   }
-  return true;
+}
+
+void fill_motor11_bpk(uint8_t data[8], uint8_t counter)
+{
+  // DBC-correct bit packing for Motor_11 (0x0A7). Every field below is a
+  // runtime tunable (see defs.h) so the serial lab can massage the wire
+  // format live; the defaults are the values that were hardcoded here.
+  // Signals are 10-bit with offset -509, i.e. raw = Nm + 509.
+  // The 10-bit field with offset -509 encodes at most +514 Nm: clamp the ceiling to the
+  // documented 509 Nm signal maximum so a raised value can never wrap the 0x3FF mask.
+  const uint16_t ceilNm = (bpkCeilingNm > 509) ? 509 : bpkCeilingNm;
+  const uint16_t floorNm = (bpkFloorNm < ceilNm) ? bpkFloorNm : 0;
+
+  uint16_t torqueNm = get_lock_target_adjusted_value(0xFE, false);
+  torqueNm = (uint16_t)(floorNm + ((uint32_t)torqueNm * (ceilNm - floorNm)) / 0xFE);
+
+  static uint16_t prevIstNm = 0, prevSolfNm = 0;
+  auto slew = [](uint16_t cur, uint16_t target, uint16_t step) -> uint16_t
+  {
+    if (step == 0)
+      return target; // 0 = no rate limit
+    if (target > cur)
+      return ((uint32_t)cur + step >= target) ? target : (uint16_t)(cur + step);
+    if (target < cur)
+      return (cur <= step || cur - step <= target) ? target : (uint16_t)(cur - step);
+    return cur;
+  };
+  uint16_t istNm = slew(prevIstNm, torqueNm, bpkSlewIst);
+  uint16_t solfNm = slew(prevSolfNm, torqueNm, bpkSlewSolf);
+  prevIstNm = istNm;
+  prevSolfNm = solfNm;
+
+  // Optional overrides, to test which field the Haldex actually keys off.
+  if (bpkForceIstNm >= 0)
+    istNm = (uint16_t)bpkForceIstNm;
+  if (bpkForceSolfNm >= 0)
+    solfNm = (uint16_t)bpkForceSolfNm;
+
+  bpkLogSample(torqueNm, istNm, solfNm);
+
+  const uint16_t rawSollRoh = (uint16_t)(torqueNm + 509) & 0x3FF;
+  const uint16_t rawIst = (uint16_t)(istNm + 509) & 0x3FF;
+  const uint16_t rawSolf = (uint16_t)(solfNm + 509) & 0x3FF;
+  const uint16_t rawTraeg = bpkTraegRaw & 0x3FF;
+  const uint16_t rawSchub = bpkSchubRaw & 0x1FF;
+
+  data[0] = 0x00; // CRC placeholder - caller fills it
+  data[1] = (counter & 0x0F) | ((rawSollRoh & 0x000F) << 4);
+  data[2] = ((rawSollRoh >> 4) & 0x3F) | ((rawIst & 0x0003) << 6);
+  data[3] = (rawIst >> 2) & 0xFF;
+  data[4] = rawTraeg & 0xFF;
+  data[5] = ((rawTraeg >> 8) & 0x03) | ((rawSolf & 0x3F) << 2);
+  data[6] = ((rawSolf >> 6) & 0x0F) | ((rawSchub & 0x0F) << 4);
+  data[7] = ((rawSchub >> 4) & 0x1F) | bpkStatusFl;
+
+  for (uint8_t i = 0; i < 8; i++)
+    bpkLastFrame[i] = data[i];
+}
+
+void bpkLogSample(uint16_t torqueNm, uint16_t istNm, uint16_t solfNm)
+{
+  // Runs at the Motor_11 rate (~100 Hz) on both BPK paths, so it stays a
+  // plain store - the serial lab task does its own timing when it streams.
+  bpkLastTorqueNm = torqueNm;
+  bpkLastIstNm = istNm;
+  bpkLastSolfNm = solfNm;
+}
+
+// The v9 %/s lock-release setting (web lockReleaseRatePerSec and the BLE
+// Settings characteristic, 5..500 %/s) mapped onto the one ramp mechanism, which
+// stores milliseconds for a full 0..100 travel. 100000 / rate: 500 %/s = 200 ms,
+// 5 %/s = 20000 ms. Out-of-range rates are clamped, never rejected.
+uint16_t lock_ramp_ms_from_pct_rate(uint16_t rate_per_sec)
+{
+  if (rate_per_sec < 5) rate_per_sec = 5;
+  if (rate_per_sec > 500) rate_per_sec = 500;
+  return (uint16_t)((100000UL + rate_per_sec / 2) / rate_per_sec);
+}
+
+// Inverse for reporting. 0 ms (instant) reads as the 500 %/s ceiling.
+uint16_t lock_pct_rate_from_ramp_ms(uint16_t ramp_ms)
+{
+  if (ramp_ms == 0) return 500;
+  uint32_t r = (100000UL + ramp_ms / 2) / ramp_ms;
+  if (r < 5) r = 5;
+  if (r > 500) r = 500;
+  return (uint16_t)r;
 }
 
 // Slew one step of the lock-target rate limiter. Ramp times are milliseconds for
@@ -539,27 +784,30 @@ uint16_t lock_ramp_ms_from_rate(float rate_per_sec)
   return (uint16_t)(ms + 0.5f); // round to nearest ms
 }
 
+// Learn interlock: the sweep commands up to full lock, which is only safe with
+// the car stationary. Pure so the 5 km/h limit is pinned by a host test.
+bool learn_speed_ok(uint16_t speed_kmh)
+{
+  return speed_kmh <= learnMaxSpeed;
+}
+
 void startHaldexLearn()
 {
-  // Guard + wipe + flag reset in one critical section, so the hot path can
-  // never see haldexLearnTableValid still set over a half-wiped table and two
-  // concurrent callers can never both pass the already-running check
-  xSemaphoreTake(stateMutex, portMAX_DELAY);
-  if (haldexLearnActive)
+  if (!learn_speed_ok(received_vehicle_speed))
   {
-    xSemaphoreGive(stateMutex);
-    return; // already running
+    haldexLearnStep = 103; // refused: car is moving (same code a mid-sweep abort reports)
+    return;
   }
 
-  // Snapshot the current calibration before wiping, so a cancelled or
-  // speed-aborted sweep can restore it instead of leaving the user with no
-  // table at all (which also silently flipped BPK packing back to V3 for
-  // anyone relying on learn_table_valid).
-  memcpy(haldexLearnTableBackup, haldexLearnTable, sizeof(haldexLearnTableBackup));
-  haldexLearnTableBackupValid = haldexLearnTableValid;
-
-  memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
-  haldexLearnTableValid = false; // wiped table is no longer valid until the task republishes
+  // Guard + reserve in one critical section so two concurrent callers can never
+  // both pass the already-running check. runLearnSweep() snapshots and wipes
+  // the table itself, under the same mutex.
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
+  if (haldexLearnActive || longLearnActive)
+  {
+    xSemaphoreGive(stateMutex);
+    return; // already running (Long Learn drives its own sweeps)
+  }
   haldexLearnCancel = false;
   haldexLearnStep = 0;
   haldexLearnCF = 0;
@@ -568,120 +816,472 @@ void startHaldexLearn()
 
   if (xTaskCreate(haldexLearnTask, "haldexLearn", 4096, nullptr, 1, nullptr) != pdPASS)
   {
-    // Task never started, so nothing will republish the table or clear the
-    // active flag. Undo everything: restore the snapshot (same path as a
-    // cancelled sweep) and release the learn state so a retry is possible.
-    xSemaphoreTake(stateMutex, portMAX_DELAY);
-    haldexLearnStep = learn_finalize(haldexLearnTable, &haldexLearnTableValid,
-                                     haldexLearnTableBackup, haldexLearnTableBackupValid,
-                                     true /*cancelled*/, false, haldexLearnStep);
+    // Task never started, so nothing would ever clear the active flag.
     haldexLearnActive = false;
-    xSemaphoreGive(stateMutex);
-    DEBUG("startHaldexLearn: xTaskCreate failed - learn aborted, previous table restored");
+    DEBUG("startHaldexLearn: xTaskCreate failed - learn not started");
   }
 }
 
-// editFramesGen1: per-generation CAN frame edits factored out of getLockData.
-// Called under stateMutex; mutates only rx_message_chs.
-static void editFramesGen1(twai_message_t &rx_message_chs)
+bool runLearnSweep(uint32_t preHoldMs)
 {
-  switch (rx_message_chs.identifier)
-  {
-  case MOTOR1_ID:
-    rx_message_chs.data[0] = 0x00;
-    rx_message_chs.data[1] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[2] = 0x21;
-    rx_message_chs.data[3] = get_lock_target_adjusted_value(0x4E, false);
-    rx_message_chs.data[4] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[5] = get_lock_target_adjusted_value(0xFE, false);
-    appliedTorque = rx_message_chs.data[6];
+  // Bench-measured (Gen5 0CQ): engagement needs several hundred ms to settle
+  // after a step, and a single instantaneous sample lands mid-transient - which
+  // is what made learned mid-points wander. Settle first, then AVERAGE over a
+  // short observation window, so each entry is the value actually held rather
+  // than whatever the reading was passing through. Held steady, this hardware
+  // tracks the request 1:1 with no jitter at all, so a clean sweep should come
+  // out close to an identity table.
+  // The window is reduced with learn_reduce_samples (lower median, then held
+  // monotonic against the previous CF): near lock-up the Haldex ECU's own duty
+  // loop briefly overshoots to a clean 100 for one frame, and a plain average
+  // would write that spike into the table.
+  const uint32_t settleMs = 400;
+  const uint32_t sampleMs = 25;
+  const uint8_t sampleCount = 8; // 8 * 25 ms = 200 ms observation window
+  uint8_t prevRecorded = 0;
+  bool speedAborted = false;
 
-    switch (state.mode)
+  // The ESP_14 launch floor pins BR_Vorg_*_Min to Max, leaving the Haldex no
+  // room to modulate - it drives the pump to full duty and corrupts the top of
+  // the sweep. Always learn with it at 0 and restore afterwards. NOTE: the
+  // Motor_11 packing (fixHunting) is deliberately NOT forced here: which
+  // packing a unit needs is a per-unit trait (554K needs BPK, this 0CQ does
+  // not), and the table must describe how the car will actually be driven.
+  const uint8_t floorBeforeLearn = esp14MinFloorPct;
+  esp14MinFloorPct = 0;
+
+  // Snapshot the current calibration, then wipe and invalidate it in one
+  // critical section so the hot path never sees a valid flag over a half-wiped
+  // table. A cancelled or speed-aborted sweep restores the snapshot (see
+  // learn_finalize) instead of leaving the user with no table at all.
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
+  memcpy(haldexLearnTableBackup, haldexLearnTable, sizeof(haldexLearnTableBackup));
+  haldexLearnTableBackupValid = haldexLearnTableValid;
+  memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
+  haldexLearnTableValid = false;
+  haldexLearnCancel = false;
+  haldexLearnStep = 0;
+  haldexLearnCF = 0;
+  haldexLearnActive = true; // frames now carry haldexLearnCF regardless of mode
+  xSemaphoreGive(stateMutex);
+
+  // Optional pre-hold at CF 0: wait for the clutch to release from the previous
+  // sweep (engagement <= 2 % for five consecutive 100 ms ticks) or time out.
+  if (preHoldMs > 0)
+  {
+    uint8_t releasedTicks = 0;
+    for (uint32_t held = 0; held < preHoldMs && !haldexLearnCancel; held += 100)
     {
-    case MODE_FWD:
-      appliedTorque = get_lock_target_adjusted_value(0xFE, true);
-      break;
-    case MODE_5050:
-      appliedTorque = get_lock_target_adjusted_value(0x16, false);
-      break;
-    case MODE_6040:
-      appliedTorque = get_lock_target_adjusted_value(0x22, false);
-      break;
-    case MODE_7525:
-      appliedTorque = get_lock_target_adjusted_value(0x50, false);
-      break;
-    default:
+      vTaskDelay(100 / portTICK_PERIOD_MS);
+      if (received_haldex_engagement <= 2)
+      {
+        if (++releasedTicks >= 5)
+          break;
+      }
+      else
+      {
+        releasedTicks = 0;
+      }
+    }
+  }
+
+  for (uint16_t cf = 0; cf <= 100; cf++)
+  {
+    if (haldexLearnCancel)
+    {
       break;
     }
 
-    rx_message_chs.data[6] = appliedTorque;
-    rx_message_chs.data[7] = 0x00;
-    break;
-  case MOTOR3_ID:
-    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[7] = get_lock_target_adjusted_value(0xFE, false);
-    break;
-  case BRAKES1_ID:
-    rx_message_chs.data[1] = get_lock_target_adjusted_value(0x00, false);
-    rx_message_chs.data[2] = 0x00;
-    rx_message_chs.data[3] = get_lock_target_adjusted_value(0x0A, false);
-    break;
-  case BRAKES3_ID:
-    rx_message_chs.data[0] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[1] = 0x0A;
-    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[3] = 0x0A;
-    rx_message_chs.data[4] = 0x00;
-    rx_message_chs.data[5] = 0x0A;
-    rx_message_chs.data[6] = 0x00;
-    rx_message_chs.data[7] = 0x0A;
-    break;
+    // Live speed interlock: abort without publishing the partial table if the
+    // car moves off mid-sweep. Step 103 tells the UI why.
+    if (!learn_speed_ok(received_vehicle_speed))
+    {
+      speedAborted = true;
+      if (longLearnActive)
+      {
+        longLearnSpeedAborted = true; // Long Learn restores everything and reports failure
+        longLearnCancel = true;
+      }
+      break;
+    }
+
+    haldexLearnStep = (uint8_t)cf;
+    haldexLearnCF = (uint8_t)cf;
+
+    vTaskDelay(settleMs / portTICK_PERIOD_MS);
+
+    uint8_t samples[sampleCount];
+    for (uint8_t i = 0; i < sampleCount; i++)
+    {
+      vTaskDelay(sampleMs / portTICK_PERIOD_MS);
+      samples[i] = received_haldex_engagement;
+    }
+
+    // Engagement can never physically fall as the request climbs, so the
+    // reducer holds the table monotonic against the previous CF as well.
+    prevRecorded = learn_reduce_samples(samples, sampleCount, prevRecorded);
+    haldexLearnTable[cf] = prevRecorded;
   }
+
+  // Publish the outcome (restore on cancel/speed-abort, validate on complete)
+  // together with the valid flag under the lock. The decision lives in
+  // learn_finalize, a pure seam pinned by test_learn.
+  bool tableValid = false;
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
+  haldexLearnStep = learn_finalize(haldexLearnTable, &tableValid,
+                                   haldexLearnTableBackup, haldexLearnTableBackupValid,
+                                   haldexLearnCancel, speedAborted, haldexLearnStep);
+  haldexLearnTableValid = tableValid;
+  xSemaphoreGive(stateMutex);
+
+  const bool anyNonZero = (haldexLearnStep == 101);
+  const bool ok = !haldexLearnCancel && anyNonZero;
+  haldexLearnActive = false;
+  haldexLearnCF = 0;
+  esp14MinFloorPct = floorBeforeLearn; // restore whatever the user had set
+  return ok;
 }
 
-// editFramesGen2: per-generation CAN frame edits factored out of getLockData.
-// Called under stateMutex; mutates only rx_message_chs.
-static void editFramesGen2(twai_message_t &rx_message_chs)
+void scoreLearnTable(const uint8_t *table, LearnScore &out)
 {
-  switch (rx_message_chs.identifier)
+  out.reach = table[100];
+  out.engageCF = 101;
+  for (uint8_t i = 0; i <= 100; i++)
   {
-  case MOTOR1_ID:
-    rx_message_chs.data[1] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[2] = 0x21;
-    rx_message_chs.data[3] = get_lock_target_adjusted_value(0x4E, false);
-    rx_message_chs.data[6] = get_lock_target_adjusted_value(0xFE, false); // 0x20 in standalone - same as gen1?
-    break;
-  case MOTOR3_ID:
-    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[7] = get_lock_target_adjusted_value(0x01, false);
-    break;
-  case BRAKES1_ID:
-    rx_message_chs.data[0] = get_lock_target_adjusted_value(0x80, false);
-    rx_message_chs.data[1] = get_lock_target_adjusted_value(0x41, false);
-    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[3] = 0x0A;
-    break;
-  case BRAKES2_ID:
-    rx_message_chs.data[4] = get_lock_target_adjusted_value(0x7F, false);
-    rx_message_chs.data[5] = get_lock_target_adjusted_value(0xFE, false);
-    break;
-  case BRAKES3_ID:
-    rx_message_chs.data[0] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[1] = 0x0A;
-    rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
-    rx_message_chs.data[3] = 0x0A;
-    rx_message_chs.data[4] = 0x00;
-    rx_message_chs.data[5] = 0x0A;
-    rx_message_chs.data[6] = 0x00;
-    rx_message_chs.data[7] = 0x0A;
-    break;
+    if (table[i] > 0)
+    {
+      out.engageCF = i;
+      break;
+    }
   }
+  out.engageJump = (out.engageCF <= 100) ? table[out.engageCF] : 0;
+
+  // Largest rise between consecutive steps after the first engage step. The
+  // table is monotonic (runLearnSweep holds the peak) so the delta is >= 0.
+  out.maxStep = 0;
+  for (uint16_t i = (uint16_t)out.engageCF + 1; i <= 100; i++)
+  {
+    const uint8_t d = table[i] - table[i - 1];
+    if (d > out.maxStep)
+      out.maxStep = d;
+  }
+
+  out.smooth = (out.engageCF <= LL_ENGAGE_MAX_CF) &&
+               (out.reach >= LL_REACH_MIN) &&
+               (out.maxStep <= LL_STEP_MAX);
+
+  // Composite rank: start from reach, penalise discontinuities hard and late
+  // engagement gently. A table that never engages scores 0.
+  int s = out.reach;
+  if (out.maxStep > 3)
+    s -= 4 * (out.maxStep - 3);
+  if (out.engageCF > 20)
+    s -= (out.engageCF - 20) / 2;
+  if (out.engageCF > 100)
+    s = 0;
+  out.score = (uint8_t)constrain(s, 0, 100);
 }
 
-// editFramesGen4: per-generation CAN frame edits factored out of getLockData.
-// Called under stateMutex; mutates only rx_message_chs.
-static void editFramesGen4(twai_message_t &rx_message_chs)
+bool startLongLearn(bool testAll)
 {
+  if (longLearnActive || haldexLearnActive)
+    return false;
+  if (!learn_speed_ok(received_vehicle_speed))
+  {
+    haldexLearnStep = 103; // refused: car is moving
+    return false;
+  }
+  const int gi = frameEditGenIdx(haldexGeneration);
+  if (gi < 0)
+    return false; // gen41/42 etc. have no gated blocks to bisect
+
+  longLearnGenIdx = (uint8_t)gi;
+  longLearnGeneration = haldexGeneration;
+  longLearnTestAll = testAll;
+  longLearnCancel = false;
+  longLearnSpeedAborted = false;
+  longLearnPhase = LL_SWEEP;
+  longLearnSweepIdx = 0;
+  longLearnSweepTotal = 0;
+  longLearnSweepCount = 0;
+  longLearnCurrentBit = -1;
+  longLearnBaselineValid = false;
+  longLearnFinalValid = false;
+  longLearnBpkAdjusted = false;
+  longLearnStartMs = millis();
+  longLearnEndMs = 0;
+  memset(longLearnBlockResult, 0, sizeof(longLearnBlockResult));
+  longLearnActive = true;
+
+  if (xTaskCreate(longLearnTask, "longLearn", 6144, nullptr, 1, nullptr) != pdPASS)
+  {
+    // No task means nothing would ever clear the flag, locking out every
+    // later learn until a reboot.
+    longLearnActive = false;
+    longLearnPhase = LL_FAILED;
+    longLearnEndMs = millis();
+    return false;
+  }
+  return true;
+}
+
+void getLockData(twai_message_t &rx_message_chs)
+{
+  // Hold stateMutex across the whole read + compute + frame edit so the Haldex
+  // never sees a half-rewritten expert table, learn table or mode. The guard
+  // releases on every return path below. No blocking calls inside, so the hold
+  // is bounded; nothing called from here takes the mutex again.
+  StateLock stateLock;
+
+  // Calculate raw lock target then (optionally) apply rate-limited slewing.
+  // When lockReleaseEnabled is false, all transitions to new lock % are instantaneous.
+  // When enabled, falling transitions take `lockReleaseRampMs` ms for a full
+  // release so the clutch opens gradually rather than snapping, and rising
+  // transitions take `lockEngageRampMs` ms (0 = instantaneous, the default).
+  static float smoothed_lock_target = 0.0f;
+  static uint32_t last_lock_ms = 0;
+
+  const float raw_target = get_lock_target_adjustment(); // calculate raw lock target based on mode, overrides, and learn table
+
+  if (!lockReleaseEnabled)
+  {
+    smoothed_lock_target = raw_target; // instant: bypass rate limit
+    last_lock_ms = millis();
+  }
+  else
+  {
+    const uint32_t now_ms = millis();
+    const float dt_s = (last_lock_ms == 0) ? 0.0f : (float)(now_ms - last_lock_ms) / 1000.0f;
+    last_lock_ms = now_ms;
+
+    smoothed_lock_target = lock_rate_limit_step(smoothed_lock_target, raw_target,
+                                                lockEngageRampMs, lockReleaseRampMs, dt_s);
+  }
+  lock_target = smoothed_lock_target;
+
+  // If the incoming frame is a known frame for this generation and its bit is
+  // cleared, skip all editing.  If its bit is set, allow editing
+  {
+    int _feGen = frameEditGenIdx(haldexGeneration);
+    if (_feGen >= 0)
+    {
+      for (uint16_t _i = 0; _i < frameEditBlockCount; _i++)
+      {
+        if (frameEditBlocks[_i].genIdx == (uint8_t)_feGen &&
+            frameEditBlocks[_i].canId == rx_message_chs.identifier)
+        {
+          if (!frameEditEnabled((uint8_t)_feGen, frameEditBlocks[_i].bit))
+            return; // block disabled -> pass the car's real frame through untouched
+          break;
+        }
+      }
+    }
+  }
+
+  // begin frame parsing / editting
+  // edit the frames if configured as Gen1...
+  if (haldexGeneration == 1)
+  {
+    switch (rx_message_chs.identifier)
+    {
+    case MOTOR1_ID:
+      rx_message_chs.data[0] = 0x00;
+      rx_message_chs.data[1] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[2] = 0x21;
+      rx_message_chs.data[3] = get_lock_target_adjusted_value(0x4E, false);
+      rx_message_chs.data[4] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[5] = get_lock_target_adjusted_value(0xFE, false);
+      appliedTorque = rx_message_chs.data[6];
+
+      switch (state.mode)
+      {
+      case MODE_FWD:
+        appliedTorque = get_lock_target_adjusted_value(0xFE, true);
+        break;
+      case MODE_5050:
+        appliedTorque = get_lock_target_adjusted_value(0x16, false);
+        break;
+      case MODE_6040:
+        appliedTorque = get_lock_target_adjusted_value(0x22, false);
+        break;
+      case MODE_7525:
+        appliedTorque = get_lock_target_adjusted_value(0x50, false);
+        break;
+      default:
+        break;
+      }
+
+      rx_message_chs.data[6] = appliedTorque;
+      rx_message_chs.data[7] = 0x00;
+      break;
+    case MOTOR3_ID:
+      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[7] = get_lock_target_adjusted_value(0xFE, false);
+      break;
+    case BRAKES1_ID:
+      rx_message_chs.data[1] = get_lock_target_adjusted_value(0x00, false);
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = get_lock_target_adjusted_value(0x0A, false);
+      break;
+    case BRAKES3_ID:
+      rx_message_chs.data[0] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[1] = 0x0A;
+      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[3] = 0x0A;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x0A;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0x0A;
+      break;
+    }
+  }
+
+  // edit the frames if configured as Gen2...
+  if (haldexGeneration == 2)
+  {
+    switch (rx_message_chs.identifier)
+    {
+    case MOTOR1_ID:
+      rx_message_chs.data[1] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[2] = 0x21;
+      rx_message_chs.data[3] = get_lock_target_adjusted_value(0x4E, false);
+      rx_message_chs.data[6] = get_lock_target_adjusted_value(0xFE, false); // 0x20 in standalone - same as gen1?
+      break;
+    case MOTOR3_ID:
+      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[7] = get_lock_target_adjusted_value(0x01, false);
+      break;
+    case BRAKES1_ID:
+      rx_message_chs.data[0] = get_lock_target_adjusted_value(0x80, false);
+      rx_message_chs.data[1] = get_lock_target_adjusted_value(0x41, false);
+      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[3] = 0x0A;
+      break;
+    case BRAKES2_ID:
+      rx_message_chs.data[4] = get_lock_target_adjusted_value(0x7F, false);
+      rx_message_chs.data[5] = get_lock_target_adjusted_value(0xFE, false);
+      break;
+    case BRAKES3_ID:
+      rx_message_chs.data[0] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[1] = 0x0A;
+      rx_message_chs.data[2] = get_lock_target_adjusted_value(0xFE, false);
+      rx_message_chs.data[3] = 0x0A;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x0A;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0x0A;
+      break;
+
+    // ---- Transferred from standalone (gated off by default) ----------------
+    case BRAKES4_ID:
+      rx_message_chs.data[0] = 0x00;
+      rx_message_chs.data[1] = 0x00;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = BRAKES4_counter;
+      rx_message_chs.data[7] = BRAKES4_counter;
+      BRAKES4_counter = BRAKES4_counter + 10;
+      if (BRAKES4_counter > 0xF0)
+        BRAKES4_counter = 0;
+      break;
+    case BRAKES5_ID:
+      rx_message_chs.data[0] = 0xFE;
+      rx_message_chs.data[1] = 0x7F;
+      rx_message_chs.data[2] = 0x03;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = BRAKES5_counter;
+      rx_message_chs.data[7] = BRAKES5_counter2;
+      BRAKES5_counter = BRAKES5_counter + 10;
+      if (BRAKES5_counter > 0xF0)
+        BRAKES5_counter = 0;
+      BRAKES5_counter2 = BRAKES5_counter2 + 10;
+      if (BRAKES5_counter2 > 0xF3)
+        BRAKES5_counter2 = 3;
+      break;
+    case BRAKES9_ID:
+      rx_message_chs.data[0] = BRAKES9_counter;
+      rx_message_chs.data[1] = BRAKES9_counter2;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x02;
+      rx_message_chs.data[7] = 0x00;
+      BRAKES9_counter = BRAKES9_counter + 10;
+      if (BRAKES9_counter > 0xF1)
+        BRAKES9_counter = 0x11;
+      BRAKES9_counter2 = BRAKES9_counter2 + 10;
+      if (BRAKES9_counter2 > 0xF0)
+        BRAKES9_counter2 = 0x00;
+      break;
+    case BRAKES10_ID:
+      rx_message_chs.data[0] = 0xA6;
+      rx_message_chs.data[1] = BRAKES10_counter;
+      rx_message_chs.data[2] = 0x75;
+      rx_message_chs.data[3] = 0xD4;
+      rx_message_chs.data[4] = 0x51;
+      rx_message_chs.data[5] = 0x47;
+      rx_message_chs.data[6] = 0x1D;
+      rx_message_chs.data[7] = 0x0F;
+      BRAKES10_counter = BRAKES10_counter + 1;
+      if (BRAKES10_counter > 0xF)
+        BRAKES10_counter = 0;
+      break;
+    case MOTOR5_ID:
+      rx_message_chs.data[0] = 0xFE;
+      rx_message_chs.data[1] = 0x00;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = MOTOR5_counter;
+      MOTOR5_counter++;
+      break;
+    case MOTOR2_ID:
+      rx_message_chs.data[0] = 0x00;
+      rx_message_chs.data[1] = 0x30;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x0A;
+      rx_message_chs.data[4] = 0x0A;
+      rx_message_chs.data[5] = 0x10;
+      rx_message_chs.data[6] = 0xFE;
+      rx_message_chs.data[7] = 0xFE;
+      break;
+    case mLW_1:
+      rx_message_chs.data[0] = 0x20;
+      rx_message_chs.data[1] = 0x00;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x80;
+      rx_message_chs.data[5] = mLW_1_counter;
+      rx_message_chs.data[6] = 0x00;
+      mLW_1_crc = 255 - (rx_message_chs.data[0] + rx_message_chs.data[1] + rx_message_chs.data[2] + rx_message_chs.data[3] + rx_message_chs.data[5]);
+      rx_message_chs.data[7] = mLW_1_crc;
+      mLW_1_counter = mLW_1_counter + 16;
+      if (mLW_1_counter >= 0xF0)
+        mLW_1_counter = 0;
+      break;
+    case mKombi_1:
+      rx_message_chs.data[0] = 0x00;
+      rx_message_chs.data[1] = 0x02;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x36;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0x00;
+      break;
+    }
+  }
+
+  // edit the frames if configured as Gen4...
+  if (haldexGeneration == 4)
+  {
     switch (rx_message_chs.identifier)
     {
     case mLW_1:
@@ -729,7 +1329,16 @@ static void editFramesGen4(twai_message_t &rx_message_chs)
       break;
 
     case BRAKES4_ID:
-      rx_message_chs.data[0] = get_lock_target_adjusted_value(0xFE, false);
+      if (haldexLearnActive || state.mode != MODE_5050)
+      {
+        appliedTorque = get_lock_target_adjusted_value(0x7F, false); // regulated clamp
+      }
+      else
+      {
+        appliedTorque = get_lock_target_adjusted_value(0xFE, false); // full clamp (27 bar)
+      }
+
+      rx_message_chs.data[0] = appliedTorque;
       rx_message_chs.data[1] = 0x00;
       rx_message_chs.data[2] = 0x00;
       rx_message_chs.data[3] = 0x64;
@@ -749,13 +1358,78 @@ static void editFramesGen4(twai_message_t &rx_message_chs)
         BRAKES4_counter = 0x00;
       }
       break;
-    }
-}
 
-// editFramesGen5_0AY: per-generation CAN frame edits factored out of getLockData.
-// Called under stateMutex; mutates only rx_message_chs.
-static void editFramesGen5_0AY(twai_message_t &rx_message_chs)
-{
+    // ---- Transferred from standalone (gated off by default) ----------------
+    case mKombi_1:
+      rx_message_chs.data[0] = 0x24;
+      rx_message_chs.data[1] = 0x00;
+      rx_message_chs.data[2] = 0x1D;
+      rx_message_chs.data[3] = 0xB9;
+      rx_message_chs.data[4] = 0x07;
+      rx_message_chs.data[5] = 0x42;
+      rx_message_chs.data[6] = 0x09;
+      rx_message_chs.data[7] = 0x81;
+      break;
+    case mKombi_3:
+      rx_message_chs.data[0] = 0x60;
+      rx_message_chs.data[1] = 0x43;
+      rx_message_chs.data[2] = 0x01;
+      rx_message_chs.data[3] = 0x10;
+      rx_message_chs.data[4] = 0x66;
+      rx_message_chs.data[5] = 0xF1;
+      rx_message_chs.data[6] = 0x03;
+      rx_message_chs.data[7] = 0x02;
+      break;
+    case mGate_Komf_1:
+      rx_message_chs.data[0] = 0x03;
+      rx_message_chs.data[1] = 0x11;
+      rx_message_chs.data[2] = 0x58;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x40;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x01;
+      rx_message_chs.data[7] = 0x08;
+      break;
+    case BRAKES11_ID:
+      rx_message_chs.data[0] = 0x00;
+      rx_message_chs.data[1] = 0xC0;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0x00;
+      break;
+    case mKombi_2:
+      rx_message_chs.data[0] = 0x4C;
+      rx_message_chs.data[1] = 0x86;
+      rx_message_chs.data[2] = 0x85;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x30;
+      rx_message_chs.data[6] = 0xFF;
+      rx_message_chs.data[7] = 0x04;
+      break;
+    case mDiagnose_1:
+      rx_message_chs.data[0] = 0x26;
+      rx_message_chs.data[1] = 0xF2;
+      rx_message_chs.data[2] = 0x03;
+      rx_message_chs.data[3] = 0x12;
+      rx_message_chs.data[4] = 0x70;
+      rx_message_chs.data[5] = 0x19;
+      rx_message_chs.data[6] = 0x25;
+      rx_message_chs.data[7] = mDiagnose_1_counter;
+      mDiagnose_1_counter++;
+      if (mDiagnose_1_counter > 0x1F)
+        mDiagnose_1_counter = 0;
+      break;
+    }
+  }
+
+  // edit the frames if configured as Gen5 (0AY) - frames left
+  // commented-out are so they can be re-enabled later if a required
+  if (haldexGeneration == 51)
+  {
     switch (rx_message_chs.identifier)
     {
     // ---- Active (lock-modulated) -------------------------------------------
@@ -825,235 +1499,215 @@ static void editFramesGen5_0AY(twai_message_t &rx_message_chs)
         mLW_1_counter = 0;
       break;
 
-      // ---- Inactive (kept for future use, no lock adjustment in standalone) ---
-      /*
+    // ---- Inactive frames restored (gated off by default via frameEditMask) --
+    case BRAKES1_ID:
+      // PQ Bremse_1 (0x1A0) - ABS/ESP main broadcast.  Static in standalone.
+      rx_message_chs.data[0] = 0x20;
+      rx_message_chs.data[1] = 0x40;
+      rx_message_chs.data[2] = 0xF0;
+      rx_message_chs.data[3] = 0x07;
+      rx_message_chs.data[4] = 0xFE;
+      rx_message_chs.data[5] = 0xFE;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = BRAKES1_counter;
+      if (++BRAKES1_counter > 0x1F)
+        BRAKES1_counter = 10;
+      break;
 
-      case BRAKES1_ID:
-        // PQ Bremse_1 (0x1A0) - ABS/ESP main broadcast.  Static in standalone.
-        rx_message_chs.data[0] = 0x20;
-        rx_message_chs.data[1] = 0x40;
-        rx_message_chs.data[2] = 0xF0;
-        rx_message_chs.data[3] = 0x07;
-        rx_message_chs.data[4] = 0xFE;
-        rx_message_chs.data[5] = 0xFE;
-        rx_message_chs.data[6] = 0x00;
-        rx_message_chs.data[7] = BRAKES1_counter;
-        if (++BRAKES1_counter > 0x1F)
-          BRAKES1_counter = 10;
-        break;
+    case mGetriebe_2:
+      // PQ Getriebe_2 (0x540) - transmission status; needed by DTC 17497 but static.
+      rx_message_chs.data[0] = (mGetriebe_2_counter << 4) & 0xF0;
+      rx_message_chs.data[1] = 0x50;
+      rx_message_chs.data[2] = 0xFF;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0xFF;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0xFF;
+      mGetriebe_2_counter = (mGetriebe_2_counter + 1) & 0x0F;
+      break;
 
-      case mGetriebe_2:
-        // PQ Getriebe_2 (0x540) - transmission status; needed by DTC 17497 but static.
-        rx_message_chs.data[0] = (mGetriebe_2_counter << 4) & 0xF0;
-        rx_message_chs.data[1] = 0x50;
-        rx_message_chs.data[2] = 0xFF;
-        rx_message_chs.data[3] = 0x00;
-        rx_message_chs.data[4] = 0xFF;
-        rx_message_chs.data[5] = 0x00;
-        rx_message_chs.data[6] = 0x00;
-        rx_message_chs.data[7] = 0xFF;
-        mGetriebe_2_counter = (mGetriebe_2_counter + 1) & 0x0F;
-        break;
+    case BRAKES5_ID:
+      // PQ Bremse_5 (0x4A8) - ESP brake-event broadcast.  Static in standalone.
+      rx_message_chs.data[0] = 0xFE;
+      rx_message_chs.data[1] = 0x7F;
+      rx_message_chs.data[2] = 0x03;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = BRAKES5_counter;
+      rx_message_chs.data[7] = BRAKES5_counter2;
+      BRAKES5_counter = BRAKES5_counter + 10;
+      if (BRAKES5_counter > 0xF0)
+        BRAKES5_counter = 0;
+      BRAKES5_counter2 = BRAKES5_counter2 + 10;
+      if (BRAKES5_counter2 > 0xF3)
+        BRAKES5_counter2 = 3;
+      break;
 
-      case BRAKES5_ID:
-        // PQ Bremse_5 (0x4A8) - ESP brake-event broadcast.  Static in standalone.
-        rx_message_chs.data[0] = 0xFE;
-        rx_message_chs.data[1] = 0x7F;
-        rx_message_chs.data[2] = 0x03;
-        rx_message_chs.data[3] = 0x00;
-        rx_message_chs.data[4] = 0x00;
-        rx_message_chs.data[5] = 0x00;
-        rx_message_chs.data[6] = BRAKES5_counter;
-        rx_message_chs.data[7] = BRAKES5_counter2;
-        BRAKES5_counter = BRAKES5_counter + 10;
-        if (BRAKES5_counter > 0xF0) BRAKES5_counter = 0;
-        BRAKES5_counter2 = BRAKES5_counter2 + 10;
-        if (BRAKES5_counter2 > 0xF3) BRAKES5_counter2 = 3;
-        break;
+    case BRAKES8_ID:
+      // PQ Bremse_8 (0x1AC) - ESP supplemental broadcast; dual rolling counters.
+      rx_message_chs.data[0] = BRAKES8_counter;
+      rx_message_chs.data[1] = BRAKES8_counter1;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x69;
+      rx_message_chs.data[5] = 0x21;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0xC1;
+      if (++BRAKES8_counter > 0x8F)
+        BRAKES8_counter = 0x80;
+      if (++BRAKES8_counter1 > 0x0F)
+        BRAKES8_counter1 = 0x00;
+      break;
 
-      case BRAKES8_ID:
-        // PQ Bremse_8 (0x1AC) - ESP supplemental broadcast; dual rolling counters.
-        rx_message_chs.data[0] = BRAKES8_counter;
-        rx_message_chs.data[1] = BRAKES8_counter1;
-        rx_message_chs.data[2] = 0x00;
-        rx_message_chs.data[3] = 0x00;
-        rx_message_chs.data[4] = 0x69;
-        rx_message_chs.data[5] = 0x21;
-        rx_message_chs.data[6] = 0x00;
-        rx_message_chs.data[7] = 0xC1;
-        if (++BRAKES8_counter > 0x8F) BRAKES8_counter = 0x80;
-        if (++BRAKES8_counter1 > 0x0F) BRAKES8_counter1 = 0x00;
-        break;
+    case BRAKES2_ID:
+      // PQ Bremse_2 (0x5A0) - ESP/ABS sensor broadcast.  Now static in standalone
+      // (Querbeschleunigung was lock-adjusted historically; now 0x7F literal).
+      rx_message_chs.data[0] = 0x80;
+      rx_message_chs.data[1] = 0x7A;
+      rx_message_chs.data[2] = 0x05;
+      rx_message_chs.data[3] = BRAKES2_counter;
+      rx_message_chs.data[4] = 0x7F;
+      rx_message_chs.data[5] = 0xCA;
+      rx_message_chs.data[6] = 0x1B;
+      rx_message_chs.data[7] = 0xAB;
+      BRAKES2_counter = BRAKES2_counter + 16;
+      if (BRAKES2_counter > 0xF0)
+        BRAKES2_counter = 0;
+      break;
 
-      case BRAKES2_ID:
-        // PQ Bremse_2 (0x5A0) - ESP/ABS sensor broadcast.  Now static in standalone
-        // (Querbeschleunigung was lock-adjusted historically; now 0x7F literal).
-        rx_message_chs.data[0] = 0x80;
-        rx_message_chs.data[1] = 0x7A;
-        rx_message_chs.data[2] = 0x05;
-        rx_message_chs.data[3] = BRAKES2_counter;
-        rx_message_chs.data[4] = 0x7F;
-        rx_message_chs.data[5] = 0xCA;
-        rx_message_chs.data[6] = 0x1B;
-        rx_message_chs.data[7] = 0xAB;
-        BRAKES2_counter = BRAKES2_counter + 16;
-        if (BRAKES2_counter > 0xF0) BRAKES2_counter = 0;
-        break;
+    case MOTOR2_ID:
+      // PQ Motor_2 (0x288) - secondary engine broadcast.  Static in standalone.
+      rx_message_chs.data[0] = 0x00;
+      rx_message_chs.data[1] = 0x30;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x0A;
+      rx_message_chs.data[4] = 0x0A;
+      rx_message_chs.data[5] = 0x10;
+      rx_message_chs.data[6] = 0xFE;
+      rx_message_chs.data[7] = 0xFE;
+      break;
 
-      case MOTOR2_ID:
-        // PQ Motor_2 (0x288) - secondary engine broadcast.  Static in standalone.
-        rx_message_chs.data[0] = 0x00;
-        rx_message_chs.data[1] = 0x30;
-        rx_message_chs.data[2] = 0x00;
-        rx_message_chs.data[3] = 0x0A;
-        rx_message_chs.data[4] = 0x0A;
-        rx_message_chs.data[5] = 0x10;
-        rx_message_chs.data[6] = 0xFE;
-        rx_message_chs.data[7] = 0xFE;
-        break;
+    case MOTOR5_ID:
+      // PQ Motor_5 (0x480) - tertiary engine broadcast.  Static in standalone.
+      rx_message_chs.data[0] = 0xFE;
+      rx_message_chs.data[1] = 0x00;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = MOTOR5_counter;
+      break;
 
-      case MOTOR5_ID:
-        // PQ Motor_5 (0x480) - tertiary engine broadcast.  Static in standalone.
-        rx_message_chs.data[0] = 0xFE;
-        rx_message_chs.data[1] = 0x00;
-        rx_message_chs.data[2] = 0x00;
-        rx_message_chs.data[3] = 0x00;
-        rx_message_chs.data[4] = 0x00;
-        rx_message_chs.data[5] = 0x00;
-        rx_message_chs.data[6] = 0x00;
-        rx_message_chs.data[7] = MOTOR5_counter;
-        break;
+    case mKombi_1:
+      // PQ Kombi_1 (0x320) - instrument-cluster broadcast.  Static in standalone.
+      rx_message_chs.data[0] = 0x24;
+      rx_message_chs.data[1] = 0x00;
+      rx_message_chs.data[2] = 0x1D;
+      rx_message_chs.data[3] = 0xB9;
+      rx_message_chs.data[4] = 0x07;
+      rx_message_chs.data[5] = 0x42;
+      rx_message_chs.data[6] = 0x09;
+      rx_message_chs.data[7] = 0x81;
+      break;
 
-      case mKombi_1:
-        // PQ Kombi_1 (0x320) - instrument-cluster broadcast.  Static in standalone.
-        rx_message_chs.data[0] = 0x24;
-        rx_message_chs.data[1] = 0x00;
-        rx_message_chs.data[2] = 0x1D;
-        rx_message_chs.data[3] = 0xB9;
-        rx_message_chs.data[4] = 0x07;
-        rx_message_chs.data[5] = 0x42;
-        rx_message_chs.data[6] = 0x09;
-        rx_message_chs.data[7] = 0x81;
-        break;
+    case mKombi_3:
+      // PQ Kombi_3 (0x520) - cluster odometer/keys.  Static in standalone.
+      rx_message_chs.data[0] = 0x60;
+      rx_message_chs.data[1] = 0x43;
+      rx_message_chs.data[2] = 0x01;
+      rx_message_chs.data[3] = 0x10;
+      rx_message_chs.data[4] = 0x66;
+      rx_message_chs.data[5] = 0xF1;
+      rx_message_chs.data[6] = 0x03;
+      rx_message_chs.data[7] = 0x02;
+      break;
 
-      case mKombi_3:
-        // PQ Kombi_3 (0x520) - cluster odometer/keys.  Static in standalone.
-        rx_message_chs.data[0] = 0x60;
-        rx_message_chs.data[1] = 0x43;
-        rx_message_chs.data[2] = 0x01;
-        rx_message_chs.data[3] = 0x10;
-        rx_message_chs.data[4] = 0x66;
-        rx_message_chs.data[5] = 0xF1;
-        rx_message_chs.data[6] = 0x03;
-        rx_message_chs.data[7] = 0x02;
-        break;
+    case mGate_Komf_1:
+      // PQ Gate_Komf_1 (0x390) - gateway-comfort broadcast.  Static in standalone.
+      rx_message_chs.data[0] = 0x03;
+      rx_message_chs.data[1] = 0x11;
+      rx_message_chs.data[2] = 0x58;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x40;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x01;
+      rx_message_chs.data[7] = 0x08;
+      break;
 
-      case mGate_Komf_1:
-        // PQ Gate_Komf_1 (0x390) - gateway-comfort broadcast.  Static in standalone.
-        rx_message_chs.data[0] = 0x03;
-        rx_message_chs.data[1] = 0x11;
-        rx_message_chs.data[2] = 0x58;
-        rx_message_chs.data[3] = 0x00;
-        rx_message_chs.data[4] = 0x40;
-        rx_message_chs.data[5] = 0x00;
-        rx_message_chs.data[6] = 0x01;
-        rx_message_chs.data[7] = 0x08;
-        break;
+    case BRAKES11_ID:
+      // PQ Bremse_11 (0x5B7) - extended brake frame.  Static in standalone.
+      rx_message_chs.data[0] = 0x00;
+      rx_message_chs.data[1] = 0xC0;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0x00;
+      break;
 
-      case BRAKES11_ID:
-        // PQ Bremse_11 (0x5B7) - extended brake frame.  Static in standalone.
-        rx_message_chs.data[0] = 0x00;
-        rx_message_chs.data[1] = 0xC0;
-        rx_message_chs.data[2] = 0x00;
-        rx_message_chs.data[3] = 0x00;
-        rx_message_chs.data[4] = 0x00;
-        rx_message_chs.data[5] = 0x00;
-        rx_message_chs.data[6] = 0x00;
-        rx_message_chs.data[7] = 0x00;
-        break;
+    case mSysteminfo_1:
+      // PQ Systeminfo_1 (0x5D0) - gateway vehicle-identity broadcast.  Static.
+      rx_message_chs.data[0] = 0x00;
+      rx_message_chs.data[1] = 0x24;
+      rx_message_chs.data[2] = 0x35;
+      rx_message_chs.data[3] = 0x0F;
+      rx_message_chs.data[4] = 0x39;
+      rx_message_chs.data[5] = 0x59;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0x00;
+      break;
 
-      case mSysteminfo_1:
-        // PQ Systeminfo_1 (0x5D0) - gateway vehicle-identity broadcast.  Static.
-        rx_message_chs.data[0] = 0x00;
-        rx_message_chs.data[1] = 0x24;
-        rx_message_chs.data[2] = 0x35;
-        rx_message_chs.data[3] = 0x0F;
-        rx_message_chs.data[4] = 0x39;
-        rx_message_chs.data[5] = 0x59;
-        rx_message_chs.data[6] = 0x00;
-        rx_message_chs.data[7] = 0x00;
-        break;
+    case mKombi_2:
+      // PQ Kombi_2 (0x420) - cluster temps.  Static in standalone.
+      rx_message_chs.data[0] = 0x4C;
+      rx_message_chs.data[1] = 0x86;
+      rx_message_chs.data[2] = 0x85;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x30;
+      rx_message_chs.data[6] = 0xFF;
+      rx_message_chs.data[7] = 0x04;
+      break;
 
-      case mKombi_2:
-        // PQ Kombi_2 (0x420) - cluster temps.  Static in standalone.
-        rx_message_chs.data[0] = 0x4C;
-        rx_message_chs.data[1] = 0x86;
-        rx_message_chs.data[2] = 0x85;
-        rx_message_chs.data[3] = 0x00;
-        rx_message_chs.data[4] = 0x00;
-        rx_message_chs.data[5] = 0x30;
-        rx_message_chs.data[6] = 0xFF;
-        rx_message_chs.data[7] = 0x04;
-        break;
-
-      case mDiagnose_1:
-        // PQ Diagnose_1 (0x7D0) - diagnostic timestamp broadcast.  Static.
-        rx_message_chs.data[0] = 0x26;
-        rx_message_chs.data[1] = 0xF2;
-        rx_message_chs.data[2] = 0x03;
-        rx_message_chs.data[3] = 0x12;
-        rx_message_chs.data[4] = 0x70;
-        rx_message_chs.data[5] = 0x19;
-        rx_message_chs.data[6] = 0x25;
-        rx_message_chs.data[7] = mDiagnose_1_counter;
-        mDiagnose_1_counter++;
-        if (mDiagnose_1_counter > 0x1F) mDiagnose_1_counter = 0;
-        break;
-      */
+    case mDiagnose_1:
+      // PQ Diagnose_1 (0x7D0) - diagnostic timestamp broadcast.  Static.
+      rx_message_chs.data[0] = 0x26;
+      rx_message_chs.data[1] = 0xF2;
+      rx_message_chs.data[2] = 0x03;
+      rx_message_chs.data[3] = 0x12;
+      rx_message_chs.data[4] = 0x70;
+      rx_message_chs.data[5] = 0x19;
+      rx_message_chs.data[6] = 0x25;
+      rx_message_chs.data[7] = mDiagnose_1_counter;
+      mDiagnose_1_counter++;
+      if (mDiagnose_1_counter > 0x1F)
+        mDiagnose_1_counter = 0;
+      break;
     }
-}
+  }
 
-// editFramesGen5_0CQ: per-generation CAN frame edits factored out of getLockData.
-// Called under stateMutex; mutates only rx_message_chs.
-static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
-{
+  // edit the frames if configured as Gen5 (0CQ) - frames left
+  // commented-out are so they can be re-enabled later if a required
+  if (haldexGeneration == 50 || haldexGeneration == 52) // 0CQ + VAQ (clone base)
+  {
     switch (rx_message_chs.identifier)
     {
-      /*
-            twai_message_t frame = {};
-            frame.identifier = ESP_18; // 0x135.  Fixed response, no changes
-            frame.extd = 0;
-            frame.rtr = 0;
-            frame.data_length_code = 8;
-            frame.data[0] = 0x00; // supposed to have CRC? doesn't affect
-            frame.data[1] = 0xC0; // always 0xC0, never changes
-            frame.data[2] = 0x00; // doesn't affect
-            frame.data[3] = 0x00; // doesn't affect
-            frame.data[4] = 0x00; // doesn't affect
-            frame.data[5] = 0x00; // doesn't affect
-            frame.data[6] = 0x00; // doesn't affect
-            frame.data[7] = 0x00; // doesn't affect
-            twai_transmit_v2(twai_bus_1, &frame, 0);
-      */
+    case ESP_18: // 0x135 - fixed response, static (transferred; gated off by default)
+      rx_message_chs.data[0] = 0x00;
+      rx_message_chs.data[1] = 0xC0;
+      rx_message_chs.data[2] = 0x00;
+      rx_message_chs.data[3] = 0x00;
+      rx_message_chs.data[4] = 0x00;
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0x00;
+      break;
     case ESP_19:
-      rx_message_chs.data[0] = get_lock_target_adjusted_value(ESP_19_counter2, false);        // HL - wheel speed
-      rx_message_chs.data[1] = get_lock_target_adjusted_value(ESP_19_counter, false);         // HL - wheel speed
-      rx_message_chs.data[2] = get_lock_target_adjusted_value(ESP_19_counter2, false);        // HR - wheel speed
-      rx_message_chs.data[3] = get_lock_target_adjusted_value(ESP_19_counter, false);         // HR - wheel speed
-      rx_message_chs.data[4] = get_lock_target_adjusted_value(ESP_19_counter2 + 0xCA, false); // VL - wheel speed 0xDB
-      rx_message_chs.data[5] = get_lock_target_adjusted_value(ESP_19_counter, false);         // VL - wheel speed -- affects if =0x0B
-      rx_message_chs.data[6] = get_lock_target_adjusted_value(ESP_19_counter2 + 0xCA, false); // VR - wheel speed 0xDB
-      rx_message_chs.data[7] = get_lock_target_adjusted_value(ESP_19_counter, false);         // VR - wheel speed -- affects if =0x0B
-      ESP_19_counter++;
-      ESP_19_counter2++;
-      if (ESP_19_counter > 0x1A) // 0x1e
-      {
-        ESP_19_counter = 0x01; // 0x10
-      }
-      if (ESP_19_counter2 > 0x0E) // 0x0a
-      {
-        ESP_19_counter2 = 0x00; // 0x00
-      }
+      fill_esp19_wheel_speeds(rx_message_chs.data);
       break;
 
     case GETRIEBE_11:
@@ -1099,12 +1753,7 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
       //   fixHunting == false : V3 packing - works on 554C/D/H and 554K @ 100% lock.
       //   fixHunting == true  : DBC-correct BPK packing - needed on 554K at partial
       //                         lock (60/40, 70/30) where V3 packing causes hunting.
-      // During a learn we force BPK regardless of the toggle: V3 pins the torque
-      // fields at full, so a learn on V3 records a flat ~100% table (the "sits at
-      // 100% regardless" symptom). A valid learn table also forces BPK, so a
-      // BPK-calibrated table is never applied to a V3 frame. See
-      // motor11_use_bpk_packing.
-      if (!motor11_use_bpk_packing(fixHunting, haldexLearnActive, haldexLearnTableValid))
+      if (!fixHunting)
       {
         rx_message_chs.data[0] = 0x00;                                        // checksum placeholder
         rx_message_chs.data[1] = MOTOR_11_counter;                            // rolling - 0x40>0x4F
@@ -1118,12 +1767,7 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
       else
       {
         // ---- BPK packing (Fix Hunting on; needed for 554K @ partial lock) ----
-        // Shared DBC-correct packer; bpkCeilingNm is the user-tunable full-lock
-        // torque. Slew state is owned here so it persists across cycles.
-        static uint16_t prevIstNm = 0, prevSolfNm = 0;
-        uint8_t command = get_lock_target_adjusted_value(0xFE, false);
-        bpk_pack_motor11(rx_message_chs.data, command, MOTOR_11_counter,
-                         bpkCeilingNm, &prevIstNm, &prevSolfNm);
+        fill_motor11_bpk(rx_message_chs.data, MOTOR_11_counter);
       }
 
       rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_0A7); // for 0x0A7
@@ -1148,23 +1792,37 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
       // declared ceiling to ~60% and capped PWM below stock's ~80%. esp14_range_max
       // declares the full range scaled only by the RAW commanded lock fraction
       // (lock_target), gated by the same lock-active signal appliedTorque already
-      // encodes (appliedTorque > 0 -> lock commanded). See header. Wrapped in a
-      // block so its initializer doesn't cross the switch's other case labels.
+      // encodes (appliedTorque > 0 -> lock commanded).
       {
         const uint8_t rangeMax = esp14_range_max((uint8_t)lock_target, appliedTorque > 0);
         rx_message_chs.data[5] = rangeMax; // BR_Vorg_Quer_Max   - full range at full command
         rx_message_chs.data[7] = rangeMax; // BR_Vorg_Allrad_Max - full range at full command
 
-        // BR_Vorg_*_Min: OEM ESP raises this floor under launch to force the Haldex
-        // to hold at least X torque; upstream pinned it at 0 (Haldex free to settle
-        // to its own minimum PWM ~60%). Shared esp14_min_floor helper (see header)
-        // keeps this byte-identical to the standalone frame path so they can't drift.
-        // It now clamps below the wider rangeMax, so it also gains real headroom.
-        const uint8_t minFloor = esp14_min_floor(esp14MinFloorPct, rangeMax);
-        rx_message_chs.data[4] = minFloor; // BR_Vorg_Quer_Min   (100% = 2000 Nm)
-        rx_message_chs.data[6] = minFloor; // BR_Vorg_Allrad_Min (100% = 2000 Nm)
+        // BR_Vorg_*_Min launch-PWM floor (esp14MinFloorPct, 0 = unchanged). Shared
+        // helper: floor % of full command through the learn-corrected path, clamped
+        // strictly below Max so the Haldex keeps room to modulate.
+        uint8_t esp14Floor = esp14_min_floor(esp14MinFloorPct, rangeMax);
+        // Danger Zone: at a full 50:50 request only, pin Min to Max so the Haldex has
+        // no modulation room and goes to full pump duty.
+        // Never during a learn sweep: lock_target there is the selected mode, not
+        // the sweep CF, and a pinned Min corrupts the learned table.
+        if (dangerZoneEnabled && !haldexLearnActive && lock_target >= 100 && rangeMax > 1)
+          esp14Floor = (uint8_t)(rangeMax - 1);
+        rx_message_chs.data[4] = esp14Floor; // BR_Vorg_Quer_Min
+        rx_message_chs.data[6] = esp14Floor; // BR_Vorg_Allrad_Min
       }
       // massive effects (4>7)
+
+      if (haldexGeneration == 52)
+      {
+        // VAQ (bench 2026-09-17, see Gen5_0CQ_VAQ_frames10): the front lock
+        // follows BR_Vorg_Quer_Min 1:1 in plain percent (0.4 %/bit) and only
+        // while BR_Status_Quer_ESP >= 3. The Allrad bytes (b6/b7) are not read.
+        const uint8_t quer = get_lock_target_adjusted_value(250, false);
+        rx_message_chs.data[3] = quer ? 0x20 : 0x00; // 4 = ESP requests cross lock / 0 deactivated
+        rx_message_chs.data[4] = quer;               // BR_Vorg_Quer_Min
+        rx_message_chs.data[5] = quer;               // BR_Vorg_Quer_Max = Min
+      }
 
       rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_08A); // for 0x08A
 
@@ -1175,25 +1833,24 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
       }
       break;
 
-      /*case LWI_01:
-        rx_message_chs.data[0] = 0x00;           // checksum placeholder
-        rx_message_chs.data[1] = LWI_01_counter; // rolling - 0x10>0x1F
-        rx_message_chs.data[2] = 0x01;           // LWI_SensorStatus
-        rx_message_chs.data[3] = 0x00;           // LWI_Qbit_sub_daten
-        rx_message_chs.data[4] = 0x00;           // LWI_Qbit_Lendradwiken
-        rx_message_chs.data[5] = 0x00;           // LWI_lendradwinken
-        rx_message_chs.data[6] = 0x00;           // LWI_lendradw_geschw
-        rx_message_chs.data[7] = 0x00;           // LWI_lendradw_geschw Unit Degress of Arc per Second
+    case LWI_01:
+      rx_message_chs.data[0] = 0x00;           // checksum placeholder
+      rx_message_chs.data[1] = LWI_01_counter; // rolling - 0x10>0x1F
+      rx_message_chs.data[2] = 0x01;           // LWI_SensorStatus
+      rx_message_chs.data[3] = 0x00;           // LWI_Qbit_sub_daten
+      rx_message_chs.data[4] = 0x00;           // LWI_Qbit_Lendradwiken
+      rx_message_chs.data[5] = 0x00;           // LWI_lendradwinken
+      rx_message_chs.data[6] = 0x00;           // LWI_lendradw_geschw
+      rx_message_chs.data[7] = 0x00;           // LWI_lendradw_geschw Unit Degress of Arc per Second
 
-        rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_086); // for 0x086
+      rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_086); // for 0x086
 
-        LWI_01_counter++;
-        if (LWI_01_counter > 0x1F)
-        {
-          LWI_01_counter = 0x10;
-        }
-        break;
-
+      LWI_01_counter++;
+      if (LWI_01_counter > 0x1F)
+      {
+        LWI_01_counter = 0x10;
+      }
+      break;
 
     case MOTOR_20:
       rx_message_chs.data[0] = 0x00;             // checksum
@@ -1213,7 +1870,6 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
         MOTOR_20_counter = 0x00;
       }
       break;
-      */
 
     case ESP_10:
       rx_message_chs.data_length_code = 8;                                    // DLC 8
@@ -1272,107 +1928,103 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
       }
       break;
 
-      /*
+    case ESP_02:                                                              // ESP_02 0x10B
+      rx_message_chs.data[0] = 0x00;                                          // checksum
+      rx_message_chs.data[1] = ESP_02_counter;                                // rolling - 0x00>0x1F
+      rx_message_chs.data[2] = 0x7E;                                          // doesn't effect one of these affects, find which one - doesn't affect
+      rx_message_chs.data[3] = 0x0F;                                          // doesn't effect sometimes 0xC0, sometimes 0x00
+      rx_message_chs.data[4] = 0x82;                                          // doesn't effect sometimes 0x3A, somtimes 0x39
+      rx_message_chs.data[5] = 0x0C;                                          // doesn't effect rolling?
+      rx_message_chs.data[6] = 0x40;                                          // doesn't efffect
+      rx_message_chs.data[7] = 0x00;                                          // doesn't effect
+      rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_101); // for 0x101
 
-          case ESP_02:                                                          // ESP_02 0x10B
-        rx_message_chs.data[0] = 0x00;                                          // checksum
-        rx_message_chs.data[1] = ESP_02_counter;                                // rolling - 0x00>0x1F
-        rx_message_chs.data[2] = 0x7E;                                          // doesn't effect one of these affects, find which one - doesn't affect
-        rx_message_chs.data[3] = 0x0F;                                          // doesn't effect sometimes 0xC0, sometimes 0x00
-        rx_message_chs.data[4] = 0x82;                                          // doesn't effect sometimes 0x3A, somtimes 0x39
-        rx_message_chs.data[5] = 0x0C;                                          // doesn't effect rolling?
-        rx_message_chs.data[6] = 0x40;                                          // doesn't efffect
-        rx_message_chs.data[7] = 0x00;                                          // doesn't effect
-        rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_101); // for 0x101
+      ESP_02_counter++;
+      if (ESP_02_counter > 0x1F)
+      {
+        ESP_02_counter = 0x00;
+      }
+      break;
 
-        ESP_02_counter++;
-        if (ESP_02_counter > 0x1F)
-        {
-          ESP_02_counter = 0x00;
-        }
-        break;
+    case ESP_21:
+      rx_message_chs.data[0] = 0x00;           // checksum
+      rx_message_chs.data[1] = ESP_21_counter; // rolling - 0x00>0x1F
+      rx_message_chs.data[2] = 0x1F;           // in diagnosis? none affect
+      rx_message_chs.data[3] = 0x80;           // sometimes 0xC0, sometimes 0x00
+      rx_message_chs.data[4] = 0x00;           // sometimes 0x3A, somtimes 0x39
+      rx_message_chs.data[5] = 0x00;
+      rx_message_chs.data[6] = 0x00;
+      rx_message_chs.data[7] = 0x00;
+      rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_0fd); // for 0x0fd
 
-      case ESP_21:
-        rx_message_chs.data[0] = 0x00;           // checksum
-        rx_message_chs.data[1] = ESP_21_counter; // rolling - 0x00>0x1F
-        rx_message_chs.data[2] = 0x1F;           // in diagnosis? none affect
-        rx_message_chs.data[3] = 0x80;           // sometimes 0xC0, sometimes 0x00
-        rx_message_chs.data[4] = 0x00;           // sometimes 0x3A, somtimes 0x39
-        rx_message_chs.data[5] = 0x00;
-        rx_message_chs.data[6] = 0x00;
-        rx_message_chs.data[7] = 0x00;
-        rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_0fd); // for 0x0fd
+      ESP_21_counter++;
+      if (ESP_21_counter > 0x1F)
+      {
+        ESP_21_counter = 0x00;
+      }
+      break;
 
-        ESP_21_counter++;
-        if (ESP_21_counter > 0x1F)
-        {
-          ESP_21_counter = 0x00;
-        }
-        break;
+    case KOMBI_01:
+      rx_message_chs.data[0] = 0x10; // angle of turn (block 011) low byte
+      rx_message_chs.data[1] = 0x20; // checksum (0x20>0x2F)
+      rx_message_chs.data[2] = 0x02; //
+      rx_message_chs.data[3] = 0x00; //
+      rx_message_chs.data[4] = 0x0C; //
+      rx_message_chs.data[5] = 0x00; //
+      rx_message_chs.data[6] = 0x00; //
+      rx_message_chs.data[7] = 0x24; //
+      break;
 
-      case KOMBI_01:
-        rx_message_chs.data[0] = 0x10; // angle of turn (block 011) low byte
-        rx_message_chs.data[1] = 0x20; // checksum (0x20>0x2F)
-        rx_message_chs.data[2] = 0x02; //
-        rx_message_chs.data[3] = 0x00; //
-        rx_message_chs.data[4] = 0x0C; //
-        rx_message_chs.data[5] = 0x00; //
-        rx_message_chs.data[6] = 0x00; //
-        rx_message_chs.data[7] = 0x24; //
-        break;
+    case ESP_23:
+      rx_message_chs.data[0] = 0x00;                                          // checksum placeholder no effect
+      rx_message_chs.data[1] = ESP_23_counter;                                // ESP_23_counter;           // no effect B high byte
+      rx_message_chs.data[2] = 0xBF;                                          // no effect C
+      rx_message_chs.data[3] = 0x7F;                                          // no effect D
+      rx_message_chs.data[4] = 0x00;                                          // rate of change (block 010)
+      rx_message_chs.data[5] = 0x00;                                          // rate of change (block 010)
+      rx_message_chs.data[6] = 0x7C;                                          // rate of change (block 010)
+      rx_message_chs.data[7] = 0x78;                                          // rate of change (block 010)
+      rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_5be); // for 0x5be
 
-      case ESP_23:
-        rx_message_chs.data[0] = 0x00;                                          // checksum placeholder no effect
-        rx_message_chs.data[1] = ESP_23_counter;                                // ESP_23_counter;           // no effect B high byte
-        rx_message_chs.data[2] = 0xBF;                                          // no effect C
-        rx_message_chs.data[3] = 0x7F;                                          // no effect D
-        rx_message_chs.data[4] = 0x00;                                          // rate of change (block 010)
-        rx_message_chs.data[5] = 0x00;                                          // rate of change (block 010)
-        rx_message_chs.data[6] = 0x7C;                                          // rate of change (block 010)
-        rx_message_chs.data[7] = 0x78;                                          // rate of change (block 010)
-        rx_message_chs.data[0] = calcChecksum(rx_message_chs.data, ID_SEQ_5be); // for 0x5be
+      ESP_23_counter++;
+      if (ESP_23_counter > 0x1F)
+      {
+        ESP_23_counter = 0x00;
+      }
+      break;
 
-        ESP_23_counter++;
-        if (ESP_23_counter > 0x1F)
-        {
-          ESP_23_counter = 0x00;
-        }
-        break;
+    case Parkhilfe_04:
+      rx_message_chs.data[0] = 0x00; // angle of turn (block 011) low byte
+      rx_message_chs.data[1] = 0x00; // no effect B high byte
+      rx_message_chs.data[2] = 0x00; // no effect C
+      rx_message_chs.data[3] = 0x00; // no effect D
+      rx_message_chs.data[4] = 0x00; // rate of change (block 010)
+      rx_message_chs.data[5] = 0x00; // rate of change (block 010)
+      rx_message_chs.data[6] = 0x00; // rate of change (block 010)
+      rx_message_chs.data[7] = 0x24; // rate of change (block 010)
+      break;
 
-      case Parkhilfe_04:
-        rx_message_chs.data[0] = 0x00; // angle of turn (block 011) low byte
-        rx_message_chs.data[1] = 0x00; // no effect B high byte
-        rx_message_chs.data[2] = 0x00; // no effect C
-        rx_message_chs.data[3] = 0x00; // no effect D
-        rx_message_chs.data[4] = 0x00; // rate of change (block 010)
-        rx_message_chs.data[5] = 0x00; // rate of change (block 010)
-        rx_message_chs.data[6] = 0x00; // rate of change (block 010)
-        rx_message_chs.data[7] = 0x24; // rate of change (block 010)
-        break;
+    case GATEWAY_72:
+      rx_message_chs.data[0] = 0x50; //
+      rx_message_chs.data[1] = 0x80; //
+      rx_message_chs.data[2] = 0x00; //
+      rx_message_chs.data[3] = 0x00; //
+      rx_message_chs.data[4] = 0x05; //
+      rx_message_chs.data[5] = 0x10; //
+      rx_message_chs.data[6] = 0x01; //
+      rx_message_chs.data[7] = 0x78; //
+      break;
 
-      case GATEWAY_72:
-        rx_message_chs.data[0] = 0x50; //
-        rx_message_chs.data[1] = 0x80; //
-        rx_message_chs.data[2] = 0x00; //
-        rx_message_chs.data[3] = 0x00; //
-        rx_message_chs.data[4] = 0x05; //
-        rx_message_chs.data[5] = 0x10; //
-        rx_message_chs.data[6] = 0x01; //
-        rx_message_chs.data[7] = 0x78; //
-        break;
-
-      case GETRIEBE_14:
-        rx_message_chs.data[0] = 0x00; // Maximum possible acceleration (limited by gear/clutch)
-        rx_message_chs.data[1] = 0x00; // Charisma drive programme selected (affects shift mapping)
-        rx_message_chs.data[2] = 0x54; // Charisma system status
-        rx_message_chs.data[3] = 0x24; // Drag/friction loss torque in transmission
-        rx_message_chs.data[4] = 0x00; // Launch control active
-        rx_message_chs.data[5] = 0x60; //
-        rx_message_chs.data[6] = 0x01; //
-        rx_message_chs.data[7] = 0x51; //
-        break;
-
-      */
+    case GETRIEBE_14:
+      rx_message_chs.data[0] = 0x00; // Maximum possible acceleration (limited by gear/clutch)
+      rx_message_chs.data[1] = 0x00; // Charisma drive programme selected (affects shift mapping)
+      rx_message_chs.data[2] = 0x54; // Charisma system status
+      rx_message_chs.data[3] = 0x24; // Drag/friction loss torque in transmission
+      rx_message_chs.data[4] = 0x00; // Launch control active
+      rx_message_chs.data[5] = 0x60; //
+      rx_message_chs.data[6] = 0x01; //
+      rx_message_chs.data[7] = 0x51; //
+      break;
 
     case MOTOR_14:
       rx_message_chs.data[0] = 0x00;                                          // checksum
@@ -1409,7 +2061,6 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
         ESP_07_counter = 0x00;
       }
       break;
-      /*
 
     case ESP_29:
       rx_message_chs.data[0] = 0x00; //
@@ -1512,90 +2163,8 @@ static void editFramesGen5_0CQ(twai_message_t &rx_message_chs)
       rx_message_chs.data[6] = 0x00; //
       rx_message_chs.data[7] = 0x78; //
       break;
-      //...
-      */
-    }
-}
-
-void getLockData(twai_message_t &rx_message_chs)
-{
-  // Calculate raw lock target then (optionally) apply rate-limited slewing.
-  // When lockReleaseEnabled is false, all transitions to new lock % are instantaneous.
-  // When enabled, falling transitions take `lockReleaseRampMs` ms for a full
-  // release so the clutch opens gradually rather than snapping, and rising
-  // transitions take `lockEngageRampMs` ms (0 = instantaneous, the default).
-  static float smoothed_lock_target = 0.0f;
-  static uint32_t last_lock_ms = 0;
-
-  // Hold stateMutex across the whole read+compute+frame-edit so the Haldex never
-  // sees a half-rewritten expert table, learn table or mode. No blocking calls
-  // inside, so the hold is bounded; nothing called from here takes the mutex again
-  xSemaphoreTake(stateMutex, portMAX_DELAY);
-
-  float raw_target = get_lock_target_adjustment(); // calculate raw lock target based on mode, overrides, and learn table
-
-  // Steering-gain taper: reduce lock as steering angle grows so the rear axle
-  // is not fighting the front through tight corners (driveline windup). A stale
-  // or QBit-degraded angle leaves the gain at 100% (stock behaviour) instead of
-  // latching the last reduction. Settings are read under the mutex held above.
-  if (steeringGainEnabled && raw_target > 0)
-  {
-    if (steeringAngleValid && ((millis() - lastSteeringResponse) < steeringTimeout))
-    {
-      const uint8_t gain = steering_gain_percent(steeringAngleTenths, steeringGainStartDeg, steeringGainFullDeg, steeringGainFloor);
-      raw_target = (float)(((int)raw_target * gain + 50) / 100); // keep whole-number percentages
     }
   }
-
-  if (!lockReleaseEnabled)
-  {
-    smoothed_lock_target = raw_target; // instant: bypass rate limit
-    last_lock_ms = millis();
-  }
-  else
-  {
-    const uint32_t now_ms = millis();
-    const float dt_s = (last_lock_ms == 0) ? 0.0f : (float)(now_ms - last_lock_ms) / 1000.0f;
-    last_lock_ms = now_ms;
-
-    smoothed_lock_target = lock_rate_limit_step(smoothed_lock_target, raw_target,
-                                                lockEngageRampMs, lockReleaseRampMs, dt_s);
-  }
-  lock_target = smoothed_lock_target;
-
-  // begin frame parsing / editting
-  // Per-generation frame edits are factored into editFramesGenN() helpers above.
-  // Each runs under the stateMutex held here and mutates only rx_message_chs.
-  if (haldexGeneration == 1)
-  {
-    editFramesGen1(rx_message_chs);
-  }
-
-  if (haldexGeneration == 2)
-  {
-    editFramesGen2(rx_message_chs);
-  }
-
-  if (haldexGeneration == 4)
-  {
-    editFramesGen4(rx_message_chs);
-  }
-
-  // edit the frames if configured as Gen5 (0AY) - frames left
-  // commented-out are so they can be re-enabled later if a required
-  if (haldexGeneration == 51)
-  {
-    editFramesGen5_0AY(rx_message_chs);
-  }
-
-  // edit the frames if configured as Gen5 (0CQ) - frames left
-  // commented-out are so they can be re-enabled later if a required
-  if (haldexGeneration == 50)
-  {
-    editFramesGen5_0CQ(rx_message_chs);
-  }
-
-  xSemaphoreGive(stateMutex);
 }
 
 // NVS init policy. Pure decision over two booleans, no Arduino/NVS symbols, so
@@ -1755,22 +2324,6 @@ uint8_t learn_finalize(uint8_t* table, bool* valid,
   return anyNonZero ? 101 : 102; // 101 = complete OK, 102 = complete but no data
 }
 
-// Decide whether the MQB Motor_11 (0x0A7) frame should use the DBC-correct BPK
-// packing instead of the empirical V3 packing. See the header for the full
-// rationale: V3 packing pins three torque fields at full (0xFA) regardless of
-// the learn correction factor, so a learn scan run with Fix Hunting off records
-// a flat ~100% table (the observed "sits at 100% regardless" symptom). BPK
-// derives every field from the modulated torque, so the learn sweep is actually
-// visible to the Haldex. During a learn we therefore force BPK regardless of the
-// user toggle. We also force BPK whenever a valid learn table exists: the table was
-// measured under BPK (the learn forces it), so applying it under V3 would calibrate
-// against a frame that mode never sends. Once learned, drive BPK; an untuned user
-// (no table) keeps the legacy V3 default. Pure boolean logic, host-testable.
-bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_table_valid)
-{
-  return fix_hunting || learn_active || learn_table_valid;
-}
-
 // See OpenHaldexC6_Calculations.h for the full rationale. Single shared
 // implementation of the ESP_14 BR_Vorg_*_Min launch-PWM floor so the standalone
 // frame generator (OpenHaldexC6_StandaloneCAN.cpp) and the CAN-passthrough edit
@@ -1813,84 +2366,6 @@ uint8_t esp14_range_max(uint8_t frac_pct, bool lock_active)
     return 0xFE; // full command -> full declared range (the launch-authority lever)
   }
   return (uint8_t)((uint16_t)0xFE * frac_pct / 100);
-}
-
-// Slew one BPK torque field one cycle toward `target`, moving at most `step` Nm.
-// uint16 so it works across the full 0..509 Nm signal range (the old uint8 lambda
-// silently capped at 255). File-local; exercised through bpk_pack_motor11.
-static uint16_t bpk_slew(uint16_t cur, uint16_t target, uint16_t step)
-{
-  if (target > cur)
-  {
-    return ((uint32_t)cur + step >= target) ? target : (uint16_t)(cur + step);
-  }
-  if (target < cur)
-  {
-    return (cur <= step || cur - step <= target) ? target : (uint16_t)(cur - step);
-  }
-  return cur;
-}
-
-// See OpenHaldexC6_Calculations.h for the full rationale and the DBC citation.
-// Single shared implementation of the BPK Motor_11 packing so the standalone
-// frame generator (OpenHaldexC6_StandaloneCAN.cpp) and the CAN-passthrough edit
-// path (getLockData below) can never drift apart - previously the same 40 lines
-// were copy-pasted in both, the exact hazard that lets standalone and CAN modes
-// behave differently. All Nm math is uint16 so a raised ceiling above 255 Nm
-// actually reaches the wire (the previous uint8 arithmetic truncated it).
-void bpk_pack_motor11(uint8_t out[8], uint8_t command, uint8_t counter,
-                      uint16_t ceil_nm, uint16_t *ist_nm, uint16_t *solf_nm)
-{
-  const uint16_t BPK_FLOOR     = 10; // Nm claimed at zero command
-  const uint16_t BPK_SLEW_IST  = 8;  // Nm/cycle, MO_Mom_Ist_Summe ramp
-  const uint16_t BPK_SLEW_SOLF = 32; // Nm/cycle, MO_Mom_Soll_gefiltert ramp
-
-  // The 10-bit field with offset -509 encodes at most +514 Nm; clamp to the
-  // documented 509 Nm signal maximum so the value can never wrap the 0x3FF mask.
-  if (ceil_nm > 509)
-  {
-    ceil_nm = 509;
-  }
-  const uint16_t ceil = (ceil_nm < BPK_FLOOR) ? BPK_FLOOR : ceil_nm;
-
-  // Remap the 0..0xFE command byte onto [BPK_FLOOR .. ceil] Nm. uint32 product
-  // (max 254 * 499 = 126746) keeps the intermediate clear of overflow.
-  const uint16_t torqueNm = (uint16_t)(BPK_FLOOR +
-                            ((uint32_t)command * (ceil - BPK_FLOOR)) / 0xFE);
-
-  // Slew-limit Ist and Soll_gefiltert against the caller-owned previous values.
-  const uint16_t prevIst  = ist_nm ? *ist_nm : 0;
-  const uint16_t prevSolf = solf_nm ? *solf_nm : 0;
-  const uint16_t istNm  = bpk_slew(prevIst, torqueNm, BPK_SLEW_IST);
-  const uint16_t solfNm = bpk_slew(prevSolf, torqueNm, BPK_SLEW_SOLF);
-  if (ist_nm)
-  {
-    *ist_nm = istNm;
-  }
-  if (solf_nm)
-  {
-    *solf_nm = solfNm;
-  }
-
-  const uint16_t rawSollRoh = (uint16_t)(torqueNm + 509) & 0x3FF;
-  const uint16_t rawIst     = (uint16_t)(istNm + 509) & 0x3FF;
-  const uint16_t rawSolf    = (uint16_t)(solfNm + 509) & 0x3FF;
-
-  // Idle baselines for the non-driven signals (unchanged from the inherited code).
-  const uint8_t TRAEG_LO  = 0xFD;
-  const uint8_t TRAEG_HI  = 0x01;
-  const uint8_t SCHUB_LO  = 0x07;
-  const uint8_t SCHUB_HI  = 0x1E;
-  const uint8_t STATUS_FL = 0x20; // Normalbetrieb=1, QBit=valid
-
-  out[0] = 0x00; // CRC placeholder - caller computes the E2E checksum
-  out[1] = (uint8_t)((counter & 0x0F) | ((rawSollRoh & 0x000F) << 4));
-  out[2] = (uint8_t)(((rawSollRoh >> 4) & 0x3F) | ((rawIst & 0x0003) << 6));
-  out[3] = (uint8_t)((rawIst >> 2) & 0xFF);
-  out[4] = TRAEG_LO;
-  out[5] = (uint8_t)((TRAEG_HI & 0x03) | ((rawSolf & 0x3F) << 2));
-  out[6] = (uint8_t)(((rawSolf >> 6) & 0x0F) | ((SCHUB_LO & 0x0F) << 4));
-  out[7] = (uint8_t)((SCHUB_HI & 0x1F) | STATUS_FL);
 }
 
 // Scale a received Haldex engagement byte into a 0..100 percentage.

@@ -19,11 +19,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIRMWARE="$PROJECT_DIR/.pio/build/esp32c6/firmware.bin"
 
-# ota_0 slot and otadata offsets come from src/partitions_4mb.csv (decoded:
-# otadata @ 0xd000, ota_0 @ 0x10000). Keep these in sync if the CSV changes.
-OTA0_OFFSET="0x10000"
-OTADATA_OFFSET="0xd000"
-
+PARTITIONS="$PROJECT_DIR/.pio/build/esp32c6/partitions.bin"
 PIO_PKGS="$HOME/.platformio/packages"
 ESPTOOL="$PIO_PKGS/tool-esptoolpy/esptool.py"
 BOOT_APP0="$PIO_PKGS/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
@@ -41,6 +37,29 @@ else
   done
   [ -n "$PYTHON" ] || { echo "ERROR: no python with pyserial found on PATH (set PYTHON=... to one that has esptool deps)" >&2; exit 1; }
 fi
+
+# ota_0 and otadata offsets are read from the partition table that was just
+# built (src/partitions_4mb.csv), so a layout change needs no edit here.
+[ -f "$PARTITIONS" ] || { echo "ERROR: missing $PARTITIONS (run pio run first)" >&2; exit 1; }
+read -r OTA0_OFFSET OTADATA_OFFSET < <("$PYTHON" - "$PARTITIONS" <<'PY'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+ota0 = otadata = None
+for i in range(0, len(data) - 31, 32):
+    e = data[i:i + 32]
+    if e[0:2] != b"\xaa\x50":
+        break  # MD5 marker or padding: end of the table
+    ptype, subtype = e[2], e[3]
+    offset = struct.unpack("<I", e[4:8])[0]
+    if ptype == 0x00 and subtype == 0x10:
+        ota0 = offset
+    elif ptype == 0x01 and subtype == 0x00:
+        otadata = offset
+if ota0 is None or otadata is None:
+    sys.exit("ota_0 or otadata not found in the partition table")
+print("0x%x 0x%x" % (ota0, otadata))
+PY
+) || { echo "ERROR: could not read ota_0 / otadata from $PARTITIONS" >&2; exit 1; }
 
 for f in "$FIRMWARE" "$ESPTOOL" "$BOOT_APP0"; do
   [ -f "$f" ] || { echo "ERROR: missing $f" >&2; exit 1; }

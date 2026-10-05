@@ -2,7 +2,7 @@
 #include <OpenHaldexC6_defs.h>
 
 // Current firmware version
-#define FW_VERSION "8.00.18" // update this with every firmware release AND change .html version query param to force cache refresh of web UI
+#define FW_VERSION "9.01.0" // also bump data/version.json ("fs")
 
 /*
 Version Control:
@@ -53,22 +53,145 @@ V8.00.0 - added support for Ford (based on example CAN data, totally untested!)
 V8.00.1 - added fix for password and SSID change
 
 V8.00.2 - added fix for TC/hazards not re-enabling stock mode
-V8.00.3 - single auth boundary: WiFi AP password (forced on first boot) replaces the separate HTTP login; cache-bust style.css
-V8.00.4 - port dashboard UI from OpenHaldex: drive-mode drawer, pseudo-3D expert tune surface, compact glance dashboard (stat tiles + status chips + collapsible UDS)
-V8.00.5 - single-line status header, OpenHaldex Edge title with themed version pill, expert-editor drag-select block edit + Smooth + selection dots on the 3D surface
-V8.00.6 - phone tune multi-select behind a Select-cells toggle (tap toggles, drag paints; page no longer scroll-fights); dashboard reworked so target duty is the hero headline and clutch/module/fin temps sit permanently at the top of the glance grid; full single-row header
-V8.00.7 - expert map library (built-in presets, browser-saved slots, file import/export) and user-selectable dashboard glance tiles; all client-side, no new device endpoints
-V8.00.8 - expert multi-select now works on touch (tap-to-select rebuilt on plain click events; drag kept as an enhancement); removed the redundant mode badge from the header (the hero mode pill is the single source of truth and now carries the force-mode annotation)
-V8.00.9 - saved map slots now live on the device instead of the phone: 5 named slots in device NVS, new /api/maps endpoints (list/get/save/delete), Save As/Load/Delete act on those slots so a tune saved from one phone is visible from any phone; removed the phone-side file Export/Import (device is now the single source of truth)
-V8.00.10 - removed the firmware version pill from the header (frees space on narrow phone screens; version still shown on the Diagnostics page); shrank the Haldex Engagement gauge card so it takes less vertical room on mobile
-V8.00.11 - re-added a compact current-mode badge to the header status bar (now that the version pill is gone there is room); shows the live base mode from any tab, force-trigger annotation still rides the hero pill
-V8.00.12 - expert map library: removed the built-in preset templates (kept only real on-device saved slots); moved the tune-commit button directly below the 3D surface and renamed it Apply; press-and-hold a cell now enters multi-select without the toolbar button
-V8.00.13 - expert page: Restore Defaults now sits beside Apply below the 3D surface; corrected the "Restore Defaults" lock table to match the firmware's actual shipped default (it was applying a different table); dropped the redundant "Saved on device" heading from the Maps dropdown; collapsed the verbose expert instructions into a one-line lead plus an expandable so the grid sits higher on a phone
-V8.00.14 - Gen5 BPK (Fix Hunting) lock calibration is now a per-car user setting instead of a hardcoded value: adjustable 100-500 Nm on the Settings page (the Nm the spoof frame claims at full command, not a strength dial - higher does not lock harder; there is one correct value per car, found with a Learn, MQB signal max 509 Nm). Fixed the underlying uint8 math that capped BPK torque at 255 Nm regardless, and de-duplicated the standalone and CAN-passthrough Motor_11 packing into one host-tested function so the two modes can no longer drift. Also corrected the VAG no-learn-table fallback correction-factor formula (was over-delivering ~20% engagement)
-V8.00.15 - Software Update card on the Settings page: one upload slot with progress that takes the release's single merged image (firmware + web UI in one file, the same file used for USB flashing) as well as a bare firmware.bin or littlefs.bin. /ota/update classifies the file from its first bytes; a merged image is split by flash offset into the app slot and filesystem partition, so a full update is one file and no USB. Web UI is now an installable PWA (manifest, icons, service worker) for full-screen single-tap launch from a phone home screen
-V8.00.16 - full-screen toggle in the web UI header: uses the Fullscreen API, which works over plain http (PWA install needs a secure context, so Android Chrome only offers a shortcut); manifest gains display_override: fullscreen for installs made from a secure context
-V8.00.17 - fixed a stuck-at-100% lock on partially-learned tables: the learn-table lookup returned a hardcoded 100 when more lock was requested than the sweep ever measured, commanding the full frame value for a target the car never learned. Now clamps to the correction factor of the highest learned engagement (argmax), so it never extrapolates past learned data; an all-zero table safely yields zero. Added regression tests.
-V8.00.18 - the AP now answers phone-OS internet-check probes (Android generate_204, Apple hotspot-detect, Windows NCSI, Firefox canonical) with a bare 404 instead of the setup redirect, so a phone joined to the device reads it as "no internet, not a captive portal" and keeps its own cellular data alive for messages, calls and OTA downloads. Pure host-tested is_captive_probe() seam with a regression suite.
+
+V8.00.3 - added drop-down options for adding/removing CAN signals if learn isn't 'clean'
+        - when this was first developed the frames that 'changed' the Haldex response were ported to the non-standalone version
+        - but there could be room for some 'additional'.  This allows the user to add additional frames to mirror standalone 
+        - fixed bus recovery (would not recover...)
+        - minor UI tweak so that force modes display better (single line)
+        - added TP2.0 (ported from Can2Cluster) / VCDS logged (1K0 554C)
+        - added new scaling for UDS - 0CQ 554C/D - proven on bench and logged with VCDS
+        - minor lock tweaks on 0CQ to target 100% cleaner
+
+V9.00.0 - shared Forbes Automotive UI theme; automatic product web-asset
+          cache-nosave; OTA tab (see below).
+        - Long Learn (Settings): automated frame-block learning:
+          all blocks on, (Gen5) Launch PWM Floor stepped until the learn is smooth, then each
+          additional block removed one at a time (any effect = kept on, else off),
+          confirmation learn on the final set, live tracker, chassis notes and a
+          .txt report export. Manual Learn now shares the same sweep code.
+        - fixed Gen5 (0CQ VAQ, gen 52) being rejected by the settings API and
+          skipped by the normal-mode frame editor (frames never ran for VAQ).
+        - Reset-to-Defaults confirmed (0CQ default keeps the
+          8.00.3 Motor_14/ESP_07 opt-in, not the V7 10-block set).
+        - AP no longer hands out a default gateway/DNS (local-only network).
+        - startSoftAP() now reports the address the AP actually came up on
+          instead of a hardcoded "192.168.1.1", and logs a rejected softAPConfig.
+        - OTA rollback protection now real: verifyRollbackLater() defers the
+          core's auto-confirm; image confirmed once the web UI is reached or
+          after 60s uptime, else the bootloader reverts on next reset.
+        - fixed /ota/update/fs being captured by the /ota/update handler (route prefix
+          match) - filesystem uploads went to the firmware handler; removed the
+          (never-enforced) OTA basic-auth.
+        - Gen2/Gen4 (PQ) handbrake now decoded from CAN: Kombi_1 (0x320) byte 1
+          bit 1 (KO1_Handbremse per PQ35/46 K-matrix). Diag "Handbrake (CAN)"
+          reports it for Gen2/4/51 (was Gen5 only) and Follow/Invert Handbrake
+          rewrites that bit on the forwarded frame. Brake stays on Motor_2 MO2_BLS.
+        - "Disengage Under/Above Speed" + "Minimum Throttle" now gate EVERY lock
+          path: force-mode triggers (TC/hazard/ext button) previously bypassed
+          the gate in get_lock_target_adjustment() so lock_target read 100% below
+          the cut-off; Expert mode previously bypassed it entirely.
+        - Ported GitHub PR #39 (louij2, "Add WiFi bridge mode, config
+          backup/restore, and bench mode", written against 8.00.3):
+          > Backup & Restore (Diagnostics tab + tools/openhaldex_config.py):
+            export/import the Expert tune, steering scale, frame edits, all
+            settings and the WiFi names as JSON. Passwords are write-only on
+            the device and never in the file; import asks for them once.
+            Key list widened to everything the 9.x /api/settings accepts.
+          > WiFi bridge mode: optionally join a home/garage network as a STA
+            alongside the AP (WIFI_AP_STA) so the controller is reachable on
+            that LAN. GET/POST /api/wifi/sta, /api/wifi/sta/reset, GET
+            /api/wifi/scan. Changed from the PR: the scan is asynchronous
+            (a blocking scan sat inside the async_tcp task), and STA retries
+            back off - 20 s of auto-reconnect after start, then one attempt
+            per 5 min - so a saved home SSID can't keep pulling the single
+            radio off the AP's channel while the car is away from home.
+          > Bench Mode (Settings): holds WiFi up with no harness connected;
+            self-clears the moment either bus shows traffic this power cycle,
+            and the UI locks the toggle while CAN is detected.
+          > Bug fix from the PR: "Enable CAN Sleep" only ever gated the CPU
+            frequency scaling, never the WiFi shutdown in updateTriggers(),
+            so switching it off did nothing visible. Now gates both.
+        - OTA tab (safety-gated /ota endpoints kept): "Check for updates" from
+          GitHub. An earlier attempt was dropped because phones won't keep
+          mobile data on a WiFi with no internet; bridge mode fixes that by
+          giving the phone a route to the internet AND the controller at the
+          same time (controller on the home router, phone on the same network).
+          Every check pings /ota/info first - no GitHub fetch unless the
+          controller is reachable - and a no-internet result reads
+          /api/wifi/sta to say exactly what to do: join the network the
+          controller is already on (with its address), fix a configured-but-
+          dropped link, or set one up in the Home WiFi card, which is
+          duplicated on the OTA tab (initWifiSta() takes an id prefix). Retry
+          button + "Set up Home WiFi" jump.
+        - Release list = Releases/releases.json 
+        - Rollback allowed (tick "Show
+          beta / older versions"); the confirm warns that older releases may
+          not have this page. Two routes only: GitHub, or "Update from Files"
+          (littlefs.bin then firmware.bin, the original safety-gated upload
+          card). A content-sniffing multi-file picker was tried and dropped
+          as noise.
+        - Check button reports each stage with elapsed time (1/2 controller,
+          2/2 GitHub) so a hang is distinguishable from a dead link.
+        - ROOT CAUSE of OTA never completing (firmware or filesystem): both
+          upload callbacks answered "200 OK" on every non-final chunk. The
+          browser took the first one as the end of the upload and closed the
+          connection while the body was still streaming - AsyncTCP then used
+          the freed pcb (Guru Meditation in tcp_output, Load access fault)
+          and a partly-written partition was left behind. Upload callbacks
+          now never send(); the outcome is recorded (first one wins) and the
+          request handler sends it once the body has ended. Firmware reboot
+          moved there too, after the response.
+        - Filesystem OTA hardened after a failed update boot-looped a unit:
+          LittleFS is unmounted before the partition is rewritten (it used to
+          stay mounted underneath the write); any failure - write error,
+          client gone, short body (?size= from the uploader), SHA mismatch,
+          image that won't mount - erases the superblock pair so a hybrid of
+          two images can never be handed to lfs (CONFIG_LITTLEFS_ASSERTS=y
+          + panic-reboot = boot loop). Boot only mounts after a superblock
+          sanity check, and the web server ALWAYS starts: with no usable UI
+          "/" is a built-in recovery page with the two upload forms. A
+          filesystem update never reboots; the firmware runs from ota_x and
+          does not need the filesystem.
+        - Upload-stream SHA-256 gate removed: the chip validates firmware
+          (esp_ota_end) and the filesystem is validated by mounting; the gate
+          only ever failed updates when a .bin was rebuilt in place without
+          re-running make_release.py. GET /ota/fsdiag reports what is
+          physically in the filesystem partition (superblock fields, mounted,
+          files, read-back sha256) - also shown on the recovery page.
+        - Low-power AP shutdown now also holds off while a browser is polling
+          the UI (otaWebClientActive(): /api/dashboard, /api/wifi/sta, /ota/*
+          within 30 s, or an upload in progress). Before, only stations joined
+          to our own AP counted, so a phone working through the home router on
+          the bench (Bench Mode off) could have WiFi cut from under it mid-OTA.
+        - app.js/style.css now served with Cache-Control: no-cache (ETag
+          revalidation, 304 when unchanged) instead of max-age=1y + a hand-
+          bumped ?v= that kept being forgotten - phones were running a stale
+          app.js against new HTML, so buttons on new cards did nothing.
+
+V9.01.0 - OpenHaldex Edge v9: upstream v9 base (bridge mode, BLE, Long Learn, OTA channels) plus the
+          Edge firmware work (https://github.com/Kile-Thomson/OpenHaldex-Edge). Firmware side:
+        - Shared control state guarded by one mutex: getLockData, the standalone frame builders,
+          learn / Long Learn, the mode and settings writers (web and BLE), the 0x6B0 broadcast and
+          the NVS snapshot. /api/tune stages and validates, then publishes in one go.
+        - Learn speed interlock (manual Learn and Long Learn): refused above 5 km/h, aborted without
+          publishing a partial table if the car moves (progress 103). The previous table is
+          snapshotted and restored on cancel/abort. Samples are reduced by median + monotonic hold.
+        - CAN: receive tasks time out at 250 ms and revive a stopped / bus-off controller (restart
+          after ~3 s if the chassis bus stays dead); light sleep off + no power-gating of the TWAI
+          domain; queues 128/64; bus-failure alerts via the shared seams; 0x6B0 speed clamps at 255.
+        - Lock ramp in milliseconds (engage + release). The v9 lockReleaseRatePerSec key (web and the
+          BLE Settings characteristic) maps onto the same release ramp.
+        - Steering taper: the v9 breakpoint curve is the one implementation; the v8 start/full/floor
+          keys build it. Per-car slip geometry (wheelbase, tracks, steering ratio, min speed) is a
+          setting.
+        - ESP_14 Max declares the full range scaled by the raw lock fraction; Min floor is a % of
+          full command, clamped below Max. Gen41 liveness ages out; Motor_5 counter fixed.
+        - NVS: one namespace ("openhaldex") + seeded sentinel. Stock v9 units (namespace
+          "broadcastOpen"/"udsMQBEn"/"learnTable") are migrated once. Drive mode self-heals.
+        - Stock passthrough also skips the brake/handbrake override; handlers answer on every path.
+        - Native test env (pio test -e native) and an esp32c6-release env (all debug flags off).
+
 */
 
 

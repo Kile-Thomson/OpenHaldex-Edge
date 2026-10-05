@@ -2,12 +2,19 @@
 #include <OpenHaldexC6_UDS.h>
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_WiFi.h>
-#include <OpenHaldexC6_OTA.h> // isDeviceProvisioned
-#include <OpenHaldexC6_EEP.h> // on-device map slot library
+#include <OpenHaldexC6_OTA.h> // otaNoteWebActivity()
+#include <OpenHaldexC6_BLE.h> // bleIsConnected(), bleForgetBonds()
+#include <OpenHaldexC6_WebAccess.h> // setupWebAccess(), isDeviceProvisioned()
+#include <OpenHaldexC6_Access.h>    // access_ap_password_valid()
+#include <OpenHaldexC6_Settings.h> // applyDrivingSetting()
+#include <OpenHaldexC6_EEP.h>      // mapSlot* (on-device map slots)
 
 #include <cstring>
+#include <vector>    // /api/wifi/scan de-dup
+#include <algorithm> // std::sort
 
-static int getCPUUsagePercent() // helper function to calculate CPU usage percentage based on FreeRTOS task run time stats
+// helper function to calculate CPU usage percentage based on FreeRTOS task run time stats
+static int getCPUUsagePercent() 
 {
     static configRUN_TIME_COUNTER_TYPE previousTotalRuntime = 0;
     static configRUN_TIME_COUNTER_TYPE previousIdleRuntime = 0;
@@ -77,47 +84,51 @@ static void sendJSON(AsyncWebServerRequest *request, int code, const JsonDocumen
     request->send(code, "application/json", out);
 }
 
-// helper function to reserve space (and delete) for incoming data
+// Collects a request body that may arrive in several chunks, then hands the
+// whole thing to `done`. The buffer MUST be malloc-owned: ESPAsyncWebServer
+// releases a non-null _tempObject with free() when a request is destroyed
+// (e.g. a POST aborted mid-body), so a new'd object here would be freed with
+// the wrong allocator and corrupt the heap.
 static void parseJSON(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total, void (*done)(AsyncWebServerRequest *, const String &))
 {
     if (index == 0)
     {
-        // Single malloc(total+1) block, owned by ESPAsyncWebServer's request
-        // destructor which frees it with plain free() - matching the allocation
-        // and releasing cleanly if the POST aborts mid-body.
-        request->_tempObject = http_body_alloc(total);
-        if (request->_tempObject == nullptr)
-        {
-            if (total == 0) // empty body: no buffer needed, let the handler send its 400
-            {
-                done(request, String());
-                return;
-            }
-            // Non-empty body but malloc failed: send an explicit error so the
-            // client gets a response rather than waiting for a timeout.
-            JsonDocument err;
-            err["error"] = "Body buffer allocation failed";
-            sendJSON(request, 500, err);
-            return;
-        }
+        request->_tempObject = malloc(total + 1);
     }
 
-    // Guard: if allocation failed on chunk 0 (500 already sent), skip every
-    // later chunk so the completion path cannot reach free()/done().
-    if (request->_tempObject == nullptr)
+    char *buf = (char *)request->_tempObject;
+    const bool last = (index + len == total);
+    if (buf == nullptr)
     {
+        // Allocation failed (or an earlier chunk did): drop the body and fail
+        // the request once, on the final chunk.
+        if (last)
+            request->send(500, "application/json", "{\"error\":\"out of memory\"}");
+        return;
+    }
+    if (index + len > total)
+    {
+        free(buf);
+        request->_tempObject = nullptr;
+        request->send(400, "application/json", "{\"error\":\"bad body length\"}");
         return;
     }
 
-    // Bounds-checked copy into the malloc block; preserves the NUL guard at index `total`.
-    http_body_write_chunk((char *)request->_tempObject, data, len, index, total);
+    memcpy(buf + index, data, len);
 
-    if (index + len == total)
+    if (last)
     {
-        String bodyString((const char *)request->_tempObject); // copy out before freeing
-        free(request->_tempObject);                            // plain free() matches http_body_alloc's malloc
-        request->_tempObject = nullptr;                        // restore the sentinel for the body-lambda guards
-        done(request, bodyString);                             // hand the complete body to the done callback
+        buf[total] = '\0';
+        String body;
+        const bool ok = body.concat(buf, total);
+        free(buf);
+        request->_tempObject = nullptr;
+        if (!ok)
+        {
+            request->send(500, "application/json", "{\"error\":\"out of memory\"}");
+            return;
+        }
+        done(request, body);
     }
 }
 
@@ -128,23 +139,15 @@ static void statusOutgoing(AsyncWebServerRequest *request)
     const bool chassisOk = hasCANChassis;
     const bool haldexOk = hasCANHaldex;
 
-    // snapshot the guarded values once so the JSON reflects one coherent moment
-    xSemaphoreTake(stateMutex, portMAX_DELAY);
-    const openhaldex_mode_t modeSnapshot = state.mode;
-    const float lockTargetSnapshot = lock_target;
-    const bool steerGainEnSnapshot = steeringGainEnabled;
-    const uint16_t steerGainStartSnapshot = steeringGainStartDeg;
-    const uint16_t steerGainFullSnapshot = steeringGainFullDeg;
-    const uint8_t steerGainFloorSnapshot = steeringGainFloor;
-    // Gen41 heartbeat flags + timestamps: parseCAN_chs writes and updateTriggers
-    // expires these under stateMutex, so copy them in the same critical section
-    // to keep each flag consistent with its own timestamp in the JSON.
-    const bool aliveBus0Snapshot = received_haldex_alive_bus0;
-    const bool drivetrainOkSnapshot = received_drivetrain_state_ok;
-    const uint32_t aliveBus0MsSnapshot = received_haldex_alive_bus0_ms;
-    const uint32_t drivetrainMsSnapshot = received_drivetrain_state_ms;
-    xSemaphoreGive(stateMutex);
-
+    // Snapshot the control state under the lock: mode and lock_target are
+    // written by the CAN tasks, the buttons and the web/BLE writers.
+    openhaldex_mode_t modeSnapshot;
+    float lockTargetSnapshot;
+    {
+        StateLock lk;
+        modeSnapshot = state.mode;
+        lockTargetSnapshot = lock_target;
+    }
     data["mode"] = modeSnapshot;
 
     // Ext-button force flag is driven by the external button
@@ -171,67 +174,94 @@ static void statusOutgoing(AsyncWebServerRequest *request)
         data["boost"] = nullptr;
     }
 
-    // Live steering angle plus the gain the taper is currently applying. Null
-    // when the LWI_01 signal is stale or QBit-degraded - exactly the condition
-    // under which getLockData leaves the gain at 100%.
-    const bool steeringFresh = steeringAngleValid && ((millis() - lastSteeringResponse) < steeringTimeout);
-    if (chassisOk && steeringFresh)
-    {
-        const float angleDeg = steeringAngleTenths / 10.0f;
-        data["steeringAngle"] = steeringAngleNegative ? -angleDeg : angleDeg;
-        data["steeringGainNow"] = steerGainEnSnapshot
-                                      ? steering_gain_percent(steeringAngleTenths, steerGainStartSnapshot, steerGainFullSnapshot, steerGainFloorSnapshot)
-                                      : 100;
-    }
-    else
-    {
-        data["steeringAngle"] = nullptr;
-        data["steeringGainNow"] = nullptr;
-    }
-
-    // Geometry-compensated per-corner slip %, [FL, FR, RL, RR], for the browser
-    // dash. Same freshness gate as the 0xFDA1 DID: each entry is null when the
-    // wheel speeds are stale/too slow to trust. Steering (when fresh) feeds the
-    // Ackermann compensation; a stale angle falls back to plain relative slip.
-    {
-        int8_t slip[4] = {0, 0, 0, 0};
-        bool slipOk = false;
-        if (chassisOk && lastWheelSpeedResponse != 0 && (millis() - lastWheelSpeedResponse) < 500)
-        {
-            int16_t steerTenths = 0;
-            if (steeringFresh)
-                steerTenths = steeringAngleNegative ? -(int16_t)steeringAngleTenths : (int16_t)steeringAngleTenths;
-            slipOk = compute_corner_slip(wheelSpeedRaw, steerTenths, slipSteeringRatio,
-                                         slipWheelbaseMm, slipTrackFrontMm, slipTrackRearMm,
-                                         slipMinSpeedRaw, slip);
-        }
-        JsonArray slipArr = data["cornerSlip"].to<JsonArray>();
-        for (int i = 0; i < 4; i++)
-        {
-            if (slipOk)
-                slipArr.add((int)slip[i]);
-            else
-                slipArr.add(nullptr);
-        }
-    }
-
     data["brakeIn"] = brakeSignalActive;
     data["brakeOut"] = brakeActive;
     data["handbrakeIn"] = handbrakeSignalActive;
     data["handbrakeOut"] = handbrakeActive;
 
-    // CAN-decoded brake / handbrake state (MQB has both; PQ has brake only -
-    // PQ handbrake remains on the physical GPIO).
+    // Steering angle + health. Only gens with a steering source (2/4/50/52).
+    // Stale/absent/unsupported -> unhealthy + null (shown as "--"). Magnitude only.
+    {
+        const bool steerSupported = (haldexGeneration == 2 || haldexGeneration == 4 ||
+                                     haldexGeneration == 50 || haldexGeneration == 52);
+        const bool steerHealthy = steerSupported && chassisOk && received_steering_ms != 0 &&
+                                  (millis() - received_steering_ms) <= steeringStaleMs;
+        data["steeringHealthy"] = steerHealthy;
+        if (steerHealthy)
+            data["steeringAngle"] = (int)(fabsf(received_steering_angle) + 0.5f);
+        else
+            data["steeringAngle"] = nullptr;
+    }
+
+    // Per-corner slip [FL, FR, RL, RR] as signed %. Fresh within 500 ms; a -128
+    // sentinel (or stale data) reports null so the UI blanks rather than showing 0.
+    {
+        JsonArray slip = data["slip"].to<JsonArray>();
+        const bool slipFresh = lastCornerSlipMs != 0 && (millis() - lastCornerSlipMs) < 500;
+        for (uint8_t i = 0; i < 4; i++)
+        {
+            if (slipFresh && cornerSlip[i] != -128)
+                slip.add((int)cornerSlip[i]);
+            else
+                slip.add(nullptr);
+        }
+        // Same data under the v8 key (the dashboard reads cornerSlip).
+        JsonArray slip2 = data["cornerSlip"].to<JsonArray>();
+        for (uint8_t i = 0; i < 4; i++)
+        {
+            if (slipFresh && cornerSlip[i] != -128)
+                slip2.add((int)cornerSlip[i]);
+            else
+                slip2.add(nullptr);
+        }
+    }
+
+    // Steering-angle lock reduction (engagement-split display). Active only when
+    // scaling ran this cycle and actually pulled the request back.
+    data["steeringScaleEnabled"] = steeringScaleEnabled;
+    data["steeringGainEnabled"] = steeringScaleEnabled; // v8 name for the same toggle
+    {
+        // Gain the curve gives at the current angle, % (v8 "steeringGainNow").
+        const bool steerSupported = (haldexGeneration == 2 || haldexGeneration == 4 ||
+                                     haldexGeneration == 50 || haldexGeneration == 52);
+        const bool fresh = steerSupported && chassisOk && received_steering_ms != 0 &&
+                           (millis() - received_steering_ms) <= steeringStaleMs;
+        if (steeringScaleEnabled && fresh)
+            data["steeringGainNow"] = (int)(steering_curve_percent(fabsf(received_steering_angle), steeringArray,
+                                                                   steeringLockScaleArray, steeringArrayCount) + 0.5f);
+        else
+            data["steeringGainNow"] = nullptr;
+    }
+    if (steering_scale_is_active())
+    {
+        data["steeringScaleActive"] = true;
+        data["lockRequested"] = steering_scale_requested_pct();
+        data["lockScaled"] = steering_scale_result_pct();
+    }
+    else
+    {
+        data["steeringScaleActive"] = false;
+        data["lockRequested"] = nullptr;
+        data["lockScaled"] = nullptr;
+    }
+
+    // CAN-decoded brake / handbrake state.
+    //   Brake:     PQ Motor_2 MO2_BLS (Gen2/4/51), MQB ESP_05 ESP_Fahrer_bremst (Gen5).
+    //   Handbrake: PQ Kombi_1 KO1_Handbremse (Gen2/4/51), MQB Kombi_01 KBI_Handbremse (Gen5).
+    // Gen1 (1J0) and the GM/Ford variants have no CAN handbrake decode -> null ("--").
     if (chassisOk)
     {
         data["brakeFromCAN"] = brakeFromCAN;
-        if (haldexGeneration == 50)
+        const bool hbFromCANSupported = (haldexGeneration == 2 || haldexGeneration == 4 ||
+                                         haldexGeneration == 50 || haldexGeneration == 51 ||
+                                         haldexGeneration == 52);
+        if (hbFromCANSupported)
         {
             data["handbrakeFromCAN"] = handbrakeFromCAN;
         }
         else
         {
-            data["handbrakeFromCAN"] = nullptr; // for non-MQB platforms, set to null (displayed as "--" in the UI) since we don't have this data from CAN
+            data["handbrakeFromCAN"] = nullptr; // no CAN handbrake source for this platform (displayed as "--" in the UI)
         }
     }
     else
@@ -269,10 +299,10 @@ static void statusOutgoing(AsyncWebServerRequest *request)
             rear["metricA"] = received_rear_axle_metric_a;
             rear["metricB"] = received_rear_axle_metric_b;
             JsonObject hb = gen41["heartbeat"].to<JsonObject>();
-            hb["aliveBus0"] = aliveBus0Snapshot;
-            hb["drivetrainOk"] = drivetrainOkSnapshot;
-            hb["aliveBus0AgeMs"] = aliveBus0MsSnapshot ? (millis() - aliveBus0MsSnapshot) : 0;
-            hb["drivetrainAgeMs"] = drivetrainMsSnapshot ? (millis() - drivetrainMsSnapshot) : 0;
+            hb["aliveBus0"] = received_haldex_alive_bus0;
+            hb["drivetrainOk"] = received_drivetrain_state_ok;
+            hb["aliveBus0AgeMs"] = received_haldex_alive_bus0_ms ? (millis() - received_haldex_alive_bus0_ms) : 0;
+            hb["drivetrainAgeMs"] = received_drivetrain_state_ms ? (millis() - received_drivetrain_state_ms) : 0;
         }
     }
     else // if haldex CAN not ok, set related values to null (displayed as "--" in the UI)
@@ -293,51 +323,67 @@ static void statusOutgoing(AsyncWebServerRequest *request)
     data["busFailure"] = isBusFailure;
     data["lastChassisMs"] = lastCANChassisTick > 0 ? (millis() - lastCANChassisTick) : 0;
     data["lastHaldexMs"] = lastCANHaldexTick > 0 ? (millis() - lastCANHaldexTick) : 0;
-    // Live state, not a setting: reported here (not in settingsOutgoing) and
-    // outside the udsMQBEnabled gate so the UI can show a scanner is present even
-    // when our own polling is disabled. true -> live UDS polling is auto-paused.
-    data["diagToolActive"] = externalDiagActive();
+    data["diagToolActive"] = externalDiagActive(); // external scanner detected -> our live polling auto-paused
+    data["udsSession"] = udsSessionMode;           // 0 idle, 1 default session, 3 extended session (Gen5 poller)
+    data["canTxDropBus0"] = canTxDropBus0;         // canTransmit() failures since boot (chassis)
+    data["canTxDropBus1"] = canTxDropBus1;         // canTransmit() failures since boot (Haldex)
 
-    if (haldexOk && udsMQBEnabled)
+    // UDS live data is Gen5 family (0CQ MQB / 0AY / VAQ) only.
+    if (haldexOk && liveDiagEnabled && isGen5Family())
     {
         JsonObject uds = data["uds"].to<JsonObject>();
         uds["terminalVoltage"] = udsTerminalVoltage;
         uds["moduleTemp"] = udsModuleTemp;
-        // The 0x2BF1/0x2BE4 temp scale is still being calibrated: the shared
-        // (rawLE - 22767)/100 decode is a disassembled guess pending a two-point
-        // solve against module temp (see HALDEX-KNOWLEDGE.md). Publish the decoded
-        // value as-is - the reading is valuable - and also expose the raw 16-bit
-        // wire value so the corrected scale can be locked from real captures.
-        // Publish null until the DID has decoded at least once this session so a
-        // capture client never mistakes the reset 0 for a real reading.
-        if (udsClutchTempValid)
-        {
+        // The 0x2BF1/0x2BE4 temperature scale is a disassembled guess that reads an
+        // impossible ~160 degC on the fin under load. Show the decoded value only
+        // when it is plausible, null otherwise; the raw LE16 is always reported so
+        // the scale can be re-derived from a log.
+        if (udsClutchTempValid && uds_temp_plausible(udsClutchTemp))
             uds["clutchTemp"] = udsClutchTemp;
-            uds["clutchTempRaw"] = udsClutchTempRaw;
-        }
         else
-        {
             uds["clutchTemp"] = nullptr;
-            uds["clutchTempRaw"] = nullptr;
-        }
-        if (udsCoolingFinTempValid)
-        {
-            uds["coolingFinTemp"] = udsCoolingFinTemp;
-            uds["coolingFinTempRaw"] = udsCoolingFinTempRaw;
-        }
+        if (udsClutchTempValid)
+            uds["clutchTempRaw"] = udsClutchTempRaw;
         else
-        {
+            uds["clutchTempRaw"] = nullptr;
+        if (udsCoolingFinTempValid && uds_temp_plausible(udsCoolingFinTemp))
+            uds["coolingFinTemp"] = udsCoolingFinTemp;
+        else
             uds["coolingFinTemp"] = nullptr;
+        if (udsCoolingFinTempValid)
+            uds["coolingFinTempRaw"] = udsCoolingFinTempRaw;
+        else
             uds["coolingFinTempRaw"] = nullptr;
-        }
         uds["clutchCurrent"] = udsClutchCurrent;
         uds["clutchPWM"] = udsClutchPWM;
         uds["clutchVoltage"] = udsClutchVoltage;
         uds["blockagePct"] = udsBlockagePct;
     }
 
+    // KWP2000/TP2.0 raw measuring-block capture (Gen2/4 PQ Haldex).
+    if (haldexOk && liveDiagEnabled && (haldexGeneration == 2 || haldexGeneration == 4))
+    {
+        JsonObject kwp = data["kwp"].to<JsonObject>();
+        kwp["connected"] = kwpTp20Connected;
+        kwp["raw"] = kwpTp20RawDump;
+
+        // Gen4 (0AY) decoded/scaled measuring values.
+        if (haldexGeneration == 4)
+        {
+            kwp["oilTemp"] = kwpOilTemp;
+            kwp["plateTemp"] = kwpPlateTemp;
+            kwp["supplyVoltage"] = kwpSupplyVoltage;
+            kwp["oilPressure"] = kwpOilPressure;
+            kwp["estTorque"] = kwpEstTorque;
+            kwp["clutchDuty"] = kwpClutchDuty;
+            kwp["clutchValveCurrent"] = kwpClutchValveCurrent;
+        }
+    }
+
     data["uptimeMs"] = millis();
     data["freeHeap"] = ESP.getFreeHeap();
+    data["bleConnected"] = bleIsConnected();
+    data["bleCodeRequired"] = bleCodeIsRequired(); // flips when the first phone pairs
     data["lpChassisFrameCount"] = lpChassisFrameCount;
     data["lpHaldexFrameCount"] = lpHaldexFrameCount;
 
@@ -360,6 +406,8 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     JsonDocument data;
     // values
     data["haldexGeneration"] = haldexGeneration;
+    data["forceModesPriority"] = forceModesPriority;
+    data["boardRev"] = boardRev;
     data["tcForceModeValue"] = tcForceModeValue;
     data["hazardForceModeValue"] = hazardForceModeValue;
     data["extBtnForceModeValue"] = extBtnForceModeValue;
@@ -367,16 +415,33 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["disengageAboveSpeed"] = disengageAboveSpeed;
     data["disableThrottle"] = disableThrottle;
     data["mode"] = lastMode;
+    // Lock ramp: one mechanism (ms for a full travel), two front doors. The v9
+    // %/s key is derived from the release ramp; the v8 ms keys are the stored form.
+    data["lockReleaseRatePerSec"] = lock_pct_rate_from_ramp_ms(lockReleaseRampMs);
     data["lockReleaseRampMs"] = lockReleaseRampMs;
     data["lockEngageRampMs"] = lockEngageRampMs;
-    data["steeringGainStartDeg"] = steeringGainStartDeg;
-    data["steeringGainFullDeg"] = steeringGainFullDeg;
-    data["steeringGainFloor"] = steeringGainFloor;
+    data["lockReleaseEnabled"] = lockReleaseEnabled;
+    data["steeringScaleEnabled"] = steeringScaleEnabled;
+    {
+        // v8 three-knob taper view of the steering curve (start / full / floor).
+        // Exact when the curve was set through those keys; best effort otherwise.
+        data["steeringGainEnabled"] = steeringScaleEnabled;
+        uint16_t gStart, gFull;
+        uint8_t gFloor;
+        steering_taper_from_curve(steeringArray, steeringLockScaleArray, steeringArrayCount, gStart, gFull, gFloor);
+        data["steeringGainStartDeg"] = gStart;
+        data["steeringGainFullDeg"] = gFull;
+        data["steeringGainFloor"] = gFloor;
+    }
+    // Per-car geometry for the corner-slip calculation (Calibrate tab)
+    data["slipWheelbaseMm"] = slipWheelbaseMm;
+    data["slipTrackFrontMm"] = slipTrackFrontMm;
+    data["slipTrackRearMm"] = slipTrackRearMm;
+    data["slipSteeringRatio"] = slipSteeringRatio;
+    data["slipMinSpeedRaw"] = slipMinSpeedRaw;
     data["FW_VERSION"] = FW_VERSION;
 
     // bools
-    data["lockReleaseEnabled"] = lockReleaseEnabled;
-    data["steeringGainEnabled"] = steeringGainEnabled;
     data["disableController"] = disableController;
     data["isStandalone"] = isStandalone;
     data["useCANifAvailable"] = useCANifAvailable;
@@ -387,15 +452,22 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["disableOnboardButton"] = disableOnboardButton;
     data["disableExternalButton"] = disableExternalButton;
     data["fixHunting"] = fixHunting;
+    data["dangerZoneEnabled"] = dangerZoneEnabled;
     data["bpkCeilingNm"] = bpkCeilingNm;
     data["esp14MinFloorPct"] = esp14MinFloorPct;
+    data["longLearnNotes"] = longLearnNotes;
     data["canSleepEnabled"] = canSleepEnabled;
+    data["bleEnabled"] = bleEnabled;
+    data["blePasskey"] = blePasskey;            // shown so a second phone can pair; never in backups (not in BACKUP_GENERAL_KEYS)
+    data["bleCodeRequired"] = bleCodeIsRequired(); // false until the first phone has paired
     data["canSleepAggressive"] = canSleepAggressive;
+    data["benchMode"] = benchMode;
     data["lpWakeThresholdFps"] = lpWakeThresholdFps;
 
     data["analyzerMode"] = analyzerMode;
     data["analyzerSerial"] = analyzerSerial;
-    data["udsMQBEnabled"] = udsMQBEnabled;
+    data["liveDiagEnabled"] = liveDiagEnabled;
+    data["udsMQBEnabled"] = liveDiagEnabled; // v8 name for the same toggle
 
     data["followBrake"] = followBrake;
     data["invertBrake"] = invertBrake;
@@ -406,9 +478,7 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
 
     data["ledBrightness"] = ledBrightness;
 
-    // throttle/speed/lock array send - read under the lock so a tune being
-    // published by /api/tune is never serialized half-old half-new
-    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    // throttle/speed/lock array send
     // row array
     JsonArray throttleArrayJSON = data["throttleArray"].to<JsonArray>();
     for (uint8_t i = 0; i < throttleArrayCount; i++)
@@ -433,14 +503,48 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
             throttleRow.add(lockArray[throttlePos][speedPos]);
         }
     }
-    xSemaphoreGive(stateMutex);
+
+    // steering-angle lock-scale curve (breakpoints + 0-100% multipliers)
+    JsonArray steeringArrayJSON = data["steeringArray"].to<JsonArray>();
+    for (uint8_t i = 0; i < steeringArrayCount; i++)
+    {
+        steeringArrayJSON.add(steeringArray[i]);
+    }
+    JsonArray steeringScaleJSON = data["steeringLockScaleArray"].to<JsonArray>();
+    for (uint8_t i = 0; i < steeringArrayCount; i++)
+    {
+        steeringScaleJSON.add(steeringLockScaleArray[i]);
+    }
+
+    // Frame-edit blocks for the current generation (per-CAN-ID passthrough toggles).
+    {
+        int gi = frameEditGenIdx(haldexGeneration);
+        JsonArray fb = data["frameBlocks"].to<JsonArray>();
+        if (gi >= 0)
+        {
+            for (uint16_t i = 0; i < frameEditBlockCount; i++)
+            {
+                if (frameEditBlocks[i].genIdx == (uint8_t)gi)
+                {
+                    JsonObject o = fb.add<JsonObject>();
+                    o["bit"] = frameEditBlocks[i].bit;
+                    o["name"] = frameEditBlocks[i].name;
+                    o["canId"] = frameEditBlocks[i].canId;
+                    o["enabled"] = frameEditEnabled((uint8_t)gi, frameEditBlocks[i].bit);
+                    o["def"] = (bool)((frameEditMaskDefaults[gi] >> frameEditBlocks[i].bit) & 0x1ULL); // in the normal-mode default set
+                }
+            }
+        }
+    }
 
     sendJSON(request, 200, data);
 }
 
-// manage settings (saved from Web, handled here): ESP sends, this handles
+// manage settings (saved from Web, handled here): WebServer sends, this handles
 static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
 {
+    // Every path must respond: ESPAsyncWebServer holds the connection open until
+    // we do, and a silent return reads as a hung request on the client.
     JsonDocument data;
     if (deserializeJson(data, body) != DeserializationError::Ok)
     {
@@ -455,136 +559,62 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
     if (data["haldexGeneration"].is<uint8_t>())
     {
         int generation = data["haldexGeneration"];
-        if (generation == 1 || generation == 2 || generation == 4 || generation == 50 || generation == 51 || generation == 41)
+        if (generation == 1 || generation == 2 || generation == 4 || generation == 50 || generation == 51 || generation == 52 || generation == 41)
         {
             haldexGeneration = (uint8_t)generation;
-            // lastMode is a different namespace from generation (drive mode 0-5
-            // vs generation 1/2/4/41/50/51). Route the stored mode through the
-            // host-tested seam, which returns it unchanged - so a generation
-            // change provably never corrupts the persisted drive mode, and
-            // reintroducing the old `lastMode = generation` bug reddens a test.
+            // lastMode is a different namespace from generation (drive mode 0-5 vs
+            // generation 1/2/4/41/50/51): a generation change must never touch it.
             lastMode = last_mode_after_generation_change(lastMode, generation);
+            udsApplyDefaultIds(); // move the UDS pair with the generation (no-op while the serial lab has it pinned)
         }
     }
 
-    if (data["tcForceModeValue"].is<uint8_t>())
+    // Driving settings: shared validation with BLE (OpenHaldexC6_Settings.cpp).
     {
-        uint8_t v = data["tcForceModeValue"];
-        if (v < 6)
-            tcForceModeValue = v;
-    }
+        struct
+        {
+            const char *key;
+            uint8_t id;
+        } const drivingBools[] = {
+            {"tcForceMode", DS_TC_FORCE_MODE},
+            {"hazardForceMode", DS_HAZARD_FORCE_MODE},
+            {"extButtonForceMode", DS_EXT_BTN_FORCE_MODE},
+            {"followBrake", DS_FOLLOW_BRAKE},
+            {"followHandbrake", DS_FOLLOW_HANDBRAKE},
+            {"steeringScaleEnabled", DS_STEERING_SCALE_ENABLED},
+            {"lockReleaseEnabled", DS_LOCK_RELEASE_ENABLED},
+            {"liveDiagEnabled", DS_LIVE_DIAG_ENABLED},
+        };
+        for (const auto &b : drivingBools)
+            if (data[b.key].is<bool>())
+                applyDrivingSetting(b.id, data[b.key].as<bool>() ? 1 : 0);
+        // v8 name for liveDiagEnabled
+        if (data["udsMQBEnabled"].is<bool>())
+            applyDrivingSetting(DS_LIVE_DIAG_ENABLED, data["udsMQBEnabled"].as<bool>() ? 1 : 0);
 
-    if (data["hazardForceModeValue"].is<uint8_t>())
-    {
-        uint8_t v = data["hazardForceModeValue"];
-        if (v < 6)
-            hazardForceModeValue = v;
-    }
-
-    if (data["extBtnForceModeValue"].is<uint8_t>())
-    {
-        uint8_t v = data["extBtnForceModeValue"];
-        if (v < 6)
-            extBtnForceModeValue = v;
-    }
-
-    if (data["disengageUnderSpeed"].is<uint16_t>())
-    {
-        uint16_t value = data["disengageUnderSpeed"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY);
-        disengageUnderSpeed = constrain(value, 0, 300);
-        xSemaphoreGive(stateMutex);
-    }
-
-    if (data["disengageAboveSpeed"].is<uint16_t>())
-    {
-        uint16_t value = data["disengageAboveSpeed"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY);
-        disengageAboveSpeed = constrain(value, 0, 300);
-        xSemaphoreGive(stateMutex);
-    }
-
-    if (data["disableThrottle"].is<uint8_t>())
-    {
-        uint8_t value = data["disableThrottle"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY); // both fields land together
-        disableThrottle = constrain(value, 0, 100);
-        state.pedal_threshold = disableThrottle;
-        xSemaphoreGive(stateMutex);
-    }
-
-    // Lock-response ramp times (ms for a full 0<->100 travel). Read on the hot
-    // path inside getLockData's critical section, so write under the same lock.
-    // 0 = instant in that direction; the 1000 ms ceiling matches the slider.
-    if (data["lockReleaseRampMs"].is<uint16_t>())
-    {
-        uint16_t value = data["lockReleaseRampMs"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY);
-        lockReleaseRampMs = constrain(value, 0, 1000); // 0 = instant release
-        xSemaphoreGive(stateMutex);
-    }
-
-    if (data["lockEngageRampMs"].is<uint16_t>())
-    {
-        uint16_t value = data["lockEngageRampMs"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY);
-        lockEngageRampMs = constrain(value, 0, 1000); // 0 = instant lock-up
-        xSemaphoreGive(stateMutex);
-    }
-
-    if (data["lockReleaseEnabled"].is<bool>())
-    {
-        lockReleaseEnabled = data["lockReleaseEnabled"];
-    }
-
-    // Steering-gain taper. Start/full are accepted independently (the UI saves
-    // one key at a time); if a client leaves full <= start the taper degrades
-    // to a hard step at the start angle (see steering_gain_percent), never a
-    // divide-by-zero. Read on the hot path inside getLockData's critical
-    // section, so write under the same lock.
-    if (data["steeringGainStartDeg"].is<uint16_t>())
-    {
-        uint16_t value = data["steeringGainStartDeg"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY);
-        steeringGainStartDeg = constrain(value, 0, 720);
-        xSemaphoreGive(stateMutex);
-    }
-
-    if (data["steeringGainFullDeg"].is<uint16_t>())
-    {
-        uint16_t value = data["steeringGainFullDeg"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY);
-        steeringGainFullDeg = constrain(value, 0, 720);
-        xSemaphoreGive(stateMutex);
-    }
-
-    if (data["steeringGainFloor"].is<uint8_t>())
-    {
-        uint8_t value = data["steeringGainFloor"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY);
-        steeringGainFloor = constrain(value, 0, 100);
-        xSemaphoreGive(stateMutex);
-    }
-
-    if (data["steeringGainEnabled"].is<bool>())
-    {
-        steeringGainEnabled = data["steeringGainEnabled"];
+        struct
+        {
+            const char *key;
+            uint8_t id;
+            int maxValue; // clamp before the u16 conversion (negative / huge JSON numbers)
+        } const drivingNumbers[] = {
+            {"tcForceModeValue", DS_TC_FORCE_MODE_VALUE, 255},
+            {"hazardForceModeValue", DS_HAZARD_FORCE_MODE_VALUE, 255},
+            {"extBtnForceModeValue", DS_EXT_BTN_FORCE_MODE_VALUE, 255},
+            {"disengageUnderSpeed", DS_DISENGAGE_UNDER_SPEED, 300},
+            {"disengageAboveSpeed", DS_DISENGAGE_ABOVE_SPEED, 300},
+            {"disableThrottle", DS_DISABLE_THROTTLE, 100},
+            {"lockReleaseRatePerSec", DS_LOCK_RELEASE_RATE, 500},
+            {"ledBrightness", DS_LED_BRIGHTNESS, 255},
+        };
+        for (const auto &n : drivingNumbers)
+            if (data[n.key].is<float>())
+                applyDrivingSetting(n.id, (uint16_t)constrain(lroundf(data[n.key].as<float>()), 0L, (long)n.maxValue));
     }
 
     if (data["disableController"].is<bool>())
     {
-        disableController = data["disableController"];
-        if (disableController)
-        {
-            xSemaphoreTake(stateMutex, portMAX_DELAY);
-            state.mode = MODE_STOCK;
-            lastMode = 0;
-            xSemaphoreGive(stateMutex);
-        }
-        if (!disableController && analyzerMode)
-        {
-            setAnalyzerMode(false);
-        }
+        setControllerDisabled(data["disableController"]);
     }
 
     if (data["isStandalone"].is<bool>())
@@ -629,34 +659,9 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         setAnalyzerSerialMode(data["analyzerSerial"]);
     }
 
-    if (data["udsMQBEnabled"].is<bool>())
-    {
-        udsMQBEnabled = data["udsMQBEnabled"];
-    }
-
     if (data["useCANifAvailable"].is<bool>())
     {
         useCANifAvailable = data["useCANifAvailable"];
-    }
-
-    if (data["tcForceMode"].is<bool>())
-    {
-        tcForceMode = data["tcForceMode"];
-    }
-
-    if (data["extButtonForceMode"].is<bool>())
-    {
-        extBtnForceMode = data["extButtonForceMode"];
-    }
-
-    if (data["hazardForceMode"].is<bool>())
-    {
-        hazardForceMode = data["hazardForceMode"];
-        if (!hazardForceMode)
-        {
-
-            hazardForceModeFlag = false; // clear active flag when feature is disabled
-        }
     }
 
     if (data["disableOnboardButton"].is<bool>())
@@ -674,20 +679,75 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         fixHunting = data["fixHunting"];
     }
 
+    if (data["dangerZoneEnabled"].is<bool>())
+    {
+        dangerZoneEnabled = data["dangerZoneEnabled"];
+    }
+
     if (data["bpkCeilingNm"].is<uint16_t>())
     {
-        uint16_t value = data["bpkCeilingNm"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY);
-        bpkCeilingNm = constrain(value, 10, 509); // floor..509 Nm signal max
-        xSemaphoreGive(stateMutex);
+        bpkCeilingNm = (uint16_t)constrain((int)data["bpkCeilingNm"], 10, 500);
     }
 
     if (data["esp14MinFloorPct"].is<uint8_t>())
     {
-        uint8_t value = data["esp14MinFloorPct"];
-        xSemaphoreTake(stateMutex, portMAX_DELAY);
-        esp14MinFloorPct = constrain(value, 0, 100); // 0 = inherited (Min=0)
-        xSemaphoreGive(stateMutex);
+        esp14MinFloorPct = (uint8_t)constrain((int)data["esp14MinFloorPct"], 0, 100);
+    }
+
+    // Lock ramp (ms for a full 0..100 travel; 0 = instant). The v9 %/s key
+    // (lockReleaseRatePerSec) is handled with the driving settings above and maps
+    // onto the same release ramp. The ms keys are applied after it, so a client
+    // sending both gets the ms value.
+    if (data["lockReleaseRampMs"].is<uint16_t>())
+    {
+        const uint16_t v = (uint16_t)constrain((int)data["lockReleaseRampMs"], 0, 1000);
+        StateLock lk;
+        lockReleaseRampMs = v;
+    }
+    if (data["lockEngageRampMs"].is<uint16_t>())
+    {
+        const uint16_t v = (uint16_t)constrain((int)data["lockEngageRampMs"], 0, 1000);
+        StateLock lk;
+        lockEngageRampMs = v;
+    }
+
+    // v8 steering taper (start / full / floor), one front door onto the v9
+    // breakpoint curve: the three knobs rebuild the 5-point curve. steeringGainEnabled
+    // is the v8 name of steeringScaleEnabled.
+    if (data["steeringGainEnabled"].is<bool>())
+    {
+        steeringScaleEnabled = data["steeringGainEnabled"];
+    }
+    if (data["steeringGainStartDeg"].is<uint16_t>() || data["steeringGainFullDeg"].is<uint16_t>() ||
+        data["steeringGainFloor"].is<uint8_t>())
+    {
+        StateLock lk;
+        uint16_t gStart, gFull;
+        uint8_t gFloor;
+        steering_taper_from_curve(steeringArray, steeringLockScaleArray, steeringArrayCount, gStart, gFull, gFloor);
+        if (data["steeringGainStartDeg"].is<uint16_t>())
+            gStart = (uint16_t)constrain((int)data["steeringGainStartDeg"], 0, 720);
+        if (data["steeringGainFullDeg"].is<uint16_t>())
+            gFull = (uint16_t)constrain((int)data["steeringGainFullDeg"], 0, 720);
+        if (data["steeringGainFloor"].is<uint8_t>())
+            gFloor = (uint8_t)constrain((int)data["steeringGainFloor"], 0, 100);
+        steering_curve_from_taper(gStart, gFull, gFloor, steeringArray, steeringLockScaleArray);
+    }
+
+    // Per-car geometry for the corner-slip calculation (Calibrate tab). Ranges
+    // reject nonsense, which would make the Ackermann maths meaningless.
+    {
+        StateLock lk;
+        if (data["slipWheelbaseMm"].is<uint16_t>())
+            slipWheelbaseMm = (uint16_t)constrain((int)data["slipWheelbaseMm"], 1500, 4000);
+        if (data["slipTrackFrontMm"].is<uint16_t>())
+            slipTrackFrontMm = (uint16_t)constrain((int)data["slipTrackFrontMm"], 1000, 2500);
+        if (data["slipTrackRearMm"].is<uint16_t>())
+            slipTrackRearMm = (uint16_t)constrain((int)data["slipTrackRearMm"], 1000, 2500);
+        if (data["slipSteeringRatio"].is<float>())
+            slipSteeringRatio = constrain(data["slipSteeringRatio"].as<float>(), 8.0f, 30.0f);
+        if (data["slipMinSpeedRaw"].is<uint16_t>())
+            slipMinSpeedRaw = (uint16_t)constrain((int)data["slipMinSpeedRaw"], 0, 5000);
     }
 
     if (data["canSleepEnabled"].is<bool>())
@@ -705,23 +765,32 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         if (canSleepAggressive)
             canSleepEnabled = true;
     }
+    if (data["benchMode"].is<bool>())
+    {
+        // Bench mode only makes sense with no CAN on either bus. Turning it on
+        // while CAN is up is skipped for this key alone: the rest of the body
+        // (a backup import sends benchMode with everything else) is still applied.
+        const bool want = data["benchMode"];
+        if (!want || !(hasCANChassis || hasCANHaldex))
+            benchMode = want;
+    }
+    if (data["forceModesPriority"].is<uint8_t>())
+    {
+        const uint8_t v = (uint8_t)constrain((int)data["forceModesPriority"], 0, 5);
+        StateLock lk;
+        forceModesPriority = v;
+    }
+    if (data["bleEnabled"].is<bool>())
+    {
+        bleEnabled = data["bleEnabled"];
+    }
     if (data["lpWakeThresholdFps"].is<uint16_t>())
     {
         lpWakeThresholdFps = constrain((uint16_t)data["lpWakeThresholdFps"], 0, 2000);
     }
-    if (data["followBrake"].is<bool>())
-    {
-        followBrake = data["followBrake"];
-    }
-
     if (data["invertBrake"].is<bool>())
     {
         invertBrake = data["invertBrake"];
-    }
-
-    if (data["followHandbrake"].is<bool>())
-    {
-        followHandbrake = data["followHandbrake"];
     }
 
     if (data["invertHandbrake"].is<bool>())
@@ -734,9 +803,32 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         broadcastOpenHaldexOverCAN = data["broadcastOpenHaldexOverCAN"];
     }
 
-    if (data["ledBrightness"].is<int>())
+    // Long Learn chassis/car notes (free text, exported with the report)
+    if (data["longLearnNotes"].is<const char *>())
     {
-        ledBrightness = (uint8_t)constrain((int)data["ledBrightness"], 0, 255);
+        const char *n = data["longLearnNotes"];
+        memset(longLearnNotes, 0, sizeof(longLearnNotes));
+        strncpy(longLearnNotes, n, LL_NOTES_LEN);
+    }
+
+    // Frame-edit gating: reset all masks to defaults, or toggle a single block
+    // (bit) for the currently-selected generation.
+    if (data["frameEditReset"].is<bool>() && data["frameEditReset"].as<bool>())
+    {
+        resetFrameEditMask();
+    }
+    if (data["frameEditBit"].is<uint8_t>() && data["frameEditOn"].is<bool>())
+    {
+        int gi = frameEditGenIdx(haldexGeneration);
+        uint8_t bit = data["frameEditBit"];
+        if (gi >= 0 && bit < 64)
+        {
+            // Edit the mask for the mode we're currently in (standalone vs normal).
+            if (data["frameEditOn"].as<bool>())
+                activeFrameEditMask()[gi] |= (1ULL << bit);
+            else
+                activeFrameEditMask()[gi] &= ~(1ULL << bit);
+        }
     }
 
     JsonDocument resp;
@@ -744,12 +836,49 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
     sendJSON(request, 200, resp);
 }
 
-// manage mode (saved from Web, handled here): ESP sends, this handles
+// Long Learn start: {"testAll": bool}. Same pre-flight as the manual learn plus
+// a check that the generation actually has gated blocks to bisect.
+static void longLearnStartIncoming(AsyncWebServerRequest *request, const String &body)
+{
+    JsonDocument in;
+    bool testAll = false;
+    if (deserializeJson(in, body) == DeserializationError::Ok && in["testAll"].is<bool>())
+        testAll = in["testAll"].as<bool>();
+
+    JsonDocument resp;
+    if (!hasCANHaldex)
+    {
+        resp["ok"] = false;
+        resp["error"] = "No Haldex CAN data available";
+    }
+    else if (frameEditGenIdx(haldexGeneration) < 0)
+    {
+        resp["ok"] = false;
+        resp["error"] = "Frame editing is not available for this generation";
+    }
+    else if (!learn_speed_ok(received_vehicle_speed))
+    {
+        // Speed interlock: the sweeps command up to full lock, which is only
+        // safe stationary. startLongLearn refuses too; this gives the reason.
+        resp["ok"] = false;
+        resp["error"] = "Vehicle is moving - learn needs the car stationary";
+    }
+    else if (!startLongLearn(testAll))
+    {
+        resp["ok"] = false;
+        resp["error"] = "A learn is already running";
+    }
+    else
+    {
+        resp["ok"] = true;
+    }
+    sendJSON(request, 200, resp);
+}
+
+// manage mode (saved from Web, handled here): WebServer sends, this handles
 static void modeIncoming(AsyncWebServerRequest *request, const String &body)
 {
-    // Every path must respond: ESPAsyncWebServer holds the connection open
-    // until we do, and a silent return shows up as a hung request / frozen UI
-    // on the client (the mode highlight snapping back with no explanation).
+    // Every path must respond (see settingsIncoming).
     JsonDocument data;
     if (deserializeJson(data, body) != DeserializationError::Ok)
     {
@@ -761,7 +890,7 @@ static void modeIncoming(AsyncWebServerRequest *request, const String &body)
         return;
     }
 
-    if (!data["mode"].is<uint8_t>())
+    if (!data["mode"].is<uint8_t>() || (uint8_t)data["mode"] >= (uint8_t)openhaldex_mode_t_MAX)
     {
         JsonDocument resp;
         resp["ok"] = false;
@@ -779,18 +908,12 @@ static void modeIncoming(AsyncWebServerRequest *request, const String &body)
         return;
     }
 
-    xSemaphoreTake(stateMutex, portMAX_DELAY);
-    if (isStandalone && (openhaldex_mode_t)data["mode"] == 0)
+    requestMode(data["mode"]); // validates again, writes mode + lastMode under the lock
+    uint8_t applied;
     {
-        state.mode = (openhaldex_mode_t)lastMode;
+        StateLock lk;
+        applied = (uint8_t)state.mode;
     }
-    else
-    {
-        state.mode = (openhaldex_mode_t)data["mode"];
-    }
-    lastMode = state.mode;
-    const uint8_t applied = (uint8_t)state.mode;
-    xSemaphoreGive(stateMutex);
 
     JsonDocument resp;
     resp["ok"] = true;
@@ -798,17 +921,25 @@ static void modeIncoming(AsyncWebServerRequest *request, const String &body)
     sendJSON(request, 200, resp);
 }
 
-// manage tune (saved from Web, handled here): ESP sends, this handles
+// manage tune (saved from Web, handled here): WebServer sends, this handles
+static void tuneError(AsyncWebServerRequest *request, int code, const char *msg)
+{
+    DEBUG("tune rejected: %s", msg);
+    JsonDocument resp;
+    resp["ok"] = false;
+    resp["error"] = msg;
+    sendJSON(request, code, resp);
+}
+
 static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
 {
+    // Stage and validate everything first, then publish under stateMutex in one
+    // go: a rejected or half-parsed upload never leaves the live tune partly
+    // overwritten, and getLockData never reads a map mid-update.
     JsonDocument data;
     if (deserializeJson(data, body) != DeserializationError::Ok)
     {
-        DEBUG("Invalid JSON");
-        JsonDocument resp;
-        resp["ok"] = false;
-        resp["error"] = "Invalid JSON";
-        sendJSON(request, 400, resp);
+        tuneError(request, 400, "Invalid JSON");
         return;
     }
 
@@ -816,79 +947,103 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
     JsonArray throttleArrayJSON = data["throttleArray"].as<JsonArray>();
     JsonArray lockArrayJSON = data["lockArray"].as<JsonArray>();
 
-    if (speedArrayJSON.size() != speedArrayCount || throttleArrayJSON.size() != throttleArrayCount)
-    {
-        DEBUG("Invalid Array Length");
-        JsonDocument resp;
-        resp["ok"] = false;
-        resp["error"] = "Invalid axis array length";
-        sendJSON(request, 400, resp);
-        return;
-    }
-
-    // Parse and validate the whole tune into staging copies first, then publish
-    // all three tables under one short hold - so getLockData's interpolation
-    // never reads a half-updated map, and an invalid row leaves the live tables
-    // untouched instead of partially overwritten
-    uint8_t stagedThrottle[throttleArrayCount];
     uint16_t stagedSpeed[speedArrayCount];
+    uint8_t stagedThrottle[throttleArrayCount];
     uint8_t stagedLock[throttleArrayCount][speedArrayCount];
+    bool haveMap = false;
 
-    // fill throttle array
-    for (uint8_t i = 0; i < throttleArrayCount; i++)
+    // Speed/throttle/lock map (optional - only applied when present in the payload).
+    if (!speedArrayJSON.isNull() || !throttleArrayJSON.isNull() || !lockArrayJSON.isNull())
     {
-        stagedThrottle[i] = (uint8_t)(throttleArrayJSON[i] | 0);
-    }
-
-    // fill speed array
-    for (uint8_t i = 0; i < speedArrayCount; i++)
-    {
-        stagedSpeed[i] = (uint16_t)(speedArrayJSON[i] | 0);
-    }
-
-    // Reject a non-monotonic map: the expert-map interpolation assumes strictly-
-    // ascending axes, so an out-of-order axis would silently mis-interpolate.
-    // Check both axes (throttle widened to u16) before touching the live tables.
-    uint16_t throttleAxis[throttleArrayCount];
-    for (uint8_t i = 0; i < throttleArrayCount; i++)
-    {
-        throttleAxis[i] = stagedThrottle[i];
-    }
-    if (!is_strictly_ascending_u16(throttleAxis, throttleArrayCount) ||
-        !is_strictly_ascending_u16(stagedSpeed, speedArrayCount))
-    {
-        DEBUG("Non-ascending tune axis");
-        JsonDocument resp;
-        resp["ok"] = false;
-        resp["error"] = "Axis values must be strictly ascending";
-        sendJSON(request, 400, resp);
-        return;
-    }
-
-    // fill lock array
-    for (uint8_t throttle = 0; throttle < throttleArrayCount; throttle++)
-    {
-        JsonArray throttleRow = lockArrayJSON[throttle].as<JsonArray>();
-        if (throttleRow.size() != speedArrayCount)
+        haveMap = true;
+        if (speedArrayJSON.size() != speedArrayCount || throttleArrayJSON.size() != throttleArrayCount)
         {
-            DEBUG("Invalid lock array");
-            JsonDocument resp;
-            resp["ok"] = false;
-            resp["error"] = "Invalid lock table row length";
-            sendJSON(request, 400, resp);
+            tuneError(request, 400, "Invalid axis array length");
             return;
         }
-        for (uint8_t speed = 0; speed < speedArrayCount; speed++)
+        for (uint8_t i = 0; i < throttleArrayCount; i++)
+            stagedThrottle[i] = (uint8_t)(throttleArrayJSON[i] | 0);
+        for (uint8_t i = 0; i < speedArrayCount; i++)
+            stagedSpeed[i] = (uint16_t)(speedArrayJSON[i] | 0);
+
+        // The expert map assumes ascending axes; a non-monotonic axis makes the
+        // interpolation bracket search pick the wrong pair and silently mis-lock.
+        if (!is_strictly_ascending_u16(stagedSpeed, speedArrayCount))
         {
-            stagedLock[throttle][speed] = (uint8_t)throttleRow[speed];
+            tuneError(request, 400, "Speed axis must be strictly ascending");
+            return;
+        }
+        uint16_t throttleAxis[throttleArrayCount];
+        for (uint8_t i = 0; i < throttleArrayCount; i++)
+            throttleAxis[i] = stagedThrottle[i];
+        if (!is_strictly_ascending_u16(throttleAxis, throttleArrayCount))
+        {
+            tuneError(request, 400, "Throttle axis must be strictly ascending");
+            return;
+        }
+
+        if (lockArrayJSON.size() != throttleArrayCount)
+        {
+            tuneError(request, 400, "Invalid lock table length");
+            return;
+        }
+        for (uint8_t throttle = 0; throttle < throttleArrayCount; throttle++)
+        {
+            // each row is indexed by the SPEED axis
+            JsonArray throttleRow = lockArrayJSON[throttle].as<JsonArray>();
+            if (throttleRow.size() != speedArrayCount)
+            {
+                tuneError(request, 400, "Invalid lock table row length");
+                return;
+            }
+            for (uint8_t speed = 0; speed < speedArrayCount; speed++)
+            {
+                const int v = (int)(throttleRow[speed] | 0);
+                if (v < 0 || v > 100)
+                {
+                    tuneError(request, 400, "Lock table values must be 0-100");
+                    return;
+                }
+                stagedLock[throttle][speed] = (uint8_t)v;
+            }
         }
     }
 
-    xSemaphoreTake(stateMutex, portMAX_DELAY);
-    memcpy(throttleArray, stagedThrottle, sizeof(throttleArray));
-    memcpy(speedArray, stagedSpeed, sizeof(speedArray));
-    memcpy(lockArray, stagedLock, sizeof(lockArray));
-    xSemaphoreGive(stateMutex);
+    // Steering-angle lock-scale curve (optional - breakpoints + 0-100% multipliers).
+    JsonArray steeringArrayJSON = data["steeringArray"].as<JsonArray>();
+    JsonArray steeringScaleJSON = data["steeringLockScaleArray"].as<JsonArray>();
+    uint16_t stagedSteer[steeringArrayCount];
+    uint8_t stagedSteerScale[steeringArrayCount];
+    bool haveSteer = false;
+    if (!steeringArrayJSON.isNull() || !steeringScaleJSON.isNull())
+    {
+        haveSteer = true;
+        if (steeringArrayJSON.size() != steeringArrayCount || steeringScaleJSON.size() != steeringArrayCount)
+        {
+            tuneError(request, 400, "Invalid steering array length");
+            return;
+        }
+        for (uint8_t i = 0; i < steeringArrayCount; i++)
+        {
+            stagedSteer[i] = (uint16_t)(steeringArrayJSON[i] | 0);
+            stagedSteerScale[i] = (uint8_t)constrain((int)(steeringScaleJSON[i] | 0), 0, 100);
+        }
+    }
+
+    {
+        StateLock lk;
+        if (haveMap)
+        {
+            memcpy(throttleArray, stagedThrottle, sizeof(throttleArray));
+            memcpy(speedArray, stagedSpeed, sizeof(speedArray));
+            memcpy(lockArray, stagedLock, sizeof(lockArray));
+        }
+        if (haveSteer)
+        {
+            memcpy(steeringArray, stagedSteer, sizeof(steeringArray));
+            memcpy(steeringLockScaleArray, stagedSteerScale, sizeof(steeringLockScaleArray));
+        }
+    }
 
     JsonDocument resp;
     resp["ok"] = true;
@@ -897,49 +1052,37 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
 
 // POST /api/maps/save - store the editor's tune into an on-device slot.
 // Body: {index, name, speedArray, throttleArray, lockArray}. Validated the same
-// way as /api/tune (correct lengths, strictly-ascending axes) so a saved slot
-// can never mis-interpolate when later loaded.
+// way as /api/tune (lengths, strictly ascending axes, 0-100 lock values) so a
+// saved slot can never mis-interpolate when it is loaded later. Slots are in
+// their own NVS namespace and the arrays here are staged copies, so the live
+// tune and its mutex are not involved.
+static void mapsError(AsyncWebServerRequest *request, int code, const char *msg)
+{
+    JsonDocument resp;
+    resp["ok"] = false;
+    resp["error"] = msg;
+    sendJSON(request, code, resp);
+}
+
 static void mapsSaveIncoming(AsyncWebServerRequest *request, const String &body)
 {
     JsonDocument data;
-    if (deserializeJson(data, body) != DeserializationError::Ok)
-    {
-        JsonDocument resp; resp["ok"] = false; resp["error"] = "Invalid JSON";
-        sendJSON(request, 400, resp);
-        return;
-    }
-
-    if (!data["index"].is<int>())
-    {
-        JsonDocument resp; resp["ok"] = false; resp["error"] = "Missing 'index'";
-        sendJSON(request, 400, resp);
-        return;
-    }
+    if (deserializeJson(data, body) != DeserializationError::Ok) { mapsError(request, 400, "Invalid JSON"); return; }
+    if (!data["index"].is<int>()) { mapsError(request, 400, "Missing 'index'"); return; }
     int idx = data["index"].as<int>();
-    if (idx < 0 || idx >= MAP_SLOT_COUNT)
-    {
-        JsonDocument resp; resp["ok"] = false; resp["error"] = "Slot index out of range";
-        sendJSON(request, 400, resp);
-        return;
-    }
-
+    if (idx < 0 || idx >= MAP_SLOT_COUNT) { mapsError(request, 400, "Slot index out of range"); return; }
     const char *name = data["name"] | "";
-    if (name[0] == '\0')
-    {
-        JsonDocument resp; resp["ok"] = false; resp["error"] = "Missing 'name'";
-        sendJSON(request, 400, resp);
-        return;
-    }
+    if (name[0] == '\0') { mapsError(request, 400, "Missing 'name'"); return; }
 
     JsonArray speedArrayJSON = data["speedArray"].as<JsonArray>();
     JsonArray throttleArrayJSON = data["throttleArray"].as<JsonArray>();
     JsonArray lockArrayJSON = data["lockArray"].as<JsonArray>();
     if (speedArrayJSON.size() != speedArrayCount || throttleArrayJSON.size() != throttleArrayCount)
     {
-        JsonDocument resp; resp["ok"] = false; resp["error"] = "Invalid array length";
-        sendJSON(request, 400, resp);
+        mapsError(request, 400, "Invalid array length");
         return;
     }
+    if (lockArrayJSON.size() != throttleArrayCount) { mapsError(request, 400, "Invalid lock array"); return; }
 
     uint8_t stagedThrottle[throttleArrayCount];
     uint16_t stagedSpeed[speedArrayCount];
@@ -955,31 +1098,27 @@ static void mapsSaveIncoming(AsyncWebServerRequest *request, const String &body)
     if (!is_strictly_ascending_u16(throttleAxis, throttleArrayCount) ||
         !is_strictly_ascending_u16(stagedSpeed, speedArrayCount))
     {
-        JsonDocument resp; resp["ok"] = false; resp["error"] = "Non-ascending axis";
-        sendJSON(request, 400, resp);
+        mapsError(request, 400, "Non-ascending axis");
         return;
     }
 
     for (uint8_t throttle = 0; throttle < throttleArrayCount; throttle++)
     {
         JsonArray throttleRow = lockArrayJSON[throttle].as<JsonArray>();
-        if (throttleRow.size() != speedArrayCount)
-        {
-            JsonDocument resp; resp["ok"] = false; resp["error"] = "Invalid lock array";
-            sendJSON(request, 400, resp);
-            return;
-        }
+        if (throttleRow.size() != speedArrayCount) { mapsError(request, 400, "Invalid lock array"); return; }
         for (uint8_t speed = 0; speed < speedArrayCount; speed++)
-            stagedLock[throttle][speed] = (uint8_t)throttleRow[speed];
+        {
+            const int v = (int)(throttleRow[speed] | 0);
+            if (v < 0 || v > 100) { mapsError(request, 400, "Lock table values must be 0-100"); return; }
+            stagedLock[throttle][speed] = (uint8_t)v;
+        }
     }
 
     if (!mapSlotSave((uint8_t)idx, name, stagedSpeed, stagedThrottle, stagedLock))
     {
-        JsonDocument resp; resp["ok"] = false; resp["error"] = "Storage write failed";
-        sendJSON(request, 500, resp);
+        mapsError(request, 500, "Storage write failed");
         return;
     }
-
     JsonDocument resp;
     resp["ok"] = true;
     resp["index"] = idx;
@@ -992,64 +1131,100 @@ static void mapsDeleteIncoming(AsyncWebServerRequest *request, const String &bod
     JsonDocument data;
     if (deserializeJson(data, body) != DeserializationError::Ok || !data["index"].is<int>())
     {
-        JsonDocument resp; resp["ok"] = false; resp["error"] = "Missing 'index'";
-        sendJSON(request, 400, resp);
+        mapsError(request, 400, "Missing 'index'");
         return;
     }
     int idx = data["index"].as<int>();
-    if (idx < 0 || idx >= MAP_SLOT_COUNT)
+    if (idx < 0 || idx >= MAP_SLOT_COUNT || !mapSlotDelete((uint8_t)idx))
     {
-        JsonDocument resp; resp["ok"] = false; resp["error"] = "Slot index out of range";
-        sendJSON(request, 400, resp);
+        mapsError(request, 400, "Slot index out of range");
         return;
     }
-    mapSlotDelete((uint8_t)idx);
     JsonDocument resp;
     resp["ok"] = true;
     sendJSON(request, 200, resp);
 }
 
+// Served at "/" when the web UI filesystem is missing, broken or empty (a
+// filesystem OTA that failed, a fresh chip with only firmware on it). Needs
+// nothing from LittleFS: two uploads straight to the OTA endpoints, web UI
+// first. Deliberately plain - it has to work from any phone browser.
+static const char RECOVERY_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OpenHaldex-C6 recovery</title><style>body{font-family:sans-serif;background:#111;color:#eee;margin:0;padding:16px;max-width:520px}
+h1{font-size:20px}p{line-height:1.5;color:#bbb}code{color:#fff}section{border:1px solid #333;border-radius:10px;padding:14px;margin:14px 0}
+input[type=file]{display:block;margin:10px 0;max-width:100%}button{background:#2a6df4;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:15px}
+button:disabled{opacity:.5}.s{margin-top:8px;font-size:14px;color:#9c9}.e{color:#f77}.bar{height:6px;background:#333;border-radius:3px;margin-top:8px}.bar i{display:block;height:100%;width:0;background:#2a6df4;border-radius:3px}</style></head>
+<body><h1>OpenHaldex-C6 &middot; web UI missing</h1>
+<p>The controller is running (firmware <code>%FW%</code>) but its web-interface partition holds no usable filesystem - usually a filesystem update that stopped part-way. Nothing else is affected. Upload the two files from the release folder on GitHub (<code>Releases/V&hellip;/</code>): the web UI first, then the firmware if you were mid-update.</p>
+<section><strong>1. Web UI</strong> &mdash; <code>littlefs.bin</code><input type="file" id="fs" accept=".bin"><button id="fsb">Upload web UI</button><div class="bar"><i id="fsp"></i></div><div class="s" id="fss"></div></section>
+<section><strong>2. Firmware</strong> &mdash; <code>firmware.bin</code> (optional; reboots when done)<input type="file" id="fw" accept=".bin"><button id="fwb">Upload firmware</button><div class="bar"><i id="fwp"></i></div><div class="s" id="fws"></div></section>
+<section><strong>Partition diagnostics</strong> <button id="dgb" style="float:right;padding:6px 10px;font-size:13px">Refresh</button><pre id="dg" style="white-space:pre-wrap;word-break:break-all;font-size:12px;color:#bbb;margin:10px 0 0">loading&hellip;</pre></section>
+<script>
+function diag(){var x=new XMLHttpRequest();x.open('GET','/ota/fsdiag');x.onload=function(){try{var d=JSON.parse(x.responseText),o='';for(var k in d)o+=k+': '+d[k]+'\n';document.getElementById('dg').textContent=o}catch(e){document.getElementById('dg').textContent=x.responseText}};x.send()}
+document.getElementById('dgb').onclick=diag;diag();
+function up(k,url,field,done,then){var f=document.getElementById(k).files[0],b=document.getElementById(k+'b'),s=document.getElementById(k+'s'),p=document.getElementById(k+'p');
+if(!f){s.textContent='Pick the file first.';s.className='s e';return}b.disabled=true;s.className='s';s.textContent='Uploading...';
+var d=new FormData();d.append(field,f,f.name);var x=new XMLHttpRequest();x.open('POST',url+'?size='+f.size);
+x.upload.onprogress=function(e){if(e.lengthComputable)p.style.width=Math.round(e.loaded/e.total*100)+'%'};
+x.onload=function(){if(x.status===200){s.textContent=done;if(then)then()}else{s.className='s e';s.textContent=x.responseText||('Failed ('+x.status+')');b.disabled=false}};
+x.onerror=function(){s.className='s e';s.textContent='Upload failed - check the connection and retry.';b.disabled=false};x.send(d)}
+document.getElementById('fsb').onclick=function(){up('fs','/ota/update/fs','filesystem','Web UI installed - opening it...',function(){setTimeout(function(){location.reload()},1500)})};
+document.getElementById('fwb').onclick=function(){up('fw','/ota/update','firmware','Firmware installed - rebooting. Reload this page in ~20 s.')};
+</script></body></html>)HTML";
+
 // setup webserver function
 void setupWebServer()
 {
-    if (!LittleFS.begin(false))
+    // The access gate must be the first handler on the server (WiFi AP trusted,
+    // home-network requests need Basic auth, nothing but setup before a password).
+    setupWebAccess();
+
+    // The firmware never depends on the filesystem - it only holds the web UI.
+    // Mount it if it looks sane (fsMountSafe: a LittleFS superblock that fits
+    // the partition, so a half-written image can't trip an lfs assert and
+    // boot-loop us), and start the server either way: without a UI, "/" is
+    // the recovery page and the /ota/* and /api/* endpoints all still work.
+    if (fsMountSafe() && fsUiAvailable())
     {
-        DEBUG("LittleFS mount failed!"); // littleFS didn't mount
-        // add a warning visual - flashing LED?
-        return;
+        DEBUG("LittleFS mounted successfully");
     }
-    DEBUG("LittleFS mounted successfully");
+    else
+    {
+        DEBUG("LittleFS: no usable web UI - serving the recovery page at /");
+    }
 
-    // When "/" or "/index.html" is requested and the AP is still open (no WiFi
-    // password set), redirect to the first-run setup page. Both routes need the
-    // same guard because serveStatic("/", ...) serves /index.html directly,
-    // bypassing the "/" handler.
-    auto rootHandler = [](AsyncWebServerRequest *request) {
-        if (!isDeviceProvisioned()) {
-            request->redirect("/setup");
-            return;
+    // index.html streamed from LittleFS (chunked, low-heap) with no-cache
+    // headers; it must never be cached. Decided per request, so a filesystem
+    // upload from the recovery page switches straight over to the real UI.
+    webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+                 {
+        AsyncWebServerResponse *res;
+        if (fsUiAvailable()) {
+            res = request->beginResponse(LittleFS, "/index.html", "text/html");
+        } else {
+            String html = FPSTR(RECOVERY_HTML);
+            html.replace("%FW%", FW_VERSION);
+            res = request->beginResponse(200, "text/html", html);
         }
-        request->send(LittleFS, "/index.html", "text/html");
-    };
-    webServer.on("/", HTTP_GET, rootHandler);
-    webServer.on("/index.html", HTTP_GET, rootHandler);
+        res->addHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        res->addHeader("Pragma", "no-cache");
+        request->send(res); });
 
-    // Static assets only once provisioned; otherwise the filter drops the request
-    // through to onNotFound (end of setupAPI), which redirects to /setup
-    webServer.serveStatic("/", LittleFS, "/")
-        .setDefaultFile("index.html")
-        .setFilter([](AsyncWebServerRequest *request) -> bool {
-            return isDeviceProvisioned();
-        });
+    // app.js / style.css: "no-cache" means the browser keeps a copy but asks
+    // every time (If-None-Match against the ETag the handler derives from the
+    // file's LittleFS mtime/size) and gets a 304 unless the file changed.
+    // Previously max-age=1y with a hand-bumped ?v= in index.html - which got
+    // forgotten, so phones ran a stale app.js against new HTML and buttons
+    // on new cards did nothing.
+    // The filter keeps the handler out of the way while nothing is mounted -
+    // otherwise every /api request first asks LittleFS.exists() and logs an
+    // "File system is not mounted" error.
+    webServer.serveStatic("/", LittleFS, "/").setDefaultFile("index.html").setCacheControl("no-cache")
+        .setFilter([](AsyncWebServerRequest *request) { return fsMounted(); });
 
     webServer.begin(); // begin the webServer
     DEBUG("Web server started");
-
-    if (MDNS.begin("openhaldex"))
-    {
-        MDNS.addService("http", "tcp", 80);
-        DEBUG("mDNS responder started: openhaldex.local");
-    }
+    // mDNS is already started in setupWiFi(); don't re-init it here.
 }
 
 // setup main section for handling requests
@@ -1063,7 +1238,9 @@ void setupAPI()
 
     // GET /api/dashboard - retrieve live status data (polled regularly by JS)
     webServer.on("/api/dashboard", HTTP_GET, [](AsyncWebServerRequest *request)
-                 { statusOutgoing(request); });
+                 {
+                     otaNoteWebActivity(); // a browser is on the UI - hold WiFi up even if it came in via the home router
+                     statusOutgoing(request); });
 
     // GET /api/uds/read - UDS read-by-identifier helper
     webServer.on("/api/uds/read", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -1083,30 +1260,24 @@ void setupAPI()
                      uint32_t requestId = strtoul(reqP->value().c_str(), nullptr, 16);
                      uint32_t responseId = strtoul(resP->value().c_str(), nullptr, 16);
                      uint16_t did = (uint16_t)strtoul(didP->value().c_str(), nullptr, 16);
+                     // Optional bus selector: 0 = chassis (default), 1 = Haldex side.
+                     auto busP = request->getParam("bus", false);
+                     const uint8_t bus = busP ? (uint8_t)(strtoul(busP->value().c_str(), nullptr, 10) != 0) : 0;
 
-                     if (responseId == 0)
+                     // A malformed req/res parses to 0 via strtoul, which would transmit
+                     // on CAN ID 0x0 (highest priority on the bus) or wait on an ID that
+                     // never comes - reject both.
+                     if (requestId == 0 || requestId > 0x1FFFFFFFu || responseId == 0 || responseId > 0x1FFFFFFFu)
                      {
                          JsonDocument response;
                          response["success"] = false;
-                         response["error"] = "Invalid response ID";
+                         response["error"] = "Invalid request/response ID";
                          sendJSON(request, 400, response);
                          return;
                      }
 
-                     // A malformed req parses to 0 via strtoul, which would
-                     // transmit the UDS request on CAN ID 0x0 - reject it the
-                     // same way as an invalid responseId.
-                     if (requestId == 0)
-                     {
-                         JsonDocument response;
-                         response["success"] = false;
-                         response["error"] = "Invalid request ID";
-                         sendJSON(request, 400, response);
-                         return;
-                     }
-
-                     // One read at a time: udsWebRespId doubles as the busy flag,
-                     // and two concurrent reads would fight over the queue.
+                     // One read at a time: udsWebRespId doubles as the busy flag, and
+                     // two concurrent reads would fight over the tap queue.
                      if (udsWebRespId != 0)
                      {
                          JsonDocument response;
@@ -1129,15 +1300,16 @@ void setupAPI()
                          return;
                      }
 
-                     // Responses arrive via the parseCAN_chs tap (a copy - the
-                     // gateway path still forwards the frame), so this never
-                     // steals frames from the bridge. The 300 ms timeout bounds
-                     // how long this handler can hold the async_tcp task; UDS
-                     // single-frame replies land well inside it.
+                     // Responses arrive via the parse-task copy-tap for the chosen bus
+                     // (the frame still flows through the gateway), so this never steals
+                     // frames from the bridge. The 300 ms timeout bounds how long this
+                     // handler holds the async_tcp task; single-frame replies land well
+                     // inside it.
                      xQueueReset(udsWebRxQueue);
+                     udsWebBus = bus;
                      udsWebRespId = responseId;
 
-                     OpenHaldexC6::UDS uds(twai_bus_0, udsWebRxQueue);
+                     OpenHaldexC6::UDS uds(bus ? twai_bus_1 : twai_bus_0, udsWebRxQueue);
                      uint8_t buffer[256];
                      size_t bufferLen = sizeof(buffer);
                      const bool ok = uds.readDataByIdentifier(requestId, responseId, did, buffer, bufferLen, 300);
@@ -1169,17 +1341,18 @@ void setupAPI()
                      data["progress"]   = (uint8_t)haldexLearnStep;
                      data["currentCF"]  = (uint8_t)haldexLearnCF;
                      data["currentEng"] = received_haldex_engagement;
-                     // read flag + table under the lock so a table mid-publish
-                     // is never serialized half-old half-new
-                     xSemaphoreTake(stateMutex, portMAX_DELAY);
-                     data["tableValid"] = haldexLearnTableValid;
-                     if (haldexLearnTableValid)
+                     // read flag + table under the lock so a table mid-publish is
+                     // never serialized half-old half-new
                      {
-                         JsonArray table = data["table"].to<JsonArray>();
-                         for (uint8_t i = 0; i <= 100; i++)
-                             table.add(haldexLearnTable[i]);
+                         StateLock lk;
+                         data["tableValid"] = haldexLearnTableValid;
+                         if (haldexLearnTableValid)
+                         {
+                             JsonArray table = data["table"].to<JsonArray>();
+                             for (uint8_t i = 0; i <= 100; i++)
+                                 table.add(haldexLearnTable[i]);
+                         }
                      }
-                     xSemaphoreGive(stateMutex);
                      sendJSON(request, 200, data); });
 
     // ===== POST ENDPOINTS =====
@@ -1190,8 +1363,6 @@ void setupAPI()
         { (void)request; }, nullptr,
         [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
         {
-            // No HTTP auth: network access is gated by the WiFi AP password (the
-            // single auth boundary). parseJSON owns the _tempObject body buffer.
             parseJSON(request, data, len, index, total, settingsIncoming);
         });
 
@@ -1213,7 +1384,9 @@ void setupAPI()
             parseJSON(request, data, len, index, total, tuneIncoming);
         });
 
-    // GET /api/maps - list the on-device save slots (names only, empty = free)
+    // ===== On-device map slots (Edge contract) =====
+
+    // GET /api/maps - list the save slots (names only, empty = free)
     webServer.on("/api/maps", HTTP_GET, [](AsyncWebServerRequest *request)
                  {
         char names[MAP_SLOT_COUNT][MAP_NAME_MAX];
@@ -1231,15 +1404,10 @@ void setupAPI()
         }
         sendJSON(request, 200, resp); });
 
-    // GET /api/maps/get?index=N - load one slot's tune into the same shape the
-    // editor's /api/tune save uses, so the browser can drop it straight in.
+    // GET /api/maps/get?index=N - one slot's tune, in the shape /api/tune takes
     webServer.on("/api/maps/get", HTTP_GET, [](AsyncWebServerRequest *request)
                  {
-        if (!request->hasParam("index"))
-        {
-            JsonDocument resp; resp["ok"] = false; resp["error"] = "Missing 'index'";
-            sendJSON(request, 400, resp); return;
-        }
+        if (!request->hasParam("index")) { mapsError(request, 400, "Missing 'index'"); return; }
         int idx = request->getParam("index")->value().toInt();
         uint16_t s[speedArrayCount];
         uint8_t t[throttleArrayCount];
@@ -1247,8 +1415,8 @@ void setupAPI()
         char name[MAP_NAME_MAX];
         if (idx < 0 || idx >= MAP_SLOT_COUNT || !mapSlotLoad((uint8_t)idx, s, t, l, name))
         {
-            JsonDocument resp; resp["ok"] = false; resp["error"] = "Empty or invalid slot";
-            sendJSON(request, 404, resp); return;
+            mapsError(request, 404, "Empty or invalid slot");
+            return;
         }
         JsonDocument resp;
         resp["ok"] = true;
@@ -1295,10 +1463,10 @@ void setupAPI()
                          sendJSON(request, 200, resp);
                          return;
                      }
-                     // Speed interlock: the sweep ramps to full lock; refuse to
-                     // start it in a moving car. The sweep also aborts itself if
-                     // the car moves off mid-learn (see haldexLearnTask).
-                     if (received_vehicle_speed > learnMaxSpeed)
+                     // Speed interlock: the sweep ramps to full lock; refuse to start
+                     // it in a moving car. The sweep also aborts itself if the car
+                     // moves off mid-learn (runLearnSweep, progress 103).
+                     if (!learn_speed_ok(received_vehicle_speed))
                      {
                          JsonDocument resp;
                          resp["ok"]    = false;
@@ -1319,22 +1487,237 @@ void setupAPI()
                      resp["ok"] = true;
                      sendJSON(request, 200, resp); });
 
+    // POST /api/ble/forget - drop every bonded phone, new pairing code; the next phone pairs without it
+    webServer.on("/api/ble/forget", HTTP_POST, [](AsyncWebServerRequest *request)
+                 {
+                     JsonDocument resp;
+                     resp["ok"] = bleForgetBonds();
+                     sendJSON(request, 200, resp); });
+
     // POST /api/learn/clear - discard the stored learn table and revert to formula
     webServer.on("/api/learn/clear", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
-                     xSemaphoreTake(stateMutex, portMAX_DELAY);
                      haldexLearnTableValid = false;
                      memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
-                     xSemaphoreGive(stateMutex);
+                     JsonDocument resp;
+                     resp["ok"] = true;
+                     sendJSON(request, 200, resp); });
+
+    // GET /api/longlearn/status - phase/progress, per-block verdicts, sweep log
+    // and live sweep position. Results stay available after the run finishes
+    // (until the next run) so the UI can show and export them.
+    webServer.on("/api/longlearn/status", HTTP_GET, [](AsyncWebServerRequest *request)
+                 {
+                     JsonDocument data;
+                     data["active"]     = (bool)longLearnActive;
+                     data["phase"]      = (uint8_t)longLearnPhase;
+                     data["sweepIdx"]   = (uint8_t)longLearnSweepIdx;
+                     data["sweepTotal"] = (uint8_t)longLearnSweepTotal;
+                     data["currentBit"] = (int)longLearnCurrentBit;
+                     data["generation"] = longLearnGeneration;
+                     data["testAll"]    = longLearnTestAll;
+                     data["floorNow"]   = esp14MinFloorPct;
+                     data["floorStart"] = longLearnFloorStart;
+                     data["floorResult"]= longLearnFloorResult;
+                     data["bpkNow"]       = bpkCeilingNm;
+                     data["bpkStart"]     = longLearnBpkStart;
+                     data["bpkAdjusted"]  = longLearnBpkAdjusted;
+                     data["fixHunting"]   = fixHunting;
+                     data["isStandalone"] = isStandalone;
+                     const uint32_t endMs = longLearnActive ? millis() : longLearnEndMs;
+                     data["elapsedS"]   = (longLearnStartMs && endMs >= longLearnStartMs) ? (endMs - longLearnStartMs) / 1000 : 0;
+                     // live sweep position (mirrors /api/learn/status)
+                     data["cf"]   = (uint8_t)haldexLearnCF;
+                     data["eng"]  = received_haldex_engagement;
+                     data["step"] = (uint8_t)haldexLearnStep;
+
+                     auto putScore = [](JsonObject o, const LearnScore &sc)
+                     {
+                         o["reach"]      = sc.reach;
+                         o["maxStep"]    = sc.maxStep;
+                         o["engageCF"]   = sc.engageCF;
+                         o["engageJump"] = sc.engageJump;
+                         o["score"]      = sc.score;
+                         o["smooth"]     = sc.smooth;
+                     };
+                     if (longLearnBaselineValid)
+                         putScore(data["baseline"].to<JsonObject>(), longLearnBaseline);
+                     if (longLearnFinalValid)
+                         putScore(data["final"].to<JsonObject>(), longLearnFinal);
+
+                     // Per-block verdicts for the generation the run belongs to
+                     // (or the current generation when idle) with live enable state.
+                     const int gi = (longLearnPhase != LL_IDLE) ? (int)longLearnGenIdx : frameEditGenIdx(haldexGeneration);
+                     char maskHex[20] = "";
+                     if (gi >= 0)
+                     {
+                         const uint64_t m = activeFrameEditMask()[gi];
+                         snprintf(maskHex, sizeof(maskHex), "0x%08lX", (unsigned long)(m & 0xFFFFFFFFULL));
+                         JsonArray blocks = data["blocks"].to<JsonArray>();
+                         for (uint16_t i = 0; i < frameEditBlockCount; i++)
+                         {
+                             if (frameEditBlocks[i].genIdx != (uint8_t)gi)
+                                 continue;
+                             JsonObject o = blocks.add<JsonObject>();
+                             o["bit"]     = frameEditBlocks[i].bit;
+                             o["name"]    = frameEditBlocks[i].name;
+                             o["canId"]   = frameEditBlocks[i].canId;
+                             o["enabled"] = (bool)((m >> frameEditBlocks[i].bit) & 0x1ULL);
+                             o["def"]     = (bool)((frameEditMaskDefaults[gi] >> frameEditBlocks[i].bit) & 0x1ULL);
+                             o["result"]  = longLearnBlockResult[frameEditBlocks[i].bit];
+                         }
+                     }
+                     data["mask"] = maskHex;
+
+                     JsonArray sweeps = data["sweeps"].to<JsonArray>();
+                     for (uint8_t i = 0; i < longLearnSweepCount; i++)
+                     {
+                         const LongLearnSweep &e = longLearnSweeps[i];
+                         JsonObject o = sweeps.add<JsonObject>();
+                         o["kind"]    = e.kind;
+                         o["bit"]     = e.bit;
+                         o["floor"]   = e.floorPct;
+                         o["bpk"]     = e.bpkNm;
+                         o["verdict"] = e.verdict;
+                         putScore(o, e.s);
+                     }
+                     sendJSON(request, 200, data); });
+
+    // POST /api/longlearn/start - optional body {"testAll": bool}
+    webServer.on(
+        "/api/longlearn/start", HTTP_POST, [](AsyncWebServerRequest *request)
+        {
+            if (request->contentLength() == 0)
+                longLearnStartIncoming(request, String("{}")); // body-less start
+        },
+        nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+        {
+            parseJSON(request, data, len, index, total, longLearnStartIncoming);
+        });
+
+    // POST /api/longlearn/cancel - abort; previous mask/floor/table are restored
+    webServer.on("/api/longlearn/cancel", HTTP_POST, [](AsyncWebServerRequest *request)
+                 {
+                     longLearnCancel = true;
+                     haldexLearnCancel = true; // also stops the sweep in progress
                      JsonDocument resp;
                      resp["ok"] = true;
                      sendJSON(request, 200, resp); });
 
     // NOTE: route registration order matters. ESPAsyncWebServer's URL matcher
     // accepts a registered "/api/wifi" handler for any URL that starts with
-    // "/api/wifi/" (see WebHandlerImpl.h canHandle). The more-specific routes 
+    // "/api/wifi/" (see WebHandlerImpl.h canHandle). The more-specific routes
     // must be registered BEFORE "/api/wifi"
-    // or POSTs to "/api/wifi/ssid" get missed 
+    // or POSTs to "/api/wifi/ssid" get missed
+
+    // ---- Bridge mode (PR #39, louij2): home-network STA alongside the AP ----
+
+    // GET /api/wifi/scan - nearby networks for the home-WiFi picker.
+    // The scan is ASYNC: the first call starts it and answers {"scanning":true};
+    // the page polls until the list comes back. A blocking scan here would sit
+    // inside the async_tcp task for 2-3 s, which is exactly the task that has
+    // to keep serving everyone else. One radio is shared between AP and STA,
+    // so the AP drops off-channel for the scan's duration either way - hence
+    // this is a manual action behind the SSID field, never automatic.
+    webServer.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *request)
+                 {
+                     JsonDocument resp;
+                     int16_t n = WiFi.scanComplete();
+                     if (n == WIFI_SCAN_RUNNING)
+                     {
+                         resp["scanning"] = true;
+                     }
+                     else if (n == WIFI_SCAN_FAILED || n < 0)
+                     {
+                         // nothing in progress (or a previous one failed): kick one off
+                         WiFi.scanNetworks(true /*async*/, false /*hidden*/);
+                         resp["scanning"] = true;
+                     }
+                     else
+                     {
+                         resp["scanning"] = false;
+                         JsonArray nets = resp["networks"].to<JsonArray>();
+                         // de-duplicate by SSID keeping the strongest, then sort strongest first
+                         struct Net { String ssid; int32_t rssi; bool secure; };
+                         std::vector<Net> list;
+                         for (int16_t i = 0; i < n; i++)
+                         {
+                             String ssid = WiFi.SSID(i);
+                             if (ssid.length() == 0) continue; // hidden - type it in instead
+                             int32_t rssi = WiFi.RSSI(i);
+                             bool merged = false;
+                             for (auto &e : list)
+                                 if (e.ssid == ssid) { if (rssi > e.rssi) e.rssi = rssi; merged = true; break; }
+                             if (!merged) list.push_back({ssid, rssi, WiFi.encryptionType(i) != WIFI_AUTH_OPEN});
+                         }
+                         std::sort(list.begin(), list.end(), [](const Net &a, const Net &b) { return a.rssi > b.rssi; });
+                         for (auto &e : list)
+                         {
+                             JsonObject o = nets.add<JsonObject>();
+                             o["ssid"] = e.ssid;
+                             o["rssi"] = e.rssi;
+                             o["secure"] = e.secure;
+                         }
+                         WiFi.scanDelete(); // next GET starts a fresh scan
+                     }
+                     sendJSON(request, 200, resp); });
+
+    // POST /api/wifi/sta/reset - forget the home network, back to AP only
+    webServer.on("/api/wifi/sta/reset", HTTP_POST, [](AsyncWebServerRequest *request)
+                 {
+                     resetWifiSta();
+                     JsonDocument resp;
+                     resp["ok"] = true;
+                     sendJSON(request, 200, resp); });
+
+    // GET /api/wifi/sta - bridge-mode status. Password is write-only, never returned.
+    webServer.on("/api/wifi/sta", HTTP_GET, [](AsyncWebServerRequest *request)
+                 {
+                     otaNoteWebActivity();
+                     JsonDocument resp;
+                     resp["ssid"] = wifiStaSsid;
+                     resp["passwordSet"] = (strlen(wifiStaPassword) >= 8);
+                     resp["connected"] = wifiStaConnected;
+                     resp["ip"] = wifiStaIP;
+                     if (wifiStaConnected) resp["rssi"] = WiFi.RSSI();
+                     else resp["rssi"] = nullptr;
+                     sendJSON(request, 200, resp); });
+
+    // POST /api/wifi/sta {ssid, password} - set (empty ssid = disable) and restart AP(+STA)
+    webServer.on(
+        "/api/wifi/sta", HTTP_POST, [](AsyncWebServerRequest *request)
+        { (void)request; }, nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+        {
+            parseJSON(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
+                      {
+                JsonDocument d;
+                JsonDocument resp;
+                auto fail = [&](const char *why) { resp["ok"] = false; resp["error"] = why; sendJSON(req, 400, resp); };
+                if (deserializeJson(d, body) != DeserializationError::Ok) { fail("Invalid JSON"); return; }
+                if (!d["ssid"].is<const char *>()) { fail("Missing 'ssid' field"); return; }
+                const char *newSsid = d["ssid"];
+                const size_t ssidLen = strlen(newSsid);
+                if (ssidLen > 32) { fail("SSID too long (max 32)"); return; }
+                for (size_t i = 0; i < ssidLen; ++i)
+                {
+                    unsigned char c = (unsigned char)newSsid[i];
+                    if (c < 0x20 || c > 0x7E) { fail("SSID must be printable ASCII"); return; }
+                }
+                const char *newPwd = d["password"].is<const char *>() ? d["password"].as<const char *>() : "";
+                const size_t pwdLen = strlen(newPwd);
+                if (pwdLen > 0 && pwdLen < 8) { fail("Password must be at least 8 characters, or empty for an open network"); return; }
+                if (pwdLen >= 65) { fail("Password too long (max 64)"); return; }
+                memset(wifiStaSsid, 0, sizeof(wifiStaSsid));
+                strncpy(wifiStaSsid, newSsid, sizeof(wifiStaSsid) - 1);
+                memset(wifiStaPassword, 0, sizeof(wifiStaPassword));
+                if (pwdLen > 0) strncpy(wifiStaPassword, newPwd, sizeof(wifiStaPassword) - 1);
+                rebootWiFi = true; // restart AP(+STA) with the new credentials
+                resp["ok"] = true;
+                resp["ssid"] = wifiStaSsid;
+                sendJSON(req, 200, resp); });
+        });
 
     // POST /api/wifi/ssid/reset - restore factory SSID and restart AP
     webServer.on("/api/wifi/ssid/reset", HTTP_POST, [](AsyncWebServerRequest *request)
@@ -1403,13 +1786,16 @@ void setupAPI()
                 sendJSON(req, 200, resp); });
         });
 
-    // POST /api/wifi/reset - clear password and restart AP as open network
+    // POST /api/wifi/reset - kept so old pages get a clear answer. The AP always
+    // needs a password, so there is no reset-to-open: set a new password instead
+    // (POST /api/wifi). Forgotten password: long-press the mode button on the
+    // unit, which clears it and sends the next browser to the setup page.
     webServer.on("/api/wifi/reset", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
-                     resetWifiPassword();
                      JsonDocument resp;
-                     resp["ok"] = true;
-                     sendJSON(request, 200, resp); });
+                     resp["ok"] = false;
+                     resp["error"] = "The AP always needs a password - set a new one instead";
+                     sendJSON(request, 409, resp); });
 
     // GET /api/wifi - return whether a WiFi password is currently set
     webServer.on("/api/wifi", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -1439,18 +1825,14 @@ void setupAPI()
                 }
                 const char *newPwd = d["password"];
                 const size_t pwdLen = strlen(newPwd);
-                if (pwdLen > 0 && pwdLen < 8)
+                if (!access_ap_password_valid(newPwd))
                 {
-                    JsonDocument resp; resp["ok"] = false; resp["error"] = "Password must be at least 8 characters or empty";
-                    sendJSON(req, 400, resp); return;
-                }
-                if (pwdLen >= 65)
-                {
-                    JsonDocument resp; resp["ok"] = false; resp["error"] = "Password too long (max 64)";
+                    // An empty password would leave an open AP - never accepted.
+                    JsonDocument resp; resp["ok"] = false; resp["error"] = "Password must be 8 to 63 characters (the AP always needs one)";
                     sendJSON(req, 400, resp); return;
                 }
                 memset(wifiPassword, 0, sizeof(wifiPassword));
-                if (pwdLen > 0) strncpy(wifiPassword, newPwd, sizeof(wifiPassword) - 1);
+                strncpy(wifiPassword, newPwd, sizeof(wifiPassword) - 1);
                 rebootWiFi = true; // restart AP with new credentials
                 JsonDocument resp;
                 resp["ok"] = true;
@@ -1458,30 +1840,17 @@ void setupAPI()
                 sendJSON(req, 200, resp); });
         });
 
-    // While the AP is still open (no WiFi password set), every unmatched URL
-    // (including static assets blocked by the serveStatic filter) redirects to the
-    // first-run setup page.
-    webServer.onNotFound([](AsyncWebServerRequest *request) {
-        // Phone OS "is there internet here?" probes land here as unmatched URLs.
-        // We are an offline device (a car AP with no uplink), so we must answer
-        // these so the phone concludes "no internet" and keeps its own cellular
-        // data alive for messages, calls, and OTA downloads. The wrong answers:
-        //   - a 204 tells the OS "internet works" (a lie; the phone would then
-        //     route everything through us and go dark), and
-        //   - a redirect/200-with-body reads as a captive portal ("Sign in to
-        //     WiFi"), which can also trap the phone off cellular.
-        // The right answer is a bare error that is neither: a plain 404 with no
-        // body and no redirect. The OS reads that as no-internet-not-captive and
-        // leaves cellular in charge. This runs before the setup redirect so the
-        // probe is answered the same way whether or not the AP is provisioned.
+    // Unmatched URLs. Phone OS "is there internet here?" probes land here. This is
+    // an offline car AP with no uplink, so the probe must get an answer that is
+    // neither "internet works" (a 204 would pull the phone's traffic onto us) nor a
+    // captive portal (a redirect or a page makes the phone show "sign in to WiFi"):
+    // a bare 404 with no body and no redirect. The phone then keeps cellular for
+    // calls, messages and downloads.
+    webServer.onNotFound([](AsyncWebServerRequest *request)
+                         {
         if (is_captive_probe(request->url().c_str())) {
             request->send(404, "text/plain", ""); // no body, no redirect
             return;
         }
-        if (!isDeviceProvisioned()) {
-            request->redirect("/setup");
-            return;
-        }
-        request->send(404, "text/plain", "Not found");
-    });
+        request->send(404, "text/plain", "Not found"); });
 }

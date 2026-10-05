@@ -1,13 +1,45 @@
 #include <OpenHaldexC6_EEP.h>          // include the header for EEPROM/preference functions
 #include <OpenHaldexC6_Calculations.h> // for haldexLearnTable and learn globals
 
+// Persisted settings: ONE NVS namespace ("openhaldex") with a "seeded" sentinel.
+//
+// History: the old code called pref.begin() once per setting NAME. Preferences
+// ignores a begin() while a namespace is open, so only the FIRST call won and
+// every key de-facto lived under that first name ("broadcastOpen"); earlier
+// builds ended up under the LAST name ("udsMQBEn") or "learnTable". First-run
+// detection also read a key that was never written, so the seed branch never ran.
+// readEEP() therefore opens "openhaldex" and, when it is not seeded yet, migrates
+// any of those legacy namespaces once. Key names are unchanged, so a v8 Edge unit
+// (already on "openhaldex") and a stock upstream unit both keep their settings.
+
+// Namespace holding the previous layout, probed read-only. "haldexGen" is written
+// by every prior firmware, so its presence marks a real install.
+static bool legacyNamespaceHasData(Preferences &legacy, bool &opened)
+{
+  static const char *const candidates[] = {"broadcastOpen", "udsMQBEn", "learnTable"};
+  opened = false;
+  for (const char *ns : candidates)
+  {
+    if (legacy.begin(ns, true))
+    {
+      if (legacy.isKey("haldexGen"))
+      {
+        opened = true;
+        return true;
+      }
+      legacy.end();
+    }
+  }
+  return false;
+}
+
 // Load every persisted setting from one open Preferences handle into the runtime
-// globals, using the canonical keys. Shared by the normal-run LOAD path (source =
-// the 'openhaldex' namespace) and the one-time legacy MIGRATE path (source = a
-// read-only handle on the old de-facto namespace) so the two cannot drift apart.
-// Does NOT touch the lastMode->state.mode mapping; the caller applies that once
-// after the branch.
-static void loadSettingsFrom(Preferences &src)
+// globals. Shared by the normal-run LOAD path (source = the 'openhaldex'
+// namespace) and the one-time legacy MIGRATE path (read-only legacy handle) so
+// the two cannot drift apart. Missing keys keep the compiled default. Returns
+// true when a frame-edit mask was missing/migrated and should be persisted.
+// Does NOT touch the lastMode->state.mode mapping; the caller applies that once.
+static bool loadSettingsFrom(Preferences &src)
 {
   broadcastOpenHaldexOverCAN = src.getBool("broadcastOpen", false);      // load broadcast setting
   isStandalone = src.getBool("isStandalone", false);                     // load standalone setting
@@ -23,16 +55,23 @@ static void loadSettingsFrom(Preferences &src)
   disableOnboardButton = src.getBool("dsbOnboardBtn", false);            // load disable onboard button
   disableExternalButton = src.getBool("dsbExtBtn", false);               // load disable external button
   fixHunting = src.getBool("fixHunting", false);                         // load Motor_11 BPK-mode toggle
+  dangerZoneEnabled = src.getBool("dangerZone", false);                  // load Danger Zone (full-duty 50:50)
   bpkCeilingNm = src.getUShort("bpkCeilNm", 220);                        // load BPK per-car lock calibration (Nm)
-  esp14MinFloorPct = src.getUChar("esp14MinFl", 0);                      // load ESP_14 Min-band floor (% of full command)
+  // Launch PWM floor: v8 key "esp14MinFl"; a stock v9 unit stored it as "esp14Floor".
+  esp14MinFloorPct = src.isKey("esp14MinFl") ? src.getUChar("esp14MinFl", 0) : src.getUChar("esp14Floor", 0);
+  src.getString("llNotes", longLearnNotes, sizeof(longLearnNotes));      // load Long Learn notes (empty if absent)
   canSleepEnabled = src.getBool("canSleepEn", true);                     // load CAN-wake light sleep enable
   canSleepAggressive = src.getBool("canSleepAggr", false);               // load aggressive CAN sleep enable
   lpWakeThresholdFps = src.getUShort("lpWakeFps", 1100);                 // load LP wake threshold (fps)
+  benchMode = src.getBool("benchMode", false);                           // load bench mode
+  bleEnabled = src.getBool("bleEn", true);                               // load BLE enable
+  blePasskey = src.getUInt("blePasskey", 0);                             // load BLE pairing code (0 = generate)
   ledBrightness = src.getUChar("ledBrightness", led_brightness_default); // load LED brightness
 
   otaUpdate = src.getBool("otaUpdate", false);                          // load OTA update flag
   haldexGeneration = src.getUChar("haldexGen", 1);                      // load haldex generation with default
   if (haldexGeneration == 5) haldexGeneration = 50;                     // migrate legacy Gen5 -> Gen5 (0CQ)
+  udsApplyDefaultIds(); // UDS pair follows the generation from boot (0x71E/0x788 for the VAQ)
   tcForceModeValue = src.getUChar("tcFMV", 2);                          // load TC force mode value (default 50:50)
   hazardForceModeValue = src.getUChar("hazFMV", 2);                     // load Hazard force mode value
   extBtnForceModeValue = src.getUChar("extFMV", 2);                     // load ExtBtn force mode value
@@ -55,83 +94,178 @@ static void loadSettingsFrom(Preferences &src)
   {
     strncpy(wifiSsid, wifiHostNameDefault, sizeof(wifiSsid) - 1); // restore factory default
   }
-  udsMQBEnabled = src.getBool("udsMQBEn", false);                   // load UDS MQB polling enable
+  src.getString("wifiStaSsid", wifiStaSsid, sizeof(wifiStaSsid));        // home-network SSID (missing = "" = bridge mode off)
+  src.getString("wifiStaPwd", wifiStaPassword, sizeof(wifiStaPassword)); // home-network password
+  liveDiagEnabled = src.getBool("udsMQBEn", false);                 // load live-diagnostics enable (legacy key name)
   forceModesPriority = src.getUChar("forceModesPrio", 0);           // load force-modes priority (0=TC>Haz>Ext)
-  // Lock ramp times moved from %/s to ms-for-full-travel. Prefer the new key;
-  // if only the legacy %/s key is present (a device seeded on older firmware, or
-  // a legacy-namespace migration), convert it once via lock_ramp_ms_from_rate.
-  // The converted value is re-persisted on the next writeEEP under the ms key.
+
+  // Lock ramp times are milliseconds for a full travel. Prefer the ms keys; if
+  // only the %/s key is present (a unit seeded on older firmware, or a legacy
+  // namespace migration) convert it once. Re-persisted under the ms key.
   if (src.isKey("lockReleaseMs"))
     lockReleaseRampMs = src.getUShort("lockReleaseMs", 500);        // load lock release ramp (ms)
   else
-    lockReleaseRampMs = lock_ramp_ms_from_rate(src.getFloat("lockReleaseRate", 120.0f)); // migrate legacy %/s
+    lockReleaseRampMs = lock_ramp_ms_from_rate(src.getFloat("lockReleaseRate", 120.0f)); // migrate %/s
   if (src.isKey("lockEngageMs"))
     lockEngageRampMs = src.getUShort("lockEngageMs", 0);            // load lock engage ramp (ms)
   else
-    lockEngageRampMs = lock_ramp_ms_from_rate(src.getFloat("lockEngageRate", 0.0f));      // migrate legacy %/s
+    lockEngageRampMs = lock_ramp_ms_from_rate(src.getFloat("lockEngageRate", 0.0f));      // migrate %/s
   lockReleaseEnabled = src.getBool("lockReleaseEn", true);          // load lock release enable
-  steeringGainEnabled = src.getBool("steerGainEn", false);          // load steering-gain toggle
-  steeringGainStartDeg = src.getUShort("steerGainStart", 45);       // load steering-gain start angle
-  steeringGainFullDeg = src.getUShort("steerGainFull", 180);        // load steering-gain full angle
-  steeringGainFloor = src.getUChar("steerGainFloor", 50);           // load steering-gain floor percent
+
+  // Steering lock taper: the v9 breakpoint curve is the one implementation. A unit
+  // that stored the v8 three-knob taper (steerGain*) and no curve yet gets the
+  // equivalent curve built from it, so the setting carries over.
+  steeringScaleEnabled = src.isKey("steerScaleEn") ? src.getBool("steerScaleEn", true)
+                                                   : src.getBool("steerGainEn", true);
+  if (src.getBytesLength("steerArray") == sizeof(steeringArray) &&
+      src.getBytesLength("steerScale") == sizeof(steeringLockScaleArray))
+  {
+    src.getBytes("steerArray", &steeringArray, sizeof(steeringArray));             // breakpoints (deg)
+    src.getBytes("steerScale", &steeringLockScaleArray, sizeof(steeringLockScaleArray)); // 0-100 % multipliers
+  }
+  else if (src.isKey("steerGainStart"))
+  {
+    steering_curve_from_taper(src.getUShort("steerGainStart", 45), src.getUShort("steerGainFull", 180),
+                              src.getUChar("steerGainFloor", 50), steeringArray, steeringLockScaleArray);
+  }
+
+  // Per-car corner-slip geometry (Calibrate tab)
+  slipWheelbaseMm = src.getUShort("slipWb", slipWheelbaseMm);
+  slipTrackFrontMm = src.getUShort("slipTf", slipTrackFrontMm);
+  slipTrackRearMm = src.getUShort("slipTr", slipTrackRearMm);
+  slipSteeringRatio = src.getFloat("slipRatio", slipSteeringRatio);
+  slipMinSpeedRaw = src.getUShort("slipMin", slipMinSpeedRaw);
+
+  // Frame-edit masks (which CAN frame blocks are edited, per generation)
+  bool masksChanged = false;
+  if (src.getBytesLength("feMask") == sizeof(frameEditMask))
+  {
+    src.getBytes("feMask", frameEditMask, sizeof(frameEditMask));
+    if (frameEditMask[FE_GEN_50] == 0x000003FFULL)
+    {
+      frameEditMask[FE_GEN_50] = frameEditMaskDefaults[FE_GEN_50]; // migrate old 0CQ normal default: Motor_14/ESP_07 passthrough
+      masksChanged = true;
+    }
+  }
+  else
+  {
+    for (uint8_t i = 0; i < FE_GEN_COUNT; i++)
+      frameEditMask[i] = frameEditMaskDefaults[i]; // legacy install: use normal defaults
+    masksChanged = true;
+  }
+  if (src.getBytesLength("feMaskSA") == sizeof(frameEditMaskSA))
+    src.getBytes("feMaskSA", frameEditMaskSA, sizeof(frameEditMaskSA));
+  else
+  {
+    for (uint8_t i = 0; i < FE_GEN_COUNT; i++)
+      frameEditMaskSA[i] = frameEditMaskDefaultsSA[i]; // legacy install: use standalone all-on defaults
+    masksChanged = true;
+  }
+  return masksChanged;
 }
 
 // Persist every runtime-global setting into the canonical 'openhaldex' handle
-// (`pref`), using the same keys/putters as writeEEP. Shared by the first-run SEED
-// path (globals hold the compiled defaults) and the legacy MIGRATE path (globals
-// were just populated from the legacy namespace) so the new namespace ends up
-// equivalent to a steady-state writeEEP cycle.
+// (`pref`). Shared by the first-run SEED path (globals hold the compiled
+// defaults), the legacy MIGRATE path (globals were just loaded from the legacy
+// namespace) and the periodic writeEEP task, so the namespace ends up identical
+// whichever way it was filled. Multi-field structures are snapshotted under
+// stateMutex first, so a persisted table is never one caught mid-update.
 static void persistSettingsToPref()
 {
-  pref.putBool("broadcastOpen", broadcastOpenHaldexOverCAN); // save broadcast setting
-  pref.putBool("isStandalone", isStandalone);                // save standalone setting
-  pref.putBool("useCANifAvail", useCANifAvailable);          // save use CAN if available setting
-  pref.putBool("disableControl", disableController);         // save controller disable
-  pref.putBool("followBrake", followBrake);                  // save follow brake
-  pref.putBool("followHandbrake", followHandbrake);          // save follow handbrake
-  pref.putBool("invertBrake", invertBrake);                  // save invert brake
-  pref.putBool("invertHandbrake", invertHandbrake);          // save invert handbrake
-  pref.putBool("tcForceMode", tcForceMode);                  // save tc force mode
-  pref.putBool("extBtnForceMode", extBtnForceMode);          // save ext button force mode
-  pref.putBool("hazardForceMode", hazardForceMode);          // save hazard force mode
-  pref.putBool("dsbOnboardBtn", disableOnboardButton);       // save disable onboard button
-  pref.putBool("dsbExtBtn", disableExternalButton);          // save disable external button
-  pref.putBool("fixHunting", fixHunting);                    // save Motor_11 BPK-mode toggle
-  pref.putUShort("bpkCeilNm", bpkCeilingNm);                 // save BPK per-car lock calibration (Nm)
-  pref.putUChar("esp14MinFl", esp14MinFloorPct);             // save ESP_14 Min-band floor (% of full command)
-  pref.putBool("canSleepEn", canSleepEnabled);               // save CAN-wake light sleep enable
-  pref.putBool("canSleepAggr", canSleepAggressive);          // save aggressive CAN sleep enable
-  pref.putUShort("lpWakeFps", lpWakeThresholdFps);           // save LP wake threshold (fps)
-  pref.putUChar("ledBrightness", ledBrightness);             // save LED brightness
+  static uint8_t snapSpeed[sizeof(speedArray)];
+  static uint8_t snapThrottle[sizeof(throttleArray)];
+  static uint8_t snapLock[sizeof(lockArray)];
+  static uint8_t snapLearn[sizeof(haldexLearnTable)];
+  static uint8_t snapSteer[sizeof(steeringArray)];
+  static uint8_t snapSteerScale[sizeof(steeringLockScaleArray)];
+  static uint64_t snapMask[FE_GEN_COUNT];
+  static uint64_t snapMaskSA[FE_GEN_COUNT];
+  bool snapLearnValid;
+  uint8_t snapDisableThrottle;
+  uint16_t snapDisengageUnder;
+  uint16_t snapDisengageAbove;
+  uint16_t snapReleaseMs, snapEngageMs;
+  if (stateMutex != nullptr)
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+  memcpy(snapSpeed, speedArray, sizeof(speedArray));
+  memcpy(snapThrottle, throttleArray, sizeof(throttleArray));
+  memcpy(snapLock, lockArray, sizeof(lockArray));
+  memcpy(snapLearn, haldexLearnTable, sizeof(haldexLearnTable));
+  memcpy(snapSteer, steeringArray, sizeof(steeringArray));
+  memcpy(snapSteerScale, steeringLockScaleArray, sizeof(steeringLockScaleArray));
+  memcpy(snapMask, frameEditMask, sizeof(snapMask));
+  memcpy(snapMaskSA, frameEditMaskSA, sizeof(snapMaskSA));
+  snapLearnValid = haldexLearnTableValid;
+  snapDisableThrottle = disableThrottle;
+  snapDisengageUnder = disengageUnderSpeed;
+  snapDisengageAbove = disengageAboveSpeed;
+  snapReleaseMs = lockReleaseRampMs;
+  snapEngageMs = lockEngageRampMs;
+  if (stateMutex != nullptr)
+    xSemaphoreGive(stateMutex);
 
-  pref.putBool("otaUpdate", otaUpdate);                                            // save OTA update flag
-  pref.putUChar("haldexGen", haldexGeneration);                                    // save haldex generation
-  pref.putUChar("tcFMV", tcForceModeValue);                                        // save TC force mode value
-  pref.putUChar("hazFMV", hazardForceModeValue);                                   // save Hazard force mode value
-  pref.putUChar("extFMV", extBtnForceModeValue);                                   // save ExtBtn force mode value
-  pref.putUChar("lastMode", lastMode);                                             // save last used mode
-  pref.putUChar("disableThrottle", disableThrottle);                               // save throttle disable
-  pref.putUShort("disengageUSpeed", disengageUnderSpeed);                          // save disengage under speed
-  pref.putUShort("disengageASpeed", disengageAboveSpeed);                          // save disengage above speed
-  pref.putBytes("speedArray", (byte *)(&speedArray), sizeof(speedArray));          // save speed array bytes
-  pref.putBytes("throttleArray", (byte *)(&throttleArray), sizeof(throttleArray)); // save throttle array bytes
-  pref.putBytes("lockArray", (byte *)(&lockArray), sizeof(lockArray));             // save lock array bytes
-  pref.putBool("learnOK", haldexLearnTableValid);                                  // save learn table valid flag
-  if (haldexLearnTableValid)
+  pref.putBool("broadcastOpen", broadcastOpenHaldexOverCAN); // broadcast setting
+  pref.putBool("isStandalone", isStandalone);                // standalone setting
+  pref.putBool("useCANifAvail", useCANifAvailable);          // use CAN if available setting
+  pref.putBool("disableControl", disableController);         // controller disable
+  pref.putBool("followBrake", followBrake);                  // follow brake
+  pref.putBool("followHandbrake", followHandbrake);          // follow handbrake
+  pref.putBool("invertBrake", invertBrake);                  // invert brake
+  pref.putBool("invertHandbrake", invertHandbrake);          // invert handbrake
+  pref.putBool("tcForceMode", tcForceMode);                  // tc force mode
+  pref.putBool("extBtnForceMode", extBtnForceMode);          // ext button force mode
+  pref.putBool("hazardForceMode", hazardForceMode);          // hazard force mode
+  pref.putBool("dsbOnboardBtn", disableOnboardButton);       // disable onboard button
+  pref.putBool("dsbExtBtn", disableExternalButton);          // disable external button
+  pref.putBool("fixHunting", fixHunting);                    // Motor_11 BPK-mode toggle
+  pref.putBool("dangerZone", dangerZoneEnabled);             // Danger Zone (full-duty 50:50)
+  pref.putUShort("bpkCeilNm", bpkCeilingNm);                 // BPK per-car lock calibration (Nm)
+  pref.putUChar("esp14MinFl", esp14MinFloorPct);             // ESP_14 Min-band floor (% of full command)
+  pref.putString("llNotes", longLearnNotes);                 // Long Learn chassis/car notes
+  pref.putBool("canSleepEn", canSleepEnabled);               // CAN-wake light sleep enable
+  pref.putBool("canSleepAggr", canSleepAggressive);          // aggressive CAN sleep enable
+  pref.putUShort("lpWakeFps", lpWakeThresholdFps);           // LP wake threshold (fps)
+  pref.putBool("benchMode", benchMode);                      // bench mode
+  pref.putBool("bleEn", bleEnabled);                         // BLE enable
+  pref.putUInt("blePasskey", blePasskey);                    // BLE pairing code
+  pref.putUChar("ledBrightness", ledBrightness);             // LED brightness
+
+  pref.putBool("otaUpdate", otaUpdate);                      // OTA update flag
+  pref.putUChar("haldexGen", haldexGeneration);              // haldex generation
+  pref.putUChar("tcFMV", tcForceModeValue);                  // TC force mode value
+  pref.putUChar("hazFMV", hazardForceModeValue);             // Hazard force mode value
+  pref.putUChar("extFMV", extBtnForceModeValue);             // ExtBtn force mode value
+  pref.putUChar("lastMode", lastMode);                       // last used mode
+  pref.putUChar("disableThrottle", snapDisableThrottle);     // throttle disable
+  pref.putUShort("disengageUSpeed", snapDisengageUnder);     // disengage under speed
+  pref.putUShort("disengageASpeed", snapDisengageAbove);     // disengage above speed
+  pref.putBytes("speedArray", snapSpeed, sizeof(snapSpeed));          // speed array
+  pref.putBytes("throttleArray", snapThrottle, sizeof(snapThrottle)); // throttle array
+  pref.putBytes("lockArray", snapLock, sizeof(snapLock));             // lock array
+  pref.putBool("learnOK", snapLearnValid);                            // learn table valid flag
+  if (snapLearnValid)
   {
-    pref.putBytes("learnTbl", haldexLearnTable, sizeof(haldexLearnTable)); // save learn table bytes
+    pref.putBytes("learnTbl", snapLearn, sizeof(snapLearn)); // learn table bytes
   }
-  pref.putString("wifiPwd", wifiPassword);                 // save WiFi password (empty = open network)
-  pref.putString("wifiSsid", wifiSsid);                    // save WiFi SSID
-  pref.putBool("udsMQBEn", udsMQBEnabled);                 // save UDS MQB polling enable
-  pref.putUChar("forceModesPrio", forceModesPriority);     // save force-modes priority order
-  pref.putUShort("lockReleaseMs", lockReleaseRampMs); // save lock release ramp (ms)
-  pref.putUShort("lockEngageMs", lockEngageRampMs);   // save lock engage ramp (ms)
-  pref.putBool("lockReleaseEn", lockReleaseEnabled);       // save lock release enable
-  pref.putBool("steerGainEn", steeringGainEnabled);        // save steering-gain toggle
-  pref.putUShort("steerGainStart", steeringGainStartDeg);  // save steering-gain start angle
-  pref.putUShort("steerGainFull", steeringGainFullDeg);    // save steering-gain full angle
-  pref.putUChar("steerGainFloor", steeringGainFloor);      // save steering-gain floor percent
+  pref.putString("wifiPwd", wifiPassword);        // WiFi AP password
+  pref.putString("wifiSsid", wifiSsid);           // WiFi AP SSID
+  pref.putString("wifiStaSsid", wifiStaSsid);     // home-network (bridge mode) SSID
+  pref.putString("wifiStaPwd", wifiStaPassword);  // home-network password
+  pref.putBool("udsMQBEn", liveDiagEnabled);      // live-diagnostics enable (legacy key name)
+  pref.putUChar("forceModesPrio", forceModesPriority); // force-modes priority order
+  pref.putUShort("lockReleaseMs", snapReleaseMs); // lock release ramp (ms)
+  pref.putUShort("lockEngageMs", snapEngageMs);   // lock engage ramp (ms)
+  pref.putBool("lockReleaseEn", lockReleaseEnabled); // lock release enable
+  pref.putBool("steerScaleEn", steeringScaleEnabled); // steering-scale enable
+  pref.putBytes("steerArray", snapSteer, sizeof(snapSteer));           // steering breakpoints
+  pref.putBytes("steerScale", snapSteerScale, sizeof(snapSteerScale)); // steering lock-scale
+  pref.putUShort("slipWb", slipWheelbaseMm);      // slip geometry: wheelbase
+  pref.putUShort("slipTf", slipTrackFrontMm);     // slip geometry: front track
+  pref.putUShort("slipTr", slipTrackRearMm);      // slip geometry: rear track
+  pref.putFloat("slipRatio", slipSteeringRatio);  // slip geometry: steering ratio
+  pref.putUShort("slipMin", slipMinSpeedRaw);     // slip geometry: min speed
+  pref.putBytes("feMask", snapMask, sizeof(snapMask));       // frame-edit masks
+  pref.putBytes("feMaskSA", snapMaskSA, sizeof(snapMaskSA)); // standalone frame-edit masks
 }
 
 void readEEP() // function to read stored preferences into runtime variables
@@ -140,44 +274,27 @@ void readEEP() // function to read stored preferences into runtime variables
   DEBUG("EEPROM initialising!"); // debug: EEPROM init start
 #endif
 
-  // Single NVS namespace + seeded sentinel + legacy migration.
-  // One namespace for everything: the old code called pref.begin() once per
-  // setting NAME, so only the last begin() won and every key de-facto lived in
-  // that namespace. Worse, first-run detection read a key ("haldexGeneration")
-  // that was never written, so the seed branch never ran. `pref` stays open on
-  // "openhaldex" for the lifetime of the program; writeEEP reuses it without
-  // re-opening.
   if (!pref.begin("openhaldex", false)) // open the one canonical namespace (read/write)
   {
     // NVS partition inaccessible (corrupt or full): boot on in-memory defaults.
     DEBUG("[EEP] pref.begin failed - booting on defaults");
     return;
   }
-  bool seeded = pref.isKey("seeded"); // first-run sentinel (a missing key => not seeded)
+  const bool seeded = pref.isKey("seeded"); // first-run sentinel (a missing key => not seeded)
 
-  // Read-only peek at the de-facto legacy namespace through a SEPARATE handle so
-  // we never disturb (or hold open) the old namespace. With this file's original
-  // begin() list the last call won, so prior installs of this firmware stored
-  // everything under "udsMQBEn"; still-older builds ended the list differently
-  // (e.g. "learnTable"), so both candidates are checked. "haldexGen" is written
-  // by every prior firmware, so its presence marks a real install.
+  // Read-only peek at the previous layout through a SEPARATE handle so the old
+  // namespace is never disturbed. Only looked at when we are not seeded yet.
   Preferences legacy;
-  bool legacyOpen = legacy.begin("udsMQBEn", true); // read-only
-  bool legacyHas = legacyOpen && legacy.isKey("haldexGen");
-  if (!legacyHas)
-  {
-    if (legacyOpen)
-    {
-      legacy.end();
-    }
-    legacyOpen = legacy.begin("learnTable", true); // read-only, older builds
-    legacyHas = legacyOpen && legacy.isKey("haldexGen");
-  }
+  bool legacyOpen = false;
+  const bool legacyHas = !seeded && legacyNamespaceHasData(legacy, legacyOpen);
 
   switch (eeprom_init_action(seeded, legacyHas)) // single LOAD/MIGRATE/SEED decision point
   {
   case EEP_LOAD_EXISTING: // normal run: load stored values from the canonical namespace
-    loadSettingsFrom(pref);
+    if (loadSettingsFrom(pref))
+    {
+      persistSettingsToPref(); // a frame-edit mask was missing/migrated: write the fix back
+    }
     break;
   case EEP_MIGRATE_LEGACY: // one-time: carry a prior install's settings forward, then mark seeded
 #if detailedDebugEEPF
@@ -201,32 +318,23 @@ void readEEP() // function to read stored preferences into runtime variables
     legacy.end(); // done with the read-only legacy handle; `pref` stays open
   }
 
-  // Map the (now-populated) lastMode to the runtime enum for every path, so a
-  // freshly seeded or migrated device boots into a coherent mode just like a load.
-  // The mapping is a pure seam (mode_from_last_mode) so it is host-tested; an
-  // out-of-range stored byte falls back to MODE_FWD.
+  // Map the (now-populated) lastMode to the runtime enum for every path. The
+  // mapping is a pure seam (mode_from_last_mode), host-tested; an out-of-range
+  // stored byte falls back to MODE_FWD.
   state.mode = mode_from_last_mode(lastMode);
 
   // Write the normalized value back into lastMode so the raw stored byte can
-  // never leak downstream: settingsOutgoing() reports data["mode"] = lastMode,
-  // and the standalone mode-0 path casts (openhaldex_mode_t)lastMode directly.
-  // This also self-heals a device already carrying a corrupt byte (e.g. a
-  // generation number 41/50/51 written by the old firmware) - the next writeEEP
-  // persists the sane 0-5 value, so the corruption is cleared on first boot.
+  // never leak downstream (the settings API reports it; the standalone mode-0
+  // path casts it directly). Also self-heals a device already carrying a corrupt
+  // byte (a generation number 41/50/51 written by an old bug): the next
+  // writeEEP persists the sane 0-5 value.
   lastMode = (uint8_t)state.mode;
 
 #if detailedDebugEEP
   DEBUG("EEPROM initialised with...");                                                           // debug: print loaded prefs
   DEBUG("    Broadcast OpenHaldex over CAN: %s", broadcastOpenHaldexOverCAN ? "true" : "false"); // debug broadcast
   DEBUG("    Standalone mode: %s", isStandalone ? "true" : "false");                             // debug standalone
-  DEBUG("    Follow handbrake: %s", followHandbrake ? "true" : "false");                         // debug handbrake
-  DEBUG("    Follow brake: %s", followBrake ? "true" : "false");                                 // debug brake
-  DEBUG("    Invert handbrake: %s", invertHandbrake ? "true" : "false");                         // debug invert handbrake
-  DEBUG("    Invert brake: %s", invertBrake ? "true" : "false");                                 // debug invert brake
-  DEBUG("    tcForceMode: %s", tcForceMode ? "true" : "false");                                  // debug tc force mode
-  DEBUG("    extBtnForceMode: %s", extBtnForceMode ? "true" : "false");                          // debug ext btn force
-
-  DEBUG("    Haldex Generation: %d", haldexGeneration); // debug haldex gen
+  DEBUG("    Haldex Generation: %d", haldexGeneration);                                          // debug haldex gen
   DEBUG("    Force Mode TC/Haz/Ext: %d/%d/%d", tcForceModeValue, hazardForceModeValue, extBtnForceModeValue);
   DEBUG("    Last Mode: %d", lastMode);                      // debug last mode
   DEBUG("    Disable Under Speed: %d", disengageUnderSpeed); // debug disengage under speed
@@ -245,96 +353,7 @@ void writeEEP(void *arg) // task function to periodically write preferences
     DEBUG("Writing EEPROM..."); // debug: writing prefs
 #endif
 
-    // Snapshot the multi-field shared structures under a short hold, then run
-    // the slow NVS writes from the copies - so a persisted config is never an
-    // expert/learn table caught mid-update. Single-word settings are written
-    // directly below.
-    static uint8_t snapSpeed[sizeof(speedArray)];
-    static uint8_t snapThrottle[sizeof(throttleArray)];
-    static uint8_t snapLock[sizeof(lockArray)];
-    static uint8_t snapLearn[sizeof(haldexLearnTable)];
-    bool snapLearnValid;
-    uint8_t snapDisableThrottle;
-    uint16_t snapDisengageUnder;
-    uint16_t snapDisengageAbove;
-    xSemaphoreTake(stateMutex, portMAX_DELAY);
-    memcpy(snapSpeed, speedArray, sizeof(speedArray));
-    memcpy(snapThrottle, throttleArray, sizeof(throttleArray));
-    memcpy(snapLock, lockArray, sizeof(lockArray));
-    memcpy(snapLearn, haldexLearnTable, sizeof(haldexLearnTable));
-    snapLearnValid = haldexLearnTableValid;
-    snapDisableThrottle = disableThrottle;
-    snapDisengageUnder = disengageUnderSpeed;
-    snapDisengageAbove = disengageAboveSpeed;
-    xSemaphoreGive(stateMutex);
-
-    // update EEP only if changes have been made
-    pref.putBool("broadcastOpen", broadcastOpenHaldexOverCAN); // write broadcast setting
-    pref.putBool("isStandalone", isStandalone);                // write standalone setting
-    pref.putBool("useCANifAvail", useCANifAvailable);          // write use CAN if available setting
-    pref.putBool("disableControl", disableController);         // write controller disable
-    pref.putBool("followBrake", followBrake);                  // write follow brake
-    pref.putBool("followHandbrake", followHandbrake);          // write follow handbrake
-    pref.putBool("invertBrake", invertBrake);                  // write invert brake
-    pref.putBool("invertHandbrake", invertHandbrake);          // write invert handbrake
-    pref.putBool("tcForceMode", tcForceMode);                  // write tc force mode
-    pref.putBool("extBtnForceMode", extBtnForceMode);          // write ext button force mode
-    pref.putBool("hazardForceMode", hazardForceMode);          // write hazard force mode
-    pref.putBool("dsbOnboardBtn", disableOnboardButton);       // write disable onboard button
-    pref.putBool("dsbExtBtn", disableExternalButton);          // write disable external button
-    pref.putBool("fixHunting", fixHunting);                    // write Motor_11 BPK-mode toggle
-    pref.putUShort("bpkCeilNm", bpkCeilingNm);                 // write BPK per-car lock calibration (Nm)
-    pref.putUChar("esp14MinFl", esp14MinFloorPct);             // write ESP_14 Min-band floor (% of full command)
-    pref.putBool("canSleepEn", canSleepEnabled);               // write CAN-wake light sleep enable
-    pref.putBool("canSleepAggr", canSleepAggressive);          // write aggressive CAN sleep enable
-    pref.putUShort("lpWakeFps", lpWakeThresholdFps);           // write LP wake threshold (fps)
-    pref.putUChar("ledBrightness", ledBrightness);             // write LED brightness
-
-    pref.putUChar("haldexGen", haldexGeneration);                                    // write haldex generation
-    pref.putUChar("tcFMV", tcForceModeValue);                                        // write TC force mode value
-    pref.putUChar("hazFMV", hazardForceModeValue);                                   // write Hazard force mode value
-    pref.putUChar("extFMV", extBtnForceModeValue);                                   // write ExtBtn force mode value
-    pref.putUChar("lastMode", lastMode);                                             // write last mode
-    pref.putUChar("disableThrottle", snapDisableThrottle);                     // write throttle disable
-    pref.putUShort("disengageUSpeed", snapDisengageUnder);                     // write disengage under speed
-    pref.putUShort("disengageASpeed", snapDisengageAbove);                     // write disengage above speed
-    pref.putBytes("speedArray", snapSpeed, sizeof(snapSpeed));                 // write speed array
-    pref.putBytes("throttleArray", snapThrottle, sizeof(snapThrottle));        // write throttle array
-    pref.putBytes("lockArray", snapLock, sizeof(snapLock));                    // write lock array
-    pref.putBool("learnOK", snapLearnValid);                                   // write learn valid flag
-    if (snapLearnValid)
-    {
-      pref.putBytes("learnTbl", snapLearn, sizeof(snapLearn)); // write learn table bytes
-    }
-    pref.putString("wifiSsid", wifiSsid);    // write WiFi AP SSID
-    pref.putString("wifiPwd", wifiPassword); // write WiFi AP password
-    pref.putBool("udsMQBEn", udsMQBEnabled); // write UDS MQB polling enable
-    pref.putUChar("forceModesPrio", forceModesPriority);      // write force-modes priority order
-    pref.putUShort("lockReleaseMs", lockReleaseRampMs);  // write lock release ramp (ms)
-    pref.putUShort("lockEngageMs", lockEngageRampMs);    // write lock engage ramp (ms)
-    pref.putBool("lockReleaseEn", lockReleaseEnabled);        // write lock release enable
-    pref.putBool("steerGainEn", steeringGainEnabled);         // write steering-gain toggle
-    pref.putUShort("steerGainStart", steeringGainStartDeg);   // write steering-gain start angle
-    pref.putUShort("steerGainFull", steeringGainFullDeg);     // write steering-gain full angle
-    pref.putUChar("steerGainFloor", steeringGainFloor);       // write steering-gain floor percent
-
-#if detailedDebugEEP
-    DEBUG("Written EEPROM with data:");                                                            // debug: print written prefs
-    DEBUG("    Broadcast OpenHaldex over CAN: %s", broadcastOpenHaldexOverCAN ? "true" : "false"); // debug broadcast
-    DEBUG("    Standalone mode: %s", isStandalone ? "true" : "false");                             // debug standalone
-    DEBUG("    Follow handbrake: %s", followHandbrake ? "true" : "false");                         // debug handbrake
-    DEBUG("    Follow brake: %s", followBrake ? "true" : "false");                                 // debug brake
-    DEBUG("    Invert handbrake: %s", invertHandbrake ? "true" : "false");                         // debug invert handbrake
-    DEBUG("    Invert brake: %s", invertBrake ? "true" : "false");                                 // debug invert brake
-    DEBUG("    Haldex Generation: %d", haldexGeneration);                                          // debug haldex gen
-    DEBUG("    tcForceMode: %s", tcForceMode ? "true" : "false");                                  // debug tc force mode
-    DEBUG("    extBtnForceMode: %s", extBtnForceMode ? "true" : "false");                          // debug ext btn force
-    DEBUG("    Force Mode TC/Haz/Ext: %d/%d/%d", tcForceModeValue, hazardForceModeValue, extBtnForceModeValue);
-    DEBUG("    Last Mode: %d", lastMode);                      // debug last mode
-    DEBUG("    Disable Below Throttle: %d", disableThrottle);  // debug disable throttle
-    DEBUG("    Disable Under Speed: %d", disengageUnderSpeed); // debug disengage under speed
-    DEBUG("    Disable Above Speed: %d", disengageAboveSpeed); // debug disengage above speed
-#endif
+    persistSettingsToPref(); // update EEP (the NVS layer skips writes of unchanged values)
 
     vTaskDelay(eepRefresh / portTICK_PERIOD_MS); // wait before next write
   } // end while

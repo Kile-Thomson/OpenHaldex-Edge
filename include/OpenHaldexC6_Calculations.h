@@ -37,7 +37,16 @@ float lock_rate_limit_step(float current, float target, uint16_t engage_ms, uint
 // otherwise ms = round(100000 / rate), clamped to the 1000 ms slider ceiling
 // (so a very slow legacy rate becomes the 1 s maximum). Pure, host-testable.
 uint16_t lock_ramp_ms_from_rate(float rate_per_sec);
-uint8_t steering_gain_percent(uint16_t angle_tenths, uint16_t start_deg, uint16_t full_deg, uint8_t floor_percent);
+
+// v9 %/s lock-release rate (web + BLE, 5..500) <-> the ms-for-full-travel the
+// ramp stores. See Calculations.cpp.
+uint16_t lock_ramp_ms_from_pct_rate(uint16_t rate_per_sec);
+uint16_t lock_pct_rate_from_ramp_ms(uint16_t ramp_ms);
+float steering_curve_percent(float angle, const uint16_t *arr, const uint8_t *scale, uint8_t count);
+void steering_taper_from_curve(const uint16_t *arr, const uint8_t *scale, uint8_t count,
+                               uint16_t &start_deg, uint16_t &full_deg, uint8_t &floor_pct);
+void steering_curve_from_taper(uint16_t start_deg, uint16_t full_deg, uint8_t floor_pct,
+                               uint16_t arr[steeringArrayCount], uint8_t scale[steeringArrayCount]);
 
 // Geometry-compensated per-corner wheel slip. Given the four raw ABS wheel-speed
 // counts (any consistent unit; MQB 0x0B2 is 0.0075 km/h/LSB) in [FL, FR, RL, RR]
@@ -62,6 +71,136 @@ static float get_expert_lock_target();
 uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert);
 void getLockData(twai_message_t& rx_message_chs);
 void startHaldexLearn();
+
+// Blocking learn sweep (CF 0..100, 300 ms/step) - the body of the manual Learn
+// task, shared with Long Learn. Must be called from a task. preHoldMs > 0 holds
+// CF=0 first until the Haldex has released (or the hold times out) so residual
+// engagement from a previous sweep does not lift the bottom of the table.
+// Returns true when the sweep completed and recorded at least one non-zero
+// engagement (i.e. haldexLearnTableValid was set).
+bool runLearnSweep(uint32_t preHoldMs = 0);
+
+// Gen5 (0CQ/VAQ) ESP_19 wheel-speed simulation, shared by standalone frame
+// generation and normal-mode in-place editing (both call this so the two
+// copies can't drift). Wheel speed MUST keep changing or the Haldex slowly
+// disengages (found by trial and error on real hardware). A lock_target-
+// proportional front/rear delta was tried here and made things worse on the
+// car (lock faded then collapsed to 0%), so this stays the flat, proven
+// dither. Fills data[0..7] and advances the shared counters.
+void fill_esp19_wheel_speeds(uint8_t data[8]);
+
+// Motor_11 (0x0A7) BPK packing, shared by standalone generation and normal-mode
+// in-place editing so the two can't drift. Fills data[0..7] (byte 0 is left as
+// a CRC placeholder for the caller) from the runtime BPK tunables in defs.h.
+void fill_motor11_bpk(uint8_t data[8], uint8_t counter);
+
+// Stores what the Motor_11 BPK packer computed this cycle, for the serial lab
+// task to stream out. Called from both BPK code paths at the Motor_11 rate.
+void bpkLogSample(uint16_t torqueNm, uint16_t istNm, uint16_t solfNm);
+
+// ---- Serial lab (USB diagnostic harness) ------------------------------------
+// Line-based control + telemetry over USB serial so a host script can drive
+// ceiling/floor/lock/packing values and watch the Haldex respond in real time,
+// instead of rebuilding firmware per experiment. See OpenHaldexC6_SerialLab.cpp.
+void setupSerialLab();
+
+// ---- Long Learn (automated frame-block bisection) --------------------------
+// Scores a learn table for "smoothness": the Haldex may jump on its first
+// engage step (e.g. 0 -> 30 %) but after that must climb without steps larger
+// than LL_STEP_MAX and reach LL_REACH_MIN by CF 100.
+struct LearnScore
+{
+    uint8_t reach;      // engagement at CF 100
+    uint8_t maxStep;    // largest single-step rise AFTER the first engage step
+    uint8_t engageCF;   // first CF with non-zero engagement (101 = never)
+    uint8_t engageJump; // engagement recorded at engageCF
+    uint8_t score;      // 0-100 composite used to rank configurations
+    bool smooth;        // passes all three smoothness criteria
+};
+#define LL_REACH_MIN 90     // % engagement required at CF 100
+#define LL_STEP_MAX 8       // largest tolerated single-step rise after engage
+#define LL_ENGAGE_MAX_CF 60 // must have started engaging by this CF
+#define LL_TOLERANCE 4      // score band treated as "no change" (sweep-to-sweep noise)
+#define LL_MID_CF 40        // part-lock point blocks are also checked at, so a
+                            // block that only matters mid-range isn't dropped
+                            // on the strength of a clean 100% reading alone
+#define LL_BPK_ACCEPT 90    // return% Long Learn treats as good enough before it
+                            // starts changing BPK settings. 100% is the aim, but
+                            // 90+ is accepted rather than chasing the last few
+                            // points into the pressure-relief regime.
+void scoreLearnTable(const uint8_t *table, LearnScore &out);
+
+enum
+{
+    LL_IDLE = 0,
+    LL_SWEEP,     // "Initial Sweep": baseline / (Gen5) PWM-floor tuning with every block on
+    LL_BPK,       // "BPK Adjust" (Gen5 only): raise the torque ceiling until 100% is reachable
+    LL_BLOCKS,    // "Sweeping Blocks": quick on/off check of each candidate block at 100%
+    LL_FINAL,     // confirmation sweep on the final set
+    LL_DONE,
+    LL_CANCELLED,
+    LL_FAILED     // no Haldex data / sweep aborted - previous state restored
+};
+enum
+{
+    LLB_UNTESTED = 0, // candidate, not yet tested
+    LLB_CORE,         // default block - kept on, never tested (unless Test All)
+    LLB_NEEDED,       // removing it degraded the learn -> kept on
+    LLB_REMOVED,      // removing it made no difference -> left off
+    LLB_HARMFUL       // removing it improved the learn -> still kept on (any effect = keep), flagged
+};
+enum
+{
+    LLS_BASELINE = 0, // first all-on sweep
+    LLS_FLOOR,        // further all-on sweep at a different PWM floor
+    LLS_BLOCK,        // one candidate block removed (quick on/off check)
+    LLS_FINAL,        // confirmation sweep
+    LLS_BPK           // BPK torque-ceiling candidate (Gen5 only, quick check)
+};
+struct LongLearnSweep
+{
+    uint8_t kind;     // LLS_*
+    uint8_t bit;      // block bit under test (0xFF = n/a)
+    uint8_t floorPct; // esp14MinFloorPct during the sweep
+    uint16_t bpkNm;   // bpkCeilingNm during the sweep (Gen5 only; 0 elsewhere)
+    uint8_t verdict;  // LLB_* for block sweeps, 1/0 smooth/reached-100 for the rest
+    LearnScore s;
+};
+#define LL_MAX_SWEEPS 80
+#define LL_NOTES_LEN 200
+
+extern volatile bool longLearnActive;
+extern volatile bool longLearnCancel;
+extern volatile bool longLearnSpeedAborted; // run stopped because the car moved (learn interlock)
+extern volatile uint8_t longLearnPhase;      // LL_*
+extern volatile uint8_t longLearnSweepIdx;   // sweeps completed so far
+extern volatile uint8_t longLearnSweepTotal; // estimated total (exact after the floor phase)
+extern volatile int16_t longLearnCurrentBit; // block being tested (-1 = none)
+extern uint8_t longLearnGenIdx;              // FE_GEN_* the run belongs to
+extern uint8_t longLearnGeneration;          // haldexGeneration the run belongs to
+extern bool longLearnTestAll;                // also bisect the default (core) blocks
+extern uint8_t longLearnBlockResult[64];     // LLB_* per bit
+extern LearnScore longLearnBaseline;
+extern LearnScore longLearnFinal;
+extern bool longLearnBaselineValid;
+extern bool longLearnFinalValid;
+extern uint8_t longLearnFloorStart;  // esp14MinFloorPct before the run
+extern uint8_t longLearnFloorResult; // esp14MinFloorPct chosen by the run
+extern uint64_t longLearnMaskStart;  // active mask before the run (restored on cancel)
+extern uint16_t longLearnBpkStart;   // bpkCeilingNm before the run (Gen5; restored on cancel/failure)
+extern bool longLearnBpkAdjusted;    // true if the BPK-adjust phase actually ran this run
+extern LongLearnSweep longLearnSweeps[LL_MAX_SWEEPS];
+extern uint8_t longLearnSweepCount;
+extern uint32_t longLearnStartMs;
+extern uint32_t longLearnEndMs;
+extern char longLearnNotes[LL_NOTES_LEN + 1]; // user chassis/car notes (exported with the report)
+
+bool startLongLearn(bool testAll); // false if already running / not a gated generation
+
+// Steering-angle lock-scale telemetry (for the engagement-split display).
+bool steering_scale_is_active();
+uint8_t steering_scale_requested_pct();
+uint8_t steering_scale_result_pct();
 
 // Scale a received Haldex engagement byte to a 0..100 percentage.
 // Replaces a raw Arduino map(raw, in_min, in_max, 0, 100) at the CAN parse site:
@@ -110,27 +249,14 @@ uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_rec
 // returns 101 (complete) or 102 (complete but no data). Pure apart from the
 // caller-supplied buffers, so the native tests pin the shipped restore logic
 // rather than a mirrored copy (same seam pattern as lpCanActive).
+// True when the learn interlock allows a sweep: speed (km/h) at or below
+// learnMaxSpeed. The sweep commands up to full lock, so it is refused in a
+// moving car at start and aborted if the car moves mid-sweep.
+bool learn_speed_ok(uint16_t speed_kmh);
+
 uint8_t learn_finalize(uint8_t* table, bool* valid,
                        const uint8_t* backup, bool backup_valid,
                        bool cancelled, bool speed_aborted, uint8_t current_step);
-
-// MQB Motor_11 (0x0A7) packing selector. Returns true when the frame must use
-// the DBC-correct BPK packing rather than the empirical V3 packing. V3 pins the
-// primary torque fields (MO_Mom_Soll_Roh/Ist/gefiltert) at full 0xFA regardless
-// of the applied lock, so a learn scan run with Fix Hunting OFF never modulates
-// the dominant torque demand and the Haldex just locks fully the whole sweep -
-// the "sits at 100% regardless" symptom, and a garbage flat learn table. BPK
-// derives every field from the modulated torque, so the sweep is visible. The
-// rule: BPK whenever the user enabled Fix Hunting OR a learn is active OR a valid
-// learn table exists. The table one closes a silent mismatch: a learn always runs
-// under BPK (learn_active forces it), so a learned table maps correction factor to
-// engagement measured against BPK frames. If the user then drove with Fix Hunting
-// off, get_lock_target_adjusted_value would apply that BPK-calibrated table to V3
-// frame bytes - a different frame the calibration was never measured against. So
-// once a table has been learned, drive BPK regardless of the toggle. An untuned
-// user (no table) still gets the legacy V3 default. Pure boolean logic, no Arduino
-// symbols, host-testable.
-bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_table_valid);
 
 // ESP_14 (0x08A) BR_Vorg_*_Min launch-PWM floor. Shared between the standalone
 // frame generator and the CAN-passthrough edit path so the two never drift.
@@ -158,32 +284,15 @@ uint8_t esp14_min_floor(uint8_t floor_pct, uint8_t applied_torque);
 // host-testable in isolation.
 uint8_t esp14_range_max(uint8_t frac_pct, bool lock_active);
 
-// MQB Motor_11 (0x0A7) BPK torque-spoof packer. Fills out[0..7] with the
-// DBC-correct bit-packed engine-torque frame that provokes the Haldex to close
-// the clutch: MO_Mom_Soll_Roh / MO_Mom_Ist_Summe / MO_Mom_Soll_gefiltert are
-// 10-bit little-endian fields at 1 Nm/LSB with offset -509, verified against the
-// opendbc MQB K-matrix (see vault "OpenHaldex - MQB Motor_11 Torque Spoof
-// Verified Against opendbc"). `command` is the lock-modulated demand byte
-// (get_lock_target_adjusted_value(0xFE,false)); it is remapped onto
-// [BPK_FLOOR .. ceil_nm] Nm. `ceil_nm` is the per-car lock calibration: the Nm the
-// frame claims at full command (not a strength dial - higher does not lock harder,
-// it shifts the calibration), clamped to the 509 Nm signal maximum. `ist_nm`/`solf_nm` carry the slew-limited previous values in
-// and the new values out, so the CALLER owns the ramp state across cycles (kept
-// out of the function so it stays pure and host-testable). out[0] is left 0 for
-// the caller to fill with the E2E CRC. No Arduino/TWAI symbols.
-void bpk_pack_motor11(uint8_t out[8], uint8_t command, uint8_t counter,
-                      uint16_t ceil_nm, uint16_t *ist_nm, uint16_t *solf_nm);
-
 // Speed-disengage gate. Returns true when lock is permitted at the
 // given speed: the vehicle must be at or ABOVE disengage_under AND at or BELOW
 // disengage_above. A bound of 0 disables that side (0 = "no lower/upper cut").
 // This replaces the previous inverted, default-defeated expression:
 //   (under==0) || (speed<=under) || (speed>=above)
 // which was always true because disengage_above defaults to 0 (speed>=0), and
-// which disengaged lock in the wrong band. Only the passive drive modes
-// (5050/6040/7525) consult this; expert mode bypasses this gate, while force mode
-// (TC/ESP or external button) returns its lock value before lock_enabled() runs,
-// so launch-control at a standstill still locks. Pure integer logic, no Arduino
+// which disengaged lock in the wrong band. In v9 every lock path consults it (passive modes, Expert and the
+// force-mode triggers, via lock_enabled()), so a disengage cut-off holds however
+// lock was requested. (Edge v8 let Expert and force modes bypass it.) Pure integer logic, no Arduino
 // symbols, host-testable.
 bool speed_disengage_ok(uint16_t speed, uint16_t disengage_under, uint16_t disengage_above);
 
@@ -350,8 +459,8 @@ int uds_parse_sf_rdbi(const uint8_t *data, uint8_t dlc, uint16_t did, uint8_t *o
 bool uds_scale_mqb_did(uint16_t did, const uint8_t *payload, uint8_t len, float &out);
 
 // uds_temp_plausible: true when a decoded Haldex temperature is within a
-// physically possible band (-40..150 °C). The 0x2BE4/0x2BF1 scale is an
-// unvalidated disassembled guess that reads an impossible ~160 °C on the fin
+// physically possible band (-40..150 degC). The 0x2BE4/0x2BF1 scale is an
+// unvalidated disassembled guess that reads an impossible ~160 degC on the fin
 // under load; callers null the display when this returns false rather than
 // showing a value the hardware cannot produce.
 bool uds_temp_plausible(float degC);

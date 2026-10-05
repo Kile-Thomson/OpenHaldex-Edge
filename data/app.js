@@ -226,8 +226,14 @@ function initFullscreen() {
   sync();
 }
 
-// once settings are stored, start applying data where required
+// once settings are stored, start applying data where required. Runs once:
+// initStoredSettings() is also used to refresh values later (e.g. after
+// Forget Paired Phones), and a second pass would bind every listener and
+// timer again.
+let appInitialized = false;
 function initApp() {
+  if (appInitialized) return;
+  appInitialized = true;
   initNavigation();
   initDashboard();
   initDashTiles();
@@ -239,9 +245,16 @@ function initApp() {
   initTuneChart();
   initCalibrate();
   initLearn();
+  initLongLearn();
+  initFrameEditReset();
   initWifiSsid();
   initWifi();
+  initBle();
+  initWifiSta("wifiSta"); // Diagnostics
+  initWifiSta("otaWifiSta"); // Update tab copy: gets the phone online for the GitHub check
+  initBackupRestore();
   initOtaUpdate();
+  initUpdateCheck();
   initFullscreen();
   guardScrollTaps(".toggle"); // stop scroll-flicks from flipping toggles
   guardTrackTaps(".slider", 24); // grab the thumb to move; a track tap does nothing
@@ -252,11 +265,46 @@ function initApp() {
 async function fetchJson(url, options) {
   try {
     const request = await fetch(url, options); // request data from ESP
+    // Over the home network (bridge mode) the module wants HTTP Basic auth. The
+    // browser asks for it on the page load and then reuses it; a 401 here means
+    // that never happened (or the password changed), so say so instead of
+    // failing silently.
+    if (request.status === 401) {
+      noteAuthRequired();
+      return undefined;
+    }
     const result = await request.json(); // wait for response from ESP
     return result;
   } catch (error) {
     console.log("Error:" + error); // Catches and logs any errors
   }
+}
+
+// Shown once when the module answers 401 (home-network access needs a login).
+function noteAuthRequired() {
+  window._authNeeded = true;
+  if (document.getElementById("authBanner")) return;
+  const bar = document.createElement("div");
+  bar.id = "authBanner";
+  bar.className = "auth-banner";
+  bar.setAttribute("role", "alert");
+  bar.innerHTML =
+    "<span>Sign-in needed. On the home network the module asks for a login: user <strong>admin</strong>, " +
+    "password = your access-point WiFi password.</span>";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn-secondary";
+  btn.textContent = "Reload & sign in";
+  btn.addEventListener("click", () => location.reload());
+  bar.appendChild(btn);
+  document.body.appendChild(bar);
+}
+
+function clearAuthRequired() {
+  if (!window._authNeeded) return;
+  window._authNeeded = false;
+  const bar = document.getElementById("authBanner");
+  if (bar) bar.remove();
 }
 
 // initialise stored settings (async function)
@@ -399,6 +447,8 @@ async function initStoredSettings() {
       if (esp14FloorVal) esp14FloorVal.textContent = data.esp14MinFloorPct;
     }
 
+    populateGeometry(data);
+
     const canSleepElem = document.getElementById("canSleepEnabled");
     if (canSleepElem) canSleepElem.checked = data.canSleepEnabled || false;
 
@@ -423,8 +473,32 @@ async function initStoredSettings() {
     const analyzerSerialElem = document.getElementById("analyzerSerial");
     if (analyzerSerialElem) analyzerSerialElem.checked = data.analyzerSerial || false;
 
-    const udsMqbElem = document.getElementById("udsMQBEnabled");
-    if (udsMqbElem) udsMqbElem.checked = data.udsMQBEnabled || false;
+    // Live diagnostics (UDS on Gen5, KWP/TP2.0 on Gen2/4). Older firmware only
+    // knew udsMQBEnabled for the same switch.
+    const liveDiagElem = document.getElementById("liveDiagEnabled");
+    if (liveDiagElem) liveDiagElem.checked = (data.liveDiagEnabled ?? data.udsMQBEnabled) || false;
+
+    const dangerZoneElem = document.getElementById("dangerZoneEnabled");
+    if (dangerZoneElem) dangerZoneElem.checked = data.dangerZoneEnabled || false;
+
+    const benchModeElem = document.getElementById("benchMode");
+    if (benchModeElem) benchModeElem.checked = data.benchMode || false;
+
+    const bleEnabledElem = document.getElementById("bleEnabled");
+    if (bleEnabledElem) bleEnabledElem.checked = data.bleEnabled !== undefined ? data.bleEnabled : true;
+    if (data.blePasskey !== undefined) {
+      blePasskeyCache = data.blePasskey;
+      renderBlePairing(data.bleCodeRequired);
+    }
+
+    const llNotes = document.getElementById("longLearnNotes");
+    if (llNotes && typeof data.longLearnNotes === "string") llNotes.value = data.longLearnNotes;
+
+    const boardRevEl = document.getElementById("BOARD_REV");
+    if (boardRevEl) boardRevEl.textContent = data.boardRev ? `rev ${data.boardRev}` : "--";
+
+    // Per-generation frame blocks (Calibrate tab > Frame blocks)
+    renderFrameBlocks(data.frameBlocks);
 
     // cache for banner / legend
     _tcForceModeValue     = data.tcForceModeValue     ?? 2;
@@ -469,10 +543,10 @@ function setConnStatus(state) {
   if (!el) return;
   el.classList.remove("connected", "stale", "error");
   if (state === "offline") {
-    el.textContent = "Offline";
+    el.textContent = window._authNeeded ? "Sign in" : "Offline";
     el.classList.add("error");
   } else if (state === "stale") {
-    el.textContent = "Reconnecting…";
+    el.textContent = "Reconnecting...";
     el.classList.add("stale");
   } else {
     el.textContent = "Live";
@@ -503,6 +577,7 @@ async function refreshStatus() {
     // got data: link is live. Set this before the render block so a later DOM
     // error can't leave the badge stuck on a stale state.
     refreshStatus._missCount = 0;
+    clearAuthRequired();
     setConnStatus("connected");
 
     // Live frame-rate monitor for LP wake threshold tuning
@@ -627,8 +702,8 @@ async function refreshStatus() {
         : hex2bin(data.haldexState);
 
     updateBannerSubtitle(data);
-    // Gen50 (0CQ/MQB): state byte is Allrad_03 byte 3 (Charisma) — use gen=50 legend.
-    // Gen51 (0AY) and all PQ gens (1/2/4): state byte is Allrad_1 byte 0 (PQ fault flags) — use gen-specific PQ legend.
+    // Gen50 (0CQ/MQB): state byte is Allrad_03 byte 3 (Charisma) - use gen=50 legend.
+    // Gen51 (0AY) and all PQ gens (1/2/4): state byte is Allrad_1 byte 0 (PQ fault flags) - use gen-specific PQ legend.
     const legendGen = _haldexGeneration;
     renderHaldexStateLegend(data.haldexState, legendGen);
 
@@ -656,6 +731,8 @@ async function refreshStatus() {
     // full UDS details block is gated on whether the poller is returning data.
     const udsDetails = document.getElementById("udsDetails");
     if (udsDetails) udsDetails.style.display = uds ? "" : "none";
+    const udsStatusEl = document.getElementById("udsStatus");
+    if (udsStatusEl) udsStatusEl.textContent = uds && data.diagToolActive ? "Paused: an external diagnostic tool was detected." : "";
     if (uds) {
       document.getElementById("udsTerminalVoltage").textContent = uds.terminalVoltage?.toFixed(1) ?? "--";
       document.getElementById("udsModuleTemp").textContent = uds.moduleTemp?.toFixed(1) ?? "--";
@@ -675,6 +752,8 @@ async function refreshStatus() {
         },
       );
     }
+
+    updateV9Status(data, chassisOk, haldexOk);
 
     refreshTrace(data); // update the live trace (editor-grid cell highlight)
 
@@ -729,7 +808,7 @@ function renderHaldexStateLegend(rawHex, gen) {
   const val = parseInt(rawHex, 16);
 
   if (gen === 1 || gen === 2 || gen === 4 || gen === 51) {
-    // PQ (Gen 1/2/4): Allrad_1 byte 0 — fault/status flags
+    // PQ (Gen 1/2/4): Allrad_1 byte 0 - fault/status flags
     const bits = [
       { bit: 0, label: "Clutch Fault",           desc: "Fehler_Allrad_Kupplung" },
       { bit: 1, label: "Over-Temp Protection",    desc: "Übertemperaturschutz" },
@@ -747,17 +826,17 @@ function renderHaldexStateLegend(rawHex, gen) {
     });
     html += `</table>`;
     el.innerHTML = html;
-  } else if (gen === 50) {
+  } else if (gen === 50 || gen === 52) {
     // MQB (Gen 5): Allrad_03 byte 3 = ALR_Charisma_FahrPr / ALR_Charisma_Status
     const prog = val & 0x0F;
     const flags = (val >> 4) & 0x0F;
     el.innerHTML =
       `<table><tr><th>Field</th><th>Value</th></tr>` +
-      `<tr><td>Driving Programme (bits 0–3)</td><td>${prog}</td></tr>` +
-      `<tr><td>Status Flags (bits 4–7)</td><td>0x${flags.toString(16).toUpperCase()}</td></tr>` +
-      `</table><p style="margin:4px 0 0;">Note: bit 4–5 of byte 1 = longitudinal lock state (0=open, 1=partial, 2=closed) — separate from this byte.</p>`;
+      `<tr><td>Driving Programme (bits 0-3)</td><td>${prog}</td></tr>` +
+      `<tr><td>Status Flags (bits 4-7)</td><td>0x${flags.toString(16).toUpperCase()}</td></tr>` +
+      `</table><p style="margin:4px 0 0;">Note: bit 4-5 of byte 1 = longitudinal lock state (0=open, 1=partial, 2=closed) - separate from this byte.</p>`;
   } else if (gen === 41) {
-    el.innerHTML = `<em>Gen 4.1: dedicated status variables used — see Gen41 card above.</em>`;
+    el.innerHTML = `<em>Gen 4.1: dedicated status variables used - see Gen41 card above.</em>`;
   } else {
     el.innerHTML = "";
   }
@@ -801,10 +880,13 @@ async function saveSetting(key, value) {
 
     if (!response || !response.ok) {
       showNotification("Failed to save setting", "error");
+      return false;
     }
+    return true;
   } catch (error) {
     console.log("Saving setting failed: " + error.message);
     showNotification("Error saving setting", "error");
+    return false;
   }
 }
 
@@ -1115,6 +1197,8 @@ function initNavigation() {
     });
   }
 
+  initGeometry();
+
   // ESP_14 Min-band launch-PWM floor. Same rationale as the BPK slider: update
   // the label live while dragging, only save on release so the car isn't streamed
   // calibration changes mid-drag.
@@ -1129,7 +1213,7 @@ function initNavigation() {
     });
   }
 
-  // Lock response ramp sliders (display update only — save handled in initSettings)
+  // Lock response ramp sliders (display update only - save handled in initSettings)
   const lockReleaseRange = document.getElementById("lockReleaseRampRange");
   const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
   if (lockReleaseRange) {
@@ -1145,7 +1229,7 @@ function initNavigation() {
     });
   }
 
-  // Steering gain sliders (display update only — save handled in initSettings)
+  // Steering gain sliders (display update only - save handled in initSettings)
   [
     ["steeringGainStartRange", "steeringGainStartValue"],
     ["steeringGainFullRange",  "steeringGainFullValue"],
@@ -1253,13 +1337,13 @@ function initModeButtons() {
 
       // Guard: controller disabled
       if (_disableController) {
-        showNotification("Controller is disabled — enable it in Controller Options before changing mode", "error");
+        showNotification("Controller is disabled - enable it in Controller Options before changing mode", "error");
         return;
       }
 
       // Guard: Stock unavailable in standalone (no chassis CAN to read from)
       if (mode === 0 && _isStandalone) {
-        showNotification("Stock mode is unavailable in Standalone — no chassis CAN to read from", "error");
+        showNotification("Stock mode is unavailable in Standalone - no chassis CAN to read from", "error");
         return;
       }
 
@@ -1310,8 +1394,10 @@ function initSettings() {
   selectIds.forEach((id) => {
     const elem = document.getElementById(id);
     if (elem) {
-      elem.addEventListener("change", () => {
-        saveSetting(id, parseInt(elem.value));
+      elem.addEventListener("change", async () => {
+        await saveSetting(id, parseInt(elem.value));
+        // A new generation changes which frame blocks can be edited.
+        if (id === "haldexGeneration") refreshFrameBlocks();
       });
     }
   });
@@ -1344,7 +1430,7 @@ function initSettings() {
     });
   }
 
-  // Checkboxes — keep cached state in sync for mode-button guards
+  // Checkboxes - keep cached state in sync for mode-button guards
   const checkboxCacheMap = {
     disableController: (v) => { _disableController = v; },
     isStandalone:      (v) => { _isStandalone = v; },
@@ -1356,6 +1442,7 @@ function initSettings() {
   // silently take the car out of active control. Turning them back off is the
   // recovery action and needs no confirm.
   const confirmOnEnable = {
+    dangerZoneEnabled: "Enable Danger Zone? A full 50:50 request will demand maximum clutch duty: much higher pump load and current draw, and the Returned % will read lower.",
     disableController: "Disable the Haldex controller? The unit stops modifying CAN frames and the car reverts to stock behaviour.",
     isStandalone: "Switch to Standalone? The unit stops reading the car's CAN bus and synthesises frames on its own.",
     analyzerMode: "Enter Analyzer (SavvyCAN) mode? The controller stops spoofing and only sniffs the bus.",
@@ -1376,20 +1463,24 @@ function initSettings() {
     "disableExternalButton",
     "canSleepEnabled",
     "canSleepAggressive",
-    "udsMQBEnabled",
+    "dangerZoneEnabled",
+    "benchMode",
+    "bleEnabled",
+    "liveDiagEnabled",
     "lockReleaseEnabled",
     "steeringGainEnabled",
   ];
   checkboxIds.forEach((id) => {
     const elem = document.getElementById(id);
     if (elem) {
-      elem.addEventListener("change", () => {
+      elem.addEventListener("change", async () => {
         if (confirmOnEnable[id] && elem.checked && !confirm(confirmOnEnable[id])) {
           elem.checked = false; // user backed out - revert without saving
           return;
         }
         if (checkboxCacheMap[id]) checkboxCacheMap[id](elem.checked);
-        saveSetting(id, elem.checked);
+        await saveSetting(id, elem.checked);
+        if (id === "isStandalone") refreshFrameBlocks(); // standalone has no editable passthrough frames
       });
     }
   });
@@ -2594,6 +2685,92 @@ function updateChartMarker() {
 // PAL-friendly explainers for the Calibrate tab. Keyed by the data-info value on
 // each .calib-info button; opened in the shared #calibInfoModal. Kept as plain
 // strings (no HTML) so the copy stays readable and can't inject markup.
+// ---- Calibrate > Car geometry (per-car slip geometry) -------------------
+// Firmware keys: slipWheelbaseMm, slipTrackFrontMm, slipTrackRearMm,
+// slipSteeringRatio, slipMinSpeedRaw. The speed floor is stored in raw wheel
+// speed units (1 unit = 0.0075 km/h), shown here in km/h.
+const GEO_DEFAULTS = { wheelbase: 2505, trackFront: 1572, trackRear: 1543, ratio: 15.0, minKmh: 5.0 };
+const GEO_RAW_PER_KMH = 1 / 0.0075;
+
+function geoFields() {
+  return {
+    wheelbase: document.getElementById("geoWheelbase"),
+    trackFront: document.getElementById("geoTrackFront"),
+    trackRear: document.getElementById("geoTrackRear"),
+    ratio: document.getElementById("geoSteerRatio"),
+    minKmh: document.getElementById("geoMinSpeed"),
+  };
+}
+
+function populateGeometry(data) {
+  const f = geoFields();
+  if (!f.wheelbase) return;
+  if (data.slipWheelbaseMm !== undefined) f.wheelbase.value = data.slipWheelbaseMm;
+  if (data.slipTrackFrontMm !== undefined) f.trackFront.value = data.slipTrackFrontMm;
+  if (data.slipTrackRearMm !== undefined) f.trackRear.value = data.slipTrackRearMm;
+  if (data.slipSteeringRatio !== undefined) f.ratio.value = Number(data.slipSteeringRatio).toFixed(1);
+  if (data.slipMinSpeedRaw !== undefined) f.minKmh.value = (data.slipMinSpeedRaw / GEO_RAW_PER_KMH).toFixed(1);
+}
+
+function initGeometry() {
+  const f = geoFields();
+  const save = document.getElementById("geoSave");
+  const reset = document.getElementById("geoReset");
+  const status = document.getElementById("geoStatus");
+  if (!f.wheelbase || !save || !reset) return;
+
+  const setStatus = (msg, ok) => {
+    if (!status) return;
+    status.textContent = msg;
+    status.style.color = ok ? "var(--success)" : "var(--danger)";
+  };
+  const num = (el, lo, hi) => {
+    const v = parseFloat(el.value);
+    return Number.isFinite(v) && v >= lo && v <= hi ? v : null;
+  };
+
+  save.addEventListener("click", async () => {
+    const wb = num(f.wheelbase, 1500, 4000);
+    const tf = num(f.trackFront, 1000, 2500);
+    const tr = num(f.trackRear, 1000, 2500);
+    const ratio = num(f.ratio, 8, 30);
+    const kmh = num(f.minKmh, 0, 30);
+    if (wb === null) { setStatus("Wheelbase must be 1500 to 4000 mm", false); return; }
+    if (tf === null) { setStatus("Front track must be 1000 to 2500 mm", false); return; }
+    if (tr === null) { setStatus("Rear track must be 1000 to 2500 mm", false); return; }
+    if (ratio === null) { setStatus("Steering ratio must be 8 to 30", false); return; }
+    if (kmh === null) { setStatus("Minimum speed must be 0 to 30 km/h", false); return; }
+    const ok = await saveGeometry({ wb, tf, tr, ratio, kmh });
+    setStatus(ok ? "Saved" : "Could not save - check the connection", ok);
+  });
+
+  reset.addEventListener("click", async () => {
+    const d = GEO_DEFAULTS;
+    f.wheelbase.value = d.wheelbase;
+    f.trackFront.value = d.trackFront;
+    f.trackRear.value = d.trackRear;
+    f.ratio.value = d.ratio.toFixed(1);
+    f.minKmh.value = d.minKmh.toFixed(1);
+    const ok = await saveGeometry({ wb: d.wheelbase, tf: d.trackFront, tr: d.trackRear, ratio: d.ratio, kmh: d.minKmh });
+    setStatus(ok ? "Reset to Audi TT Mk3 values" : "Could not save - check the connection", ok);
+  });
+}
+
+async function saveGeometry(g) {
+  const resp = await fetchJson("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      slipWheelbaseMm: Math.round(g.wb),
+      slipTrackFrontMm: Math.round(g.tf),
+      slipTrackRearMm: Math.round(g.tr),
+      slipSteeringRatio: Math.round(g.ratio * 10) / 10,
+      slipMinSpeedRaw: Math.round(g.kmh * GEO_RAW_PER_KMH),
+    }),
+  });
+  return !!(resp && resp.ok);
+}
+
 const CALIB_INFO = {
   gen: {
     title: "Generation",
@@ -2860,7 +3037,7 @@ function initLearn() {
   }
 
   btnStart.addEventListener("click", async () => {
-    statusText.textContent = "Learning\u2026";
+    statusText.textContent = "Learning...";
     statusText.style.color = "var(--text-dim)";
     const resp = await fetchJson("/api/learn/start", { method: "POST" });
     if (!resp || !resp.ok) {
@@ -2903,7 +3080,7 @@ function initLearn() {
   fetchJson("/api/learn/status").then((data) => {
     if (!data) return;
     if (data.active) {
-      statusText.textContent = "Learning\u2026";
+      statusText.textContent = "Learning...";
       statusText.style.color = "var(--text-dim)";
       startPolling();
     } else if (data.tableValid) {
@@ -2978,7 +3155,7 @@ function initWifiSsid() {
       showNotification(resp.error || "Failed to save SSID", "error");
       return;
     }
-    status.textContent = "AP restarting as \"" + resp.ssid + "\"\u2026";
+    status.textContent = "AP restarting as \"" + resp.ssid + "\"...";
     status.style.color = "var(--success)";
     showNotification("WiFi SSID saved - reconnect to AP");
   });
@@ -2988,7 +3165,7 @@ function initWifiSsid() {
     const resp = await fetchJson("/api/wifi/ssid/reset", { method: "POST" });
     if (!resp || !resp.ok) { showNotification("Reset failed", "error"); return; }
     input.value = resp.ssid || defaultSsid;
-    status.textContent = "AP restarting as \"" + (resp.ssid || defaultSsid) + "\"\u2026";
+    status.textContent = "AP restarting as \"" + (resp.ssid || defaultSsid) + "\"...";
     status.style.color = "var(--text-dim)";
     showNotification("WiFi SSID reset to default - reconnect to AP");
   });
@@ -3000,8 +3177,7 @@ function initWifi() {
   const toggle  = document.getElementById("wifiPasswordToggle");
   const status  = document.getElementById("wifiPasswordStatus");
   const btnSave = document.getElementById("wifiPasswordSave");
-  const btnReset= document.getElementById("wifiPasswordReset");
-  if (!input || !toggle || !status || !btnSave || !btnReset) return;
+  if (!input || !toggle || !status || !btnSave) return;
 
   // show / hide password toggle
   toggle.addEventListener("click", () => {
@@ -3017,14 +3193,15 @@ function initWifi() {
       status.textContent = "\u2713 Password set - AP is secured";
       status.style.color = "var(--success)";
     } else {
-      status.textContent = "No password - AP is open";
-      status.style.color = "var(--text-dim)";
+      status.textContent = "No password set yet - set one now";
+      status.style.color = "var(--danger)";
     }
   });
 
   // save password
   btnSave.addEventListener("click", async () => {
     const pwd = input.value.trim();
+    if (pwd.length < 8) { showNotification("Password must be at least 8 characters", "error"); return; }
     const resp = await fetchJson("/api/wifi", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3036,25 +3213,9 @@ function initWifi() {
       return;
     }
     input.value = "";
-    if (resp.passwordSet) {
-      status.textContent = "\u2713 Password set - AP restarting\u2026";
-      status.style.color = "var(--success)";
-      showNotification("WiFi password saved - reconnect to AP");
-    } else {
-      status.textContent = "No password - AP restarting as open\u2026";
-      status.style.color = "var(--text-dim)";
-      showNotification("WiFi password cleared");
-    }
-  });
-
-  // reset to open network
-  btnReset.addEventListener("click", async () => {
-    const resp = await fetchJson("/api/wifi/reset", { method: "POST" });
-    if (!resp || !resp.ok) { showNotification("Reset failed", "error"); return; }
-    input.value = "";
-    status.textContent = "No password - AP restarting as open\u2026";
-    status.style.color = "var(--text-dim)";
-    showNotification("WiFi reset to open network - reconnect to AP");
+    status.textContent = "\u2713 Password set - AP restarting...";
+    status.style.color = "var(--success)";
+    showNotification("WiFi password saved - reconnect to AP");
   });
 }
 
@@ -3084,13 +3245,15 @@ function showNotification(message, type = "success") {
   }, 3000);
 }
 
-// Software Update card (Settings tab): live version/safe-state info from
-// /ota/info + /ota/check, then firmware and web-UI (LittleFS image) uploads
-// with real progress via XHR. The device reboots itself after a successful
-// upload; we poll /ota/health until it comes back and then reload.
+// Software Update (Update tab): live version/safe-state info from /ota/info +
+// /ota/check, then ONE upload slot. The module classifies what it was given
+// (merged firmware+UI image, bare firmware.bin, or bare littlefs.bin) by itself.
+// It reboots after a firmware/merged upload and this page waits for /ota/health
+// and reloads. The same upload core serves the GitHub flow in initUpdateCheck().
 function initOtaUpdate() {
   const version      = document.getElementById("otaVersion");
   const build        = document.getElementById("otaBuild");
+  const chip         = document.getElementById("otaChip");
   const slot         = document.getElementById("otaPartition");
   const safeState    = document.getElementById("otaSafeState");
   const safeReason   = document.getElementById("otaSafeReason");
@@ -3105,9 +3268,14 @@ function initOtaUpdate() {
   async function refreshInfo() {
     const info = await fetchJson("/ota/info");
     if (info) {
-      version.textContent = info.version || "--";
+      const ui = info.fsVersion && info.fsVersion !== "--" && info.fsVersion !== info.version ? " (web UI " + info.fsVersion + ")" : "";
+      version.textContent = (info.version || "--") + ui;
       build.textContent = info.appDate ? info.appDate + " " + (info.appTime || "") : "--";
+      if (chip) chip.textContent = info.chipModel ? info.chipModel + (info.chipRevision ? " rev " + info.chipRevision : "") : "--";
       slot.textContent = info.partition || "--";
+      const inst = document.getElementById("updInstalled");
+      if (inst && info.version) inst.textContent = "v" + info.version;
+      if (info.version) window._otaInstalledVersion = info.version;
     }
     const check = await fetchJson("/ota/check");
     if (check) {
@@ -3119,8 +3287,8 @@ function initOtaUpdate() {
 
   refreshInfo();
   // The safe-state can change (car starts moving, CAN fault) - refresh whenever
-  // the user lands on the Settings tab rather than polling continuously.
-  document.querySelectorAll('.nav-tab[data-page="settings"]').forEach((tab) => {
+  // the user lands on the Update tab rather than polling continuously.
+  document.querySelectorAll('.nav-tab[data-page="ota"]').forEach((tab) => {
     tab.addEventListener("click", refreshInfo);
   });
 
@@ -3130,20 +3298,37 @@ function initOtaUpdate() {
   }
 
   // fetch() has no upload progress, so uploads go through XMLHttpRequest.
-  function uploadBin(url, fieldName, file) {
+  // Resolves {ok, status, text}; never rejects.
+  function uploadBin(url, fieldName, blob, filename, onProgress) {
     return new Promise((resolve) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", url);
+      xhr.withCredentials = true;
       xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+        if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
       };
-      xhr.onload = () => resolve({ ok: xhr.status === 200, text: xhr.responseText || "" });
-      xhr.onerror = () => resolve({ ok: false, text: "Connection lost during upload" });
+      xhr.onload = () => resolve({ ok: xhr.status === 200, status: xhr.status, text: xhr.responseText || "" });
+      xhr.onerror = () => resolve({ ok: false, status: 0, text: "Connection lost during upload" });
       const form = new FormData();
-      form.append(fieldName, file, file.name);
+      form.append(fieldName, blob, filename);
       xhr.send(form);
     });
   }
+
+  // Used by the guided GitHub update: the two halves go to their own endpoints
+  // (/ota/update/fs for littlefs.bin, /ota/update for firmware.bin). `size` lets
+  // the module spot a short upload that would leave half an image behind.
+  window.otaUploadBlob = async function (type, blob, filename, opts) {
+    opts = opts || {};
+    const isFs = type === "filesystem";
+    const url = (isFs ? "/ota/update/fs" : "/ota/update") + "?size=" + blob.size;
+    const res = await uploadBin(url, isFs ? "filesystem" : "firmware", blob, filename, opts.onProgress);
+    if (res.ok) return res.text;
+    if (res.status === 403) throw new Error("Blocked: system not safe for update.");
+    if (res.status === 401) throw new Error("Sign-in needed (user admin, password = the access-point WiFi password). Reload the page and sign in.");
+    if (res.status === 400) throw new Error(res.text || "Image rejected by the module.");
+    throw new Error(res.text || (res.status ? "Update failed (" + res.status + ")." : "Upload failed. Check the connection and retry."));
+  };
 
   async function waitForReboot() {
     result.textContent = "Update sent - module is rebooting. Waiting for it to come back...";
@@ -3215,17 +3400,1366 @@ function initOtaUpdate() {
     setProgress(0);
     result.textContent = "Uploading " + kindLabel + ": " + file.name + " (do not close this page or power the module off)";
 
-    const res = await uploadBin("/ota/update", "update", file);
+    const res = await uploadBin("/ota/update?size=" + file.size, "update", file, file.name,
+      (f) => setProgress(Math.round(f * 100)));
     if (res.ok) {
       setProgress(100);
-      await waitForReboot();
+      if (kindLabel === "web UI") {
+        // A bare filesystem image does not reboot the module.
+        result.textContent = "Web UI updated. Reloading...";
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        await waitForReboot();
+      }
     } else {
-      result.textContent = res.text || "Upload failed";
-      showNotification(res.text || "Upload failed", "error");
+      const msg = res.status === 401 ? "Sign-in needed. Reload the page and sign in (user admin)." : (res.text || "Upload failed");
+      result.textContent = msg;
+      showNotification(msg, "error");
       uploadBtn.disabled = false;
       refreshInfo();
     }
   }
 
   uploadBtn.addEventListener("click", runUpload);
+}
+
+
+// Status fields that only exist in the v9 firmware: wheel slip, live-diag
+// TP2.0 block, steering health, Bluetooth link, Bench Mode lock. Kept in one
+// place so the main poll stays readable. Every field is optional.
+function updateV9Status(data, chassisOk, haldexOk) {
+  const text = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  const num = (v, d) => (typeof v === "number" ? v.toFixed(d) : "--");
+
+  // Per-corner slip [FL, FR, RL, RR]; null (no data / stale) shows as "--".
+  // The card stays hidden until real numbers have been seen once.
+  const slip = Array.isArray(data.cornerSlip) ? data.cornerSlip : Array.isArray(data.slip) ? data.slip : null;
+  const slipCard = document.getElementById("wheelSlipCard");
+  if (slip && slip.some((v) => v !== null && v !== undefined)) updateV9Status._slipSeen = true;
+  if (slipCard) slipCard.style.display = updateV9Status._slipSeen ? "" : "none";
+  ["slipFL", "slipFR", "slipRL", "slipRR"].forEach((id, i) => {
+    const v = slip ? slip[i] : null;
+    text(id, v === null || v === undefined ? "--" : v);
+  });
+
+  // Gen2/Gen4 KWP2000-over-TP2.0 live data (replaces UDS on those generations).
+  const kwp = data.kwp;
+  const kwpDetails = document.getElementById("kwpDetails");
+  if (kwpDetails) kwpDetails.style.display = kwp ? "" : "none";
+  if (kwp) {
+    text("kwpOilTemp", num(kwp.oilTemp, 1));
+    text("kwpPlateTemp", num(kwp.plateTemp, 1));
+    text("kwpSupplyVoltage", num(kwp.supplyVoltage, 2));
+    text("kwpOilPressure", num(kwp.oilPressure, 0));
+    text("kwpEstTorque", num(kwp.estTorque, 0));
+    text("kwpClutchDuty", num(kwp.clutchDuty, 0));
+    text("kwpClutchValveCurrent", num(kwp.clutchValveCurrent, 3));
+    text("kwpStatus", data.diagToolActive ? "Paused: an external diagnostic tool was detected."
+      : (kwp.connected ? "Connected" : "Connecting..."));
+  }
+
+  // Steering signal health (diag tab)
+  const sh = document.getElementById("diagSteeringHealth");
+  if (sh) sh.textContent = data.steeringHealthy === undefined || data.steeringHealthy === null ? "--"
+    : (data.steeringHealthy ? "\u2713 Healthy" : "X Unhealthy");
+  text("diagSteeringAngle", data.steeringAngle ?? "--");
+
+  // Bluetooth link
+  if (data.bleCodeRequired !== undefined) renderBlePairing(data.bleCodeRequired);
+  const bleStatus = document.getElementById("bleStatus");
+  if (bleStatus && data.bleConnected !== undefined) {
+    bleStatus.textContent = data.bleConnected ? "\u2713 Phone connected" : "No phone connected";
+    bleStatus.style.color = data.bleConnected ? "var(--success)" : "var(--text-dim)";
+  }
+
+  // Bench Mode can only be switched while genuinely off the car (both buses
+  // silent). The firmware also clears it when CAN appears; this stops it being
+  // flipped on by mistake while harnessed to a live car.
+  const benchModeElem = document.getElementById("benchMode");
+  const benchModeStatus = document.getElementById("benchModeStatus");
+  const canDetected = !!(chassisOk || haldexOk);
+  if (benchModeElem) benchModeElem.disabled = canDetected;
+  if (benchModeStatus) {
+    benchModeStatus.textContent = canDetected
+      ? "Locked: CAN traffic seen, so this unit is harnessed (sleep behaves normally)"
+      : "Available: no CAN on either bus";
+    benchModeStatus.style.color = canDetected ? "var(--text-dim)" : "var(--success)";
+  }
+}
+
+// ---- Frame-edit gating (Calibrate > Frame blocks) ----------------------
+// Render the per-generation editable-frame checkboxes from /api/settings data.
+function renderFrameBlocks(blocks) {
+  const list = document.getElementById("frameEditList");
+  if (!list) return;
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    list.innerHTML = '<p class="hint">Not available for this generation.</p>';
+    return;
+  }
+  list.innerHTML = "";
+  blocks.forEach((b) => {
+    const row = document.createElement("label");
+    row.className = "toggle";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!b.enabled;
+    cb.dataset.bit = b.bit;
+    cb.addEventListener("change", () => saveFrameEdit(b.bit, cb.checked));
+    const slider = document.createElement("span");
+    slider.className = "toggle-slider";
+    const span = document.createElement("span");
+    span.className = "toggle-label";
+    span.textContent = b.name;
+    row.appendChild(cb);
+    row.appendChild(slider);
+    row.appendChild(span);
+    list.appendChild(row);
+  });
+}
+
+// Toggle a single frame-edit block for the current generation.
+async function saveFrameEdit(bit, on) {
+  try {
+    const response = await fetchJson("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ frameEditBit: bit, frameEditOn: on }),
+    });
+    if (!response.ok) showNotification("Failed to save frame setting", "error");
+  } catch (error) {
+    showNotification("Error saving frame setting", "error");
+  }
+}
+
+// "Reset to Defaults" under Frame blocks: puts every block mask back to the
+// firmware defaults, then redraws the list from the device.
+function initFrameEditReset() {
+  const btn = document.getElementById("frameEditReset");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    if (!confirm("Turn every frame block back to its default setting?")) return;
+    try {
+      const resp = await fetchJson("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frameEditReset: true }),
+      });
+      if (!resp) {
+        showNotification("Failed to reset frame blocks", "error");
+        return;
+      }
+      showNotification("Frame blocks reset to defaults");
+    } catch (error) {
+      showNotification("Error resetting frame blocks", "error");
+    }
+    refreshFrameBlocks();
+  });
+}
+
+// Re-fetch settings and re-render the frame checkboxes (e.g. after a generation
+// change or a reset-to-defaults).
+async function refreshFrameBlocks() {
+  try {
+    const data = await fetchJson("/api/settings");
+    renderFrameBlocks(data.frameBlocks);
+  } catch (error) {
+    /* leave existing list in place on error */
+  }
+}
+
+
+// ---- Long Learn (Calibrate > Long Learn) -----------------------------------
+// Drives /api/longlearn/*: polls status while a run is active, renders the
+// tracker + per-block verdicts, keeps the chassis notes on the unit, and
+// exports a plain-text report of the car, calibration, block set and sweeps.
+const LL_PHASE_NAMES = ["Idle", "Initial Sweep (all blocks on)", "BPK Adjust (torque ceiling)",
+                        "Sweeping Blocks", "Confirmation learn on final set", "Complete", "Cancelled", "Failed"];
+const LL_RESULT = { 0: ["untested", ""], 1: ["core", "core"], 2: ["needed", "needed"],
+                    3: ["not needed", "removed"], 4: ["affects (better without)", "harmful"] };
+const LL_SWEEP_KIND = ["baseline", "floor", "block", "final", "bpk ceiling"];
+
+function llScoreText(sc) {
+  if (!sc) return "--";
+  const eng = sc.engageCF > 100 ? "never engaged" : `engage @CF${sc.engageCF} \u2192 ${sc.engageJump}%`;
+  return `${sc.smooth ? "smooth" : "NOT smooth"} \u00b7 reach ${sc.reach}% \u00b7 max step ${sc.maxStep}% \u00b7 ${eng} \u00b7 score ${sc.score}`;
+}
+
+function llFmtElapsed(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+function initLongLearn() {
+  const statusText   = document.getElementById("longLearnStatusText");
+  const progressWrap = document.getElementById("longLearnProgressWrap");
+  const progressFill = document.getElementById("longLearnProgressFill");
+  const progressLbl  = document.getElementById("longLearnProgressLabel");
+  const tracker      = document.getElementById("longLearnTracker");
+  const results      = document.getElementById("longLearnResults");
+  const btnStart     = document.getElementById("longLearnStart");
+  const btnCancel    = document.getElementById("longLearnCancel");
+  const btnExport    = document.getElementById("longLearnExport");
+  const testAll      = document.getElementById("longLearnTestAll");
+  const notes        = document.getElementById("longLearnNotes");
+  if (!statusText || !btnStart) return;
+
+  let pollTimer = null;
+  let lastStatus = null; // last /api/longlearn/status payload (used by export)
+
+  function setText(id, v) { const e = document.getElementById(id); if (e) e.textContent = v; }
+
+  function renderBlocks(data) {
+    if (!results) return;
+    const blocks = Array.isArray(data.blocks) ? data.blocks : [];
+    if (blocks.length === 0) { results.innerHTML = ""; return; }
+    results.innerHTML = "";
+    blocks.forEach((b) => {
+      const row = document.createElement("div");
+      row.className = "ll-block";
+      const name = document.createElement("span");
+      name.className = "ll-block-name" + (b.enabled ? "" : " off");
+      name.textContent = b.name;
+      const tag = document.createElement("span");
+      let cls = "", txt = "";
+      if (data.active && data.currentBit === b.bit) { cls = "testing"; txt = "testing..."; }
+      else {
+        const r = LL_RESULT[b.result] || LL_RESULT[0];
+        txt = r[0]; cls = r[1];
+        if (b.result === 0) txt = b.def ? "default" : (data.phase === 0 ? (b.enabled ? "on" : "off") : "queued");
+      }
+      tag.className = "ll-tag " + cls;
+      tag.textContent = txt;
+      row.appendChild(name);
+      row.appendChild(tag);
+      results.appendChild(row);
+    });
+  }
+
+  function render(data) {
+    lastStatus = data;
+    const running = !!data.active;
+    btnStart.style.display  = running ? "none" : "";
+    btnCancel.style.display = running ? "" : "none";
+    if (testAll) testAll.disabled = running;
+
+    const showTracker = running || data.phase >= 5;
+    progressWrap.style.display = running ? "" : "none";
+    tracker.style.display = showTracker ? "" : "none";
+
+    const total = data.sweepTotal || 0, idx = data.sweepIdx || 0;
+    const pct = total ? Math.min(100, Math.round((idx / total) * 100)) : 0;
+    progressFill.style.width = pct + "%";
+    progressLbl.textContent = `${idx}/${total} done`;
+
+    setText("llPhase", LL_PHASE_NAMES[data.phase] || "--");
+    setText("llSweep", total ? `${Math.min(idx + (running ? 1 : 0), total)} of ${total}` : "--");
+    let testing = "--";
+    if (running && data.currentBit >= 0 && Array.isArray(data.blocks)) {
+      const b = data.blocks.find((x) => x.bit === data.currentBit);
+      testing = b ? `without ${b.name}` : `bit ${data.currentBit}`;
+    } else if (running && data.phase === 1) {
+      testing = "all blocks on";
+    } else if (running && data.phase === 2) {
+      testing = `raising torque ceiling (${data.bpkNow} Nm)`;
+    } else if (running && data.phase === 4) {
+      testing = "final block set";
+    }
+    setText("llTesting", testing);
+    const isGen5 = data.generation === 50 || data.generation === 52;
+    setText("llFloor", isGen5 ? `${data.floorNow}%` + (data.phase >= 2 ? ` (was ${data.floorStart}%)` : "") : "n/a (Gen5 only)");
+    setText("llBpk", isGen5 ? `${data.bpkNow} Nm` + (data.bpkAdjusted ? ` (was ${data.bpkStart} Nm)` : "") +
+"" : "n/a (Gen5 only)");
+    setText("llBaseline", llScoreText(data.baseline));
+    setText("llElapsed", llFmtElapsed(data.elapsedS));
+
+    const cf = data.cf ?? 0, eng = data.eng ?? 0;
+    const cfFill = document.getElementById("llCFFill"), engFill = document.getElementById("llEngFill");
+    if (cfFill) cfFill.style.width = cf + "%";
+    if (engFill) engFill.style.width = eng + "%";
+    setText("llCFValue", running ? cf + "%" : "--");
+    setText("llEngValue", running ? eng + "%" : "--");
+
+    if (running) {
+      statusText.textContent = `Long Learn running - ${LL_PHASE_NAMES[data.phase] || ""}`;
+      statusText.style.color = "var(--text-dim)";
+    } else if (data.phase === 5) {
+      const f = data.final;
+      const kept = (data.blocks || []).filter((b) => b.enabled).length;
+      statusText.textContent = `Long Learn complete \u2713 - ${kept} of ${(data.blocks || []).length} blocks enabled, ` +
+        (isGen5 ? `PWM floor ${data.floorResult}%, ` : "") +
+        (isGen5 && data.bpkAdjusted ? `torque ceiling ${data.bpkNow} Nm, ` : "") +
+        `final: ${llScoreText(f)}`;
+      statusText.style.color = f && f.smooth ? "var(--success)" : "var(--warning)";
+    } else if (data.phase === 6) {
+      statusText.textContent = "Long Learn cancelled - previous blocks, floor, torque ceiling and learn table put back";
+      statusText.style.color = "var(--warning)";
+    } else if (data.phase === 7) {
+      statusText.textContent = "Long Learn failed - no Haldex data during a sweep. Previous settings restored";
+      statusText.style.color = "var(--danger)";
+    } else {
+      statusText.textContent = "Not run yet";
+      statusText.style.color = "var(--text-dim)";
+    }
+    renderBlocks(data);
+  }
+
+  async function poll() {
+    const data = await fetchJson("/api/longlearn/status");
+    if (!data) return;
+    const wasRunning = pollTimer !== null;
+    render(data);
+    if (!data.active && wasRunning) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      // The run changed the mask / floor / learn table - refresh dependents.
+      refreshFrameBlocks();
+      const esp14Range = document.getElementById("esp14MinFloorRange");
+      const esp14Val = document.getElementById("esp14MinFloorValue");
+      if (esp14Range) { esp14Range.value = data.floorNow; if (esp14Val) esp14Val.textContent = data.floorNow; }
+      const bpkRange = document.getElementById("bpkCeilingRange");
+      const bpkVal = document.getElementById("bpkCeilingValue");
+      if (bpkRange && data.bpkNow) { bpkRange.value = data.bpkNow; if (bpkVal) bpkVal.textContent = data.bpkNow; }
+      fetchJson("/api/learn/status").then((ls) => { if (ls && ls.tableValid) renderLearnChart(ls.table); });
+    }
+  }
+
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(poll, 1000);
+    poll();
+  }
+
+  btnStart.addEventListener("click", async () => {
+    statusText.textContent = "Starting Long Learn...";
+    statusText.style.color = "var(--text-dim)";
+    const resp = await fetchJson("/api/longlearn/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ testAll: !!(testAll && testAll.checked) }),
+    });
+    if (!resp || !resp.ok) {
+      statusText.textContent = resp && resp.error ? resp.error : "Failed to start Long Learn";
+      statusText.style.color = "var(--danger)";
+      return;
+    }
+    startPolling();
+  });
+
+  btnCancel.addEventListener("click", async () => {
+    await fetchJson("/api/longlearn/cancel", { method: "POST" });
+    statusText.textContent = "Cancelling...";
+    statusText.style.color = "var(--warning)";
+  });
+
+  if (notes) {
+    notes.addEventListener("change", () => saveSetting("longLearnNotes", notes.value.slice(0, 200)));
+  }
+
+  if (btnExport) {
+    btnExport.addEventListener("click", async () => {
+      const [settings, ll, learn] = await Promise.all([
+        fetchJson("/api/settings"), fetchJson("/api/longlearn/status"), fetchJson("/api/learn/status"),
+      ]);
+      if (!settings || !ll) { showNotification("Could not read data for export", "error"); return; }
+      const txt = buildLongLearnReport(settings, ll, learn, notes ? notes.value : "");
+      const gen = settings.haldexGeneration;
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const blob = new Blob([txt], { type: "text/plain" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `openhaldex-longlearn-gen${gen}-${stamp}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    });
+  }
+
+  // initial state (and resume polling if a run is already in progress)
+  fetchJson("/api/longlearn/status").then((data) => {
+    if (!data) return;
+    render(data);
+    if (data.active) startPolling();
+  });
+}
+
+// Plain-text report: car notes, calibration, recommended block set (with a
+// ready-to-edit checklist + mask), the sweep log and the stored learn table.
+function buildLongLearnReport(settings, ll, learn, notesText) {
+  const genSel = document.getElementById("haldexGeneration");
+  const genName = genSel && genSel.selectedOptions[0] ? genSel.selectedOptions[0].textContent : String(settings.haldexGeneration);
+  const isGen5 = settings.haldexGeneration === 50 || settings.haldexGeneration === 52;
+  const pad = (v, n) => String(v).padEnd(n);
+  const L = [];
+  L.push("OpenHaldex Edge Long Learn Report");
+  L.push("=".repeat(60));
+  L.push(`Firmware:   ${settings.FW_VERSION || "--"}`);
+  L.push(`Board:      rev ${settings.boardRev || "?"}`);
+  L.push(`Exported:   ${new Date().toISOString()}`);
+  L.push(`Generation: ${settings.haldexGeneration} (${genName})`);
+  L.push(`Mode:       ${settings.isStandalone ? "Standalone" : "Normal (passthrough)"}`);
+  L.push("");
+  L.push("Chassis / car notes:");
+  L.push("  " + ((notesText || "").trim() || "(none entered)").replace(/\n/g, "\n  "));
+  L.push("");
+  L.push("Calibration:");
+  L.push(`  Lock Calibration (BPK ceiling): ${settings.bpkCeilingNm} Nm`);
+  L.push(`  Launch PWM Floor: ${settings.esp14MinFloorPct} %` +
+         (ll.phase === 5 && isGen5 ? `  (Long Learn: ${ll.floorStart} % -> ${ll.floorResult} %)` : ""));
+  if (ll.phase === 5 && isGen5 && ll.bpkAdjusted) {
+    L.push(`  Torque ceiling raised by Long Learn: ${ll.bpkStart} Nm -> ${ll.bpkNow} Nm`);
+  }
+  L.push("");
+  L.push(`Long Learn: ${LL_PHASE_NAMES[ll.phase] || "--"}` +
+         (ll.phase >= 5 ? `  (${ll.sweepIdx} sweeps, ${llFmtElapsed(ll.elapsedS)}, test-all ${ll.testAll ? "on" : "off"})` : ""));
+  if (ll.baseline) L.push(`  Reference (all on): ${llScoreText(ll.baseline)}`);
+  if (ll.final)    L.push(`  Final (kept set):   ${llScoreText(ll.final)}`);
+  L.push("");
+  L.push(`Frame blocks (mask ${ll.mask || "--"}) - [x] = enabled. Edit and re-apply under Calibrate > Frame blocks:`);
+  (ll.blocks || []).forEach((b) => {
+    const r = LL_RESULT[b.result] || LL_RESULT[0];
+    const verdict = b.result === 0 ? (ll.phase === 0 ? "" : "untested") : r[0];
+    L.push(`  [${b.enabled ? "x" : " "}] ${pad(b.name, 22)} bit ${pad(b.bit, 3)} ${pad(b.def ? "default" : "added", 8)} ${verdict}`);
+  });
+  L.push("");
+  if (Array.isArray(ll.sweeps) && ll.sweeps.length) {
+    L.push("Sweep log:");
+    ll.sweeps.forEach((sw, i) => {
+      let what = LL_SWEEP_KIND[sw.kind] || "?";
+      if (sw.kind === 2) {
+        const b = (ll.blocks || []).find((x) => x.bit === sw.bit);
+        what = `without ${b ? b.name : "bit " + sw.bit}`;
+      } else if (sw.kind === 4) {
+        what = `ceiling ${sw.bpk} Nm`;
+      }
+      const verdict = sw.kind === 2 ? ((LL_RESULT[sw.verdict] || ["?"])[0]) : (sw.verdict ? "smooth/100%" : "not smooth/100%");
+      L.push(`  #${pad(i + 1, 3)} ${pad(what, 28)} floor ${pad(sw.floor + "%", 5)} reach ${pad(sw.reach, 4)} step ${pad(sw.maxStep, 3)} ` +
+             `engage@${pad(sw.engageCF > 100 ? "--" : sw.engageCF, 3)}->${pad(sw.engageJump, 3)} score ${pad(sw.score, 3)} => ${verdict}`);
+    });
+    L.push("");
+  }
+  if (learn && learn.tableValid && Array.isArray(learn.table)) {
+    L.push("Stored learn table (CF% -> engagement%):");
+    for (let i = 0; i < learn.table.length; i += 10) {
+      L.push("  " + learn.table.slice(i, i + 10).map((v, j) => `${pad(i + j, 3)}:${pad(v, 3)}`).join(" "));
+    }
+  } else {
+    L.push("Stored learn table: none (static factor active)");
+  }
+  L.push("");
+  return L.join("\n");
+}
+
+
+// Pairing line on the Bluetooth card: the code is only asked from the second phone on.
+let blePasskeyCache = null;
+function renderBlePairing(codeRequired) {
+  const el = document.getElementById("blePairing");
+  if (!el) return;
+  el.textContent = codeRequired
+    ? `Pairing code for another phone: ${blePasskeyCache ?? "--"}`
+    : "No phone paired yet - the first phone pairs without a code.";
+}
+
+// initialise Bluetooth (DashCAN app) section
+function initBle() {
+  const btnForget = document.getElementById("bleForget");
+
+  btnForget.addEventListener("click", async () => {
+    const resp = await fetchJson("/api/ble/forget", { method: "POST" });
+    if (!resp) {
+      showNotification("No response from the controller", "error");
+      return;
+    }
+    if (!resp.ok) {
+      showNotification("Bluetooth is off - nothing to forget", "error");
+      return;
+    }
+    showNotification("Paired phones forgotten, new pairing code - the next phone pairs without it");
+    initStoredSettings(); // refresh the pairing line
+  });
+}
+
+
+
+// ---------------------------------------------------------------------------
+// Check for Updates (guided OTA)
+// The page - not the controller - fetches the release list and the .bin files
+// from GitHub, then pushes each image through the same safety-gated /ota
+// endpoints as a manual upload. The device validates each image itself
+// (esp_ota_end for firmware, a mount for the filesystem) - no hash gate.
+//
+// Where the internet comes from: the intended route is bridge mode - the
+// controller joins the home router (Home WiFi card, duplicated on this tab)
+// and the phone sits on that same network, so it keeps its normal internet
+// and can still reach the controller by LAN address. On the bare OpenHaldex
+// AP most phones drop mobile data (the AP hands out no gateway, and Android
+// only keeps cellular for internet until the user "accepts" the no-internet
+// network), so that route is best-effort. Either way, every check starts by
+// pinging the controller: there's no point fetching from GitHub if the
+// device has gone to sleep or the phone has wandered off its network.
+//
+// Two sources are merged:
+//   1. Releases/releases.json - the index tools/make_release.py writes: notes,
+//      date, channel, ota flag per release.
+//   2. The Releases/ folder listing from the GitHub API - so a V<x.y.z> folder
+//      that has just been dropped in shows up even before the index is
+//      regenerated (no notes).
+// Two mirrors are tried for the index and the images. raw.githubusercontent
+// is the source of truth; jsDelivr serves the same repo and gets through on
+// networks that block or mangle raw.githubusercontent. Whichever answers
+// first is used for the .bin downloads too.
+// ---------------------------------------------------------------------------
+const UPD_REPO = "Kile-Thomson/OpenHaldex-Edge";
+const UPD_BRANCH = "ota";
+const UPD_MIRRORS = [
+  { name: "GitHub", base: "https://raw.githubusercontent.com/" + UPD_REPO + "/" + UPD_BRANCH + "/Releases/" },
+  { name: "jsDelivr", base: "https://cdn.jsdelivr.net/gh/" + UPD_REPO + "@" + UPD_BRANCH + "/Releases/" },
+];
+const UPD_DIR_API = "https://api.github.com/repos/" + UPD_REPO + "/contents/Releases?ref=" + UPD_BRANCH;
+// Update channel. Everything is published on one branch (ota) so the channel
+// changes which builds are *offered*, not where they are fetched from.
+//   stable - only a higher version number than the one installed (as before)
+//   latest - also the newest release itself, because its .bin files get
+//            rebuilt in place when a fix lands before the next version is cut
+const UPD_CHANNEL_KEY = "otaUpdateChannel";
+let updChannel = "stable";
+// Folder names are V<x.y.z> plus an optional pre-release suffix (V9.01.0-beta1).
+const UPD_FOLDER_RE = /^V(\d+(?:\.\d+)*(?:-[0-9A-Za-z.]+)?)$/i;
+// Firmware and the web UI report only the core number (9.01.0) even when the
+// release is tagged 9.01.0-beta1, so post-install checks compare the core.
+function updCoreVersion(v) {
+  return String(v || "").split("-")[0];
+}
+// Mirror that last answered - the .bin downloads follow the index.
+let UPD_RELEASES_BASE = UPD_MIRRORS[0].base;
+
+// numeric compare of "x.yy.z" strings: >0 if a newer than b
+function updCompareVersions(a, b) {
+  const pa = String(a || "").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || "").split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+// fetch() with a timeout - a phone that has silently lost its route can
+// otherwise hang for a minute before the browser gives up.
+function updFetch(url, ms, opts) {
+  const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+  const t = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+  const o = Object.assign({ cache: "no-store" }, opts || {});
+  if (ctrl) o.signal = ctrl.signal;
+  return fetch(url, o).finally(() => { if (t) clearTimeout(t); });
+}
+
+function initUpdateCheck() {
+  const $ = (id) => document.getElementById(id);
+  const checkBtn = $("updCheckBtn"), installBtn = $("updInstallBtn"), showAll = $("updShowAll"), bridgeBtn = $("updBridgeBtn");
+  const picker = $("updPicker"), sel = $("updVersion"), notes = $("updNotes"), status = $("updStatus");
+  const wrap = $("updProgressWrap"), bar = $("updProgressBar"), label = $("updProgressLabel");
+  if (!checkBtn || !sel) return;
+
+  let index = null;   // merged release list: { latest, releases[] }
+  let busy = false;
+
+  const setStatus = (msg, cls) => { status.textContent = msg; status.className = "status-line" + (cls ? " " + cls : ""); };
+  const setState = (msg, cls) => { const e = $("updState"); if (e) { e.textContent = msg; e.className = cls || ""; } };
+  const setPct = (f, text) => {
+    const p = Math.max(0, Math.min(100, Math.round(f * 100)));
+    if (bar) bar.style.width = p + "%";
+    if (label) label.textContent = text ? text + " " + p + "%" : p + "%";
+  };
+  const setStep = (id, state) => {
+    document.querySelectorAll("#updSteps .ota-step").forEach((el) => {
+      if (el.dataset.step === id) { el.classList.toggle("active", state === "active"); el.classList.toggle("done", state === "done"); }
+    });
+  };
+  const resetSteps = () => document.querySelectorAll("#updSteps .ota-step").forEach((el) => el.classList.remove("active", "done"));
+  const installed = () => window._otaInstalledVersion || "";
+  // After a failed check the button reads "Retry" and, when the fix is the
+  // bridge, a second button jumps to the Home WiFi card on this tab.
+  const showRetry = (needBridge) => {
+    checkBtn.textContent = "Retry";
+    if (bridgeBtn) bridgeBtn.hidden = !needBridge;
+  };
+  const goBridge = (ev) => {
+    if (ev) ev.preventDefault();
+    const card = $("otaWifiStaCard");
+    if (card) { card.scrollIntoView({ behavior: "smooth", block: "start" }); const i = $("otaWifiStaSsidInput"); if (i) setTimeout(() => i.focus(), 400); }
+  };
+
+  function otaCandidates() {
+    if (!index || !Array.isArray(index.releases)) return [];
+    return index.releases.filter((r) => r && r.ota && r.firmware && r.filesystem);
+  }
+
+  function renderPicker() {
+    const cur = installed();
+    const all = showAll && showAll.checked;
+    const list = otaCandidates().filter((r) => all || (r.channel !== "beta" && updCompareVersions(r.version, cur) >= 0));
+    // Nothing extra to add on "latest": the >= 0 compare above already keeps
+    // the installed version in the list, which is what makes a rebuild of it
+    // installable. The channel only changes the wording and the rebuild check.
+    list.sort((a, b) => updCompareVersions(b.version, a.version));
+    sel.innerHTML = "";
+    list.forEach((r) => {
+      const o = document.createElement("option");
+      o.value = r.version;
+      const tags = [];
+      if (r.version === index.latest) tags.push("latest");
+      if (r.channel === "beta") tags.push("beta");
+      if (r.unindexed) tags.push("not in index");
+      const c = updCompareVersions(r.version, cur);
+      if (c === 0) tags.push("installed");
+      else if (c < 0) tags.push("rollback");
+      o.textContent = "v" + r.version + (tags.length ? " (" + tags.join(", ") + ")" : "");
+      sel.appendChild(o);
+    });
+    picker.hidden = list.length === 0;
+    if (!list.length) {
+      // Nothing to offer. Usually that just means every published release is
+      // older than what is installed, which is a rollback, not an error.
+      if (!all && otaCandidates().length) {
+        setStatus("Nothing newer than the installed version. Tick \"Show beta / older versions\" to roll back.");
+      } else {
+        setStatus("No installable releases listed. Use \"Update from a File\" below.", "error");
+      }
+      return;
+    }
+    // default to latest, else the first entry
+    sel.value = list.some((r) => r.version === index.latest) ? index.latest : list[0].version;
+    renderNotes();
+  }
+
+  function selected() { return otaCandidates().find((r) => r.version === sel.value) || null; }
+
+  function renderNotes() {
+    const r = selected();
+    notes.textContent = r ? ((r.date ? r.date + " - " : "") + (r.notes || "")) : "";
+    if (installBtn) installBtn.textContent = r && updCompareVersions(r.version, installed()) < 0 ? "Roll back to v" + r.version : "Install v" + (r ? r.version : "");
+  }
+
+  // Fold the folder listing into the index. The folders are what actually
+  // exists on GitHub, so a folder the index doesn't know is offered anyway
+  // (without a checksum); an index entry with no folder is dropped since its
+  // downloads would 404. `latest` is the newest stable, OTA-capable entry.
+  function mergeSources(idx, dirs) {
+    const byVer = {};
+    if (idx && Array.isArray(idx.releases)) idx.releases.forEach((r) => { if (r && r.version) byVer[r.version] = r; });
+    if (dirs) {
+      dirs.forEach((v) => {
+        if (byVer[v]) return;
+        byVer[v] = {
+          version: v, channel: v.indexOf("-") >= 0 ? "beta" : "stable", ota: true, unindexed: true,
+          notes: "Not in the release index yet - no release notes.",
+          firmware: { path: "V" + v + "/firmware.bin" },
+          filesystem: { path: "V" + v + "/littlefs.bin" },
+        };
+      });
+      Object.keys(byVer).forEach((v) => { if (dirs.indexOf(v) < 0) delete byVer[v]; });
+    }
+    const releases = Object.keys(byVer).map((v) => byVer[v]).sort((a, b) => updCompareVersions(b.version, a.version));
+    const stable = releases.filter((r) => r.ota && r.firmware && r.filesystem && r.channel !== "beta");
+    return { releases: releases, latest: stable.length ? stable[0].version : (releases.length ? releases[0].version : "") };
+  }
+
+  // Release index from the first mirror that answers. Resolves {index} or
+  // {reached} (HTTP-level failure: internet fine, index missing/broken) or
+  // {netErr} (transport failure: no route to the internet at all).
+  async function fetchIndex() {
+    let reached = "", netErr = "";
+    for (const m of UPD_MIRRORS) {
+      let res = null;
+      try {
+        res = await updFetch(m.base + "releases.json", 12000, { mode: "cors" });
+      } catch (e) {
+        netErr = m.name + ": " + (e && e.name === "AbortError" ? "timed out" : (e && e.message ? e.message : "unreachable"));
+        continue;
+      }
+      if (!res.ok) { reached = m.name + " answered HTTP " + res.status; continue; }
+      try {
+        const idx = await res.json();
+        UPD_RELEASES_BASE = m.base;
+        return { index: idx };
+      } catch (e) {
+        reached = m.name + " answered HTTP 200 but the release index is not valid JSON";
+      }
+    }
+    return reached ? { reached: reached } : { netErr: netErr };
+  }
+
+  // V<x.y.z> folder names under Releases/ from the GitHub contents API.
+  // Unauthenticated calls are rate-limited (60/h per address), so a failure
+  // here is not fatal - the index alone still works.
+  async function fetchFolders() {
+    try {
+      const res = await updFetch(UPD_DIR_API, 12000, { mode: "cors", headers: { Accept: "application/vnd.github+json" } });
+      if (!res.ok) return { reached: "GitHub API answered HTTP " + res.status };
+      const arr = await res.json();
+      if (!Array.isArray(arr)) return { reached: "GitHub API returned an unexpected listing" };
+      const dirs = [];
+      arr.forEach((e) => {
+        const m = e && e.type === "dir" && UPD_FOLDER_RE.exec(e.name || "");
+        if (m) dirs.push(m[1]);
+      });
+      return { dirs: dirs };
+    } catch (e) {
+      return { netErr: "GitHub API: " + (e && e.name === "AbortError" ? "timed out" : (e && e.message ? e.message : "unreachable")) };
+    }
+  }
+
+  // Tailored "get online" advice, from what the controller says about its
+  // own bridge link. Resolves to [message, needsBridgeSetup].
+  async function offlineAdvice(detail) {
+    let sta = null;
+    try { sta = await fetchJson("/api/wifi/sta"); } catch (e) { /* advice below still stands */ }
+    const why = detail ? " (" + detail + ")" : "";
+    if (sta && sta.ssid && sta.connected) {
+      return ["This browser has no internet" + why + ". The controller is already on \"" + sta.ssid + "\" at http://" + sta.ip +
+        "/ - join this phone to \"" + sta.ssid + "\", open http://" + sta.ip + "/ (or http://openhaldex.local/), come back to this tab and press Retry.", false];
+    }
+    if (sta && sta.ssid) {
+      return ["This browser has no internet" + why + ". The controller is set up for \"" + sta.ssid + "\" but isn't connected right now - " +
+        "out of range, wrong password, or still trying (it retries every 5 minutes). Check the Home WiFi card below (Save & Apply " +
+        "reconnects straight away), then join this phone to the same network, open the address the card shows and press Retry.", true];
+    }
+    return ["This browser has no internet while on the OpenHaldex WiFi" + why + ". Connect the controller to your home router in the " +
+      "Home WiFi (Bridge Mode) card below, join this phone to that same network, open the address the card shows and press Retry. " +
+      "No router available? Use \"Update from a File\" below - it needs no internet here.", true];
+  }
+
+  async function check() {
+    if (busy) return;
+    const t0 = Date.now();
+    const secs = () => ((Date.now() - t0) / 1000).toFixed(1) + " s";
+    checkBtn.disabled = true;
+    checkBtn.textContent = "Checking...";
+    if (bridgeBtn) bridgeBtn.hidden = true;
+    picker.hidden = true;
+    index = null;
+    const finish = (needBridge) => {
+      checkBtn.textContent = needBridge === undefined ? "Check for updates" : "Retry";
+      if (needBridge !== undefined) showRetry(needBridge);
+      checkBtn.disabled = false;
+    };
+
+    // 1. The controller must be reachable from here before anything else.
+    // Also refreshes "Installed" from the device itself so the comparison is
+    // against what is really running, not whatever loadInfo() saw at page load.
+    setStatus("1/2 Contacting the controller...");
+    setState("Checking...");
+    let info = null;
+    try {
+      const res = await updFetch("/ota/info", 6000);
+      if (res.ok) info = await res.json();
+    } catch (e) { /* unreachable - handled below */ }
+    if (!info || !info.version) {
+      setState("Controller unreachable", "upd-bad");
+      setStatus("Can't reach the controller from this browser (gave up after " + secs() + "). Stay on the OpenHaldex\u2011C6 WiFi - or, if you're using the home router, " +
+        "make sure the Home WiFi card shows Connected and that you opened this page at the address it gives. The controller also " +
+        "switches WiFi off after 5 minutes with no CAN traffic unless Bench Mode is on. Then press Retry.", "error");
+      finish(false);
+      return;
+    }
+    window._otaInstalledVersion = info.version;
+    const set = (id, v) => { const e = $(id); if (e) e.textContent = v || "--"; };
+    set("updInstalled", "v" + info.version);
+    set("otaFwVersion", info.version + (info.fsVersion && info.fsVersion !== "--" && info.fsVersion !== info.version ? " (web UI " + info.fsVersion + ")" : ""));
+
+    // 2. Release index + folder listing, in parallel. Each mirror gets 12 s,
+    // so a phone with no route can sit here a while - say so.
+    setStatus("2/2 Contacting GitHub for the release list... (controller answered in " + secs() + "; this can take up to 30 s with no internet)");
+    const [ir, fr] = await Promise.all([fetchIndex(), fetchFolders()]);
+
+    if (!ir.index && !fr.dirs) {
+      // Neither source answered. A transport failure on both means the phone
+      // can't get off this network at all; an HTTP status means the internet
+      // is fine and the published files are the problem.
+      if (ir.reached || fr.reached) {
+        setState("Release list unavailable", "upd-bad");
+        setStatus("The phone is online but the release list could not be read: " + (ir.reached || fr.reached) +
+          ". Nothing is wrong with the controller or the phone - the published releases are missing or broken. Use \"Update from a File\" below.", "error");
+        finish(false);
+      } else {
+        setState("No internet access", "upd-bad");
+        const adv = await offlineAdvice((ir.netErr || fr.netErr || "") + ", after " + secs());
+        setStatus(adv[0], "error");
+        finish(adv[1]);
+      }
+      return;
+    }
+
+    index = mergeSources(ir.index, fr.dirs);
+    const cur = installed();
+    const latest = index.latest || "";
+    set("updLatest", latest ? "v" + latest : "--");
+    const c = updCompareVersions(latest, cur);
+    const srcNote = !ir.index ? " (release index unavailable - folder listing only, no release notes)"
+      : !fr.dirs ? " (folder listing unavailable - " + (fr.reached || fr.netErr || "no answer") + "; showing the index only)" : "";
+    const via = " Release list from " + UPD_MIRRORS.filter((m) => m.base === UPD_RELEASES_BASE).map((m) => m.name).join("") + " in " + secs() + ".";
+    if (c > 0) { setState("Update available", "upd-available"); setStatus("v" + latest + " is available (installed v" + cur + ")." + srcNote + via); }
+    else if (c === 0) { setState("Up to date", "upd-current"); setStatus("You are on the latest release." + srcNote + via); }
+    else { setState("Ahead of release", "upd-current"); setStatus("Installed v" + cur + " is newer than the published v" + latest + "." + srcNote + via); }
+    renderPicker();
+    if (updChannel === "latest" && index.releases && index.releases.length) {
+      const newest = otaCandidates().find((r) => r.version === index.latest);
+      if (newest) {
+        const rb = await rebuiltSinceIndexed(newest);
+        if (rb.changed) {
+          setState("Rebuilt since release", "upd-available");
+          setStatus("v" + newest.version + " has been rebuilt since it was indexed - the published firmware is " + rb.published +
+            " bytes, the release index records " + rb.indexed + ". That usually means a fix landed without the version being " +
+            "bumped. Installing v" + newest.version + " again picks it up." + via);
+        } else {
+          setStatus("Latest build channel: could not confirm whether v" + newest.version + " has been rebuilt since release (" +
+            (rb.unknown || "no comparison available") + "). Re-installing it is still the way to pick up an in-place fix." + via);
+        }
+      }
+    }
+    finish();
+  }
+
+  // Has the newest release been rebuilt in place since it was indexed?
+  // releases.json records the size each .bin had when make_release.py ran, so
+  // a Content-Length that disagrees is positive evidence the file changed
+  // afterwards. One HEAD, no download.
+  //
+  // This is a one-way test. A size that matches does NOT mean the build is
+  // unchanged: littlefs.bin is a fixed-size partition image, so a rebuilt
+  // filesystem is always the same length, and a firmware rebuild can land on
+  // the same size by chance. (On this repo today 8.00.1 and 8.00.2 match the
+  // index exactly, while 8.00.3 and 9.00.0 do not - and for both of those the
+  // filesystem sha differs while its size does not.) Proving the negative
+  // would mean downloading both images and hashing them, which is not worth
+  // doing on a check, so a match is reported as "cannot tell", never as "no".
+  // Returns:
+  //   {changed:true, published, indexed} - definitely rebuilt since indexing
+  //   {unknown:"reason"}                 - could not tell, say so
+  async function rebuiltSinceIndexed(rel) {
+    const want = rel && rel.firmware && rel.firmware.size;
+    if (!want || rel.unindexed) return { unknown: "this release has no indexed size to compare against" };
+    const url = UPD_RELEASES_BASE + rel.firmware.path;
+    let res = null;
+    try {
+      res = await updFetch(url, 10000, { method: "HEAD", mode: "cors" });
+    } catch (e) {
+      return { unknown: "the published build could not be reached" };
+    }
+    if (!res.ok) return { unknown: "the published build answered HTTP " + res.status };
+    const len = parseInt(res.headers.get("content-length") || "0", 10);
+    // Not every mirror sends Content-Length (jsDelivr may not); never guess.
+    if (!len) return { unknown: "this mirror does not report a size" };
+    if (len !== want) return { changed: true, published: len, indexed: want };
+    return { unknown: "the firmware is the size the index expects, which does not rule out a rebuild" };
+  }
+
+  // streamed download with progress; returns a Blob and checks size when known
+  async function download(rel, part, stepId) {
+    const info = rel[part];
+    const url =/^https?:\/\//i.test(info.path) ? info.path : UPD_RELEASES_BASE + info.path;
+    setStep(stepId, "active");
+    setStatus("Downloading " + part + " (v" + rel.version + ")...");
+    const res = await fetch(url, { cache: "no-store", mode: "cors" });
+    if (!res.ok) throw new Error("Download failed: HTTP " + res.status + " for " + info.path);
+    // Progress against what the server says it is sending; the index's size
+    // is only a hint (it goes stale when a .bin is rebuilt in place).
+    const total = parseInt(res.headers.get("content-length") || "0", 10) || info.size || 0;
+    const chunks = [];
+    let got = 0;
+    if (res.body && res.body.getReader) {
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.length;
+        if (total) setPct(got / total, "Download");
+      }
+    } else {
+      const buf = await res.arrayBuffer();
+      chunks.push(new Uint8Array(buf));
+      got = buf.byteLength;
+    }
+    const cl = parseInt(res.headers.get("content-length") || "0", 10) || 0;
+    if (cl && got !== cl) throw new Error(part + " download was cut short (" + got + " of " + cl + " bytes).");
+    if (!got) throw new Error(part + " download was empty.");
+    setPct(1, "Download");
+    setStep(stepId, "done");
+    return new Blob(chunks, { type: "application/octet-stream" });
+  }
+
+  async function flash(rel, part, type, stepId) {
+    setStep(stepId, "active");
+    setStatus("Flashing " + part + "... do not power off.");
+    setPct(0, "Flash");
+    const blob = rel._blobs[part];
+    await window.otaUploadBlob(type, blob, part === "filesystem" ? "littlefs.bin" : "firmware.bin", {
+      onProgress: (f) => setPct(f, "Flash"),
+    });
+    setPct(1, "Flash");
+    setStep(stepId, "done");
+  }
+
+  async function waitForReboot(rel) {
+    setStep("reboot", "active");
+    setStatus("Device rebooting... waiting for it to come back.");
+    const t0 = Date.now();
+    await new Promise((r) => setTimeout(r, 4000));
+    while (Date.now() - t0 < 90000) {
+      setPct((Date.now() - t0) / 90000, "Reboot");
+      try {
+        const res = await updFetch("/ota/info", 3000);
+        if (res.ok) {
+          const i = await res.json();
+          setStep("reboot", "done");
+          setPct(1, "Done");
+          window._otaInstalledVersion = i.version;
+          const set = (id, v) => { const e = $(id); if (e) e.textContent = v || "--"; };
+          set("updInstalled", "v" + i.version);
+          set("otaFwVersion", i.version);
+          if (i.version === rel.version || i.version === updCoreVersion(rel.version)) {
+            setState("Installed v" + i.version, "upd-current");
+            setStatus("Update complete: now running v" + i.version + ". Reload the page to pick up the new web UI.", "ok");
+            setTimeout(() => location.reload(), 2500);
+          } else {
+            setState("Rolled back", "upd-bad");
+            setStatus("Device came back on v" + i.version + " instead of v" + rel.version + " - the new image was rejected or rolled back. Try again or use \"Update from a File\".", "error");
+          }
+          return;
+        }
+      } catch (e) { /* still rebooting - AP may drop and rejoin, or the home router lease takes a moment */ }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    setStatus("Device didn't respond within 90 s. Reconnect to the OpenHaldex WiFi (or the home network) and reload this page.", "error");
+  }
+
+  // Install sequence for a release from the list: web UI first (downloaded,
+  // flashed, verified), then firmware, then wait for the reboot.
+  async function runInstall(rel) {
+    busy = true;
+    checkBtn.disabled = true;
+    if (installBtn) installBtn.disabled = true;
+    sel.disabled = true;
+    resetSteps();
+    if (wrap) wrap.hidden = false;
+    setPct(0);
+    let stage = "check";
+    try {
+      const safe = await fetchJson("/ota/check");
+      if (!safe || !safe.allowed) throw new Error("Blocked: " + ((safe && safe.reason) || "system not safe for update."));
+
+      stage = "dlfs";
+      rel._blobs.filesystem = await download(rel, "filesystem", "dlfs");
+      stage = "fs";
+      await flash(rel, "filesystem", "filesystem", "fs");
+
+      // verify: the device has already remounted; check the web UI version it holds
+      stage = "verify";
+      setStep("verify", "active");
+      setStatus("Verifying filesystem...");
+      const fsi = await fetchJson("/ota/fsinfo");
+      if (!fsi || !fsi.ok) throw new Error("Filesystem verification failed (" + ((fsi && fsi.error) || "not mounted") + "). Retry the update.");
+      if (fsi.fsVersion && fsi.fsVersion !== "--" && fsi.fsVersion !== rel.version && fsi.fsVersion !== updCoreVersion(rel.version)) {
+        throw new Error("Filesystem reports v" + fsi.fsVersion + ", expected v" + rel.version + ". Retry the update.");
+      }
+      setStep("verify", "done");
+      rel._blobs.filesystem = null;
+
+      stage = "dlfw";
+      rel._blobs.firmware = await download(rel, "firmware", "dlfw");
+      stage = "fw";
+      await flash(rel, "firmware", "firmware", "fw");
+      rel._blobs.firmware = null;
+      await waitForReboot(rel);
+    } catch (e) {
+      let msg = e.message;
+      if (stage === "fs" || stage === "verify") {
+        // The device wipes a rejected filesystem image, so the firmware keeps
+        // running but this web UI is gone until littlefs.bin goes on again.
+        msg += " The controller is still running v" + installed() + "; the web UI partition was cleared. Press Install again " +
+          "(or upload littlefs.bin under \"Update from a File\"). If this page won't load, the controller now shows a recovery page at its address.";
+      }
+      setStatus(msg, "error");
+      if (wrap) wrap.hidden = true;
+    }
+    rel._blobs = null;
+    busy = false;
+    checkBtn.disabled = false;
+    if (installBtn) installBtn.disabled = false;
+    sel.disabled = false;
+  }
+
+  function install() {
+    const rel = selected();
+    if (!rel || busy) return;
+    const cur = installed();
+    const dir = updCompareVersions(rel.version, cur);
+    const what = dir < 0 ? "roll back to v" + rel.version : (dir === 0 ? "re-install v" + rel.version : "update to v" + rel.version);
+    let msg = "This will " + what + " (currently v" + cur + ").\n\nThe web UI is replaced first, then the firmware, then the device reboots. Keep this page open.";
+    if (dir < 0) msg += "\n\nRolling back: older releases may not have this update page, so coming forward again could mean a USB flash. Settings may also be reset - export a backup first (Diagnostics tab).";
+    if (dir === 0) {
+      msg += "\n\nSame version number: this re-downloads whatever is published under v" + rel.version + " right now. If that " +
+        "build was rebuilt after release it will bring the newer code in; if it was not, you end up back where you started. " +
+        "It is not a published release in its own right, so export a settings backup first (Diagnostics tab).";
+    }
+    if (!confirm(msg + "\n\nContinue?")) return;
+    rel._blobs = {};
+    runInstall(rel);
+  }
+
+  // --- update channel -----------------------------------------------------
+  // Kept in localStorage rather than on the controller: nothing on the device
+  // talks to GitHub (it has no internet), so this only affects this browser,
+  // and opting into unreleased builds should not silently follow the device to
+  // whoever opens it next.
+  const chanSel = $("updChannel"), chanHint = $("updChannelHint");
+  function renderChannel() {
+    if (chanSel) chanSel.value = updChannel;
+    if (!chanHint) return;
+    if (updChannel === "latest") {
+      chanHint.textContent = "A fix sometimes lands before the next version number is cut, and the newest release is then rebuilt in place under the same version. " +
+        "On this channel the newest release stays installable even when its version matches what you already have, and a check reports whether it has been rebuilt since it was indexed. " +
+        "These builds have not been through a release - keep a settings backup (Diagnostics tab).";
+      chanHint.hidden = false;
+    } else {
+      chanHint.hidden = true;
+    }
+  }
+  try {
+    const saved = localStorage.getItem(UPD_CHANNEL_KEY);
+    if (saved === "latest" || saved === "stable") updChannel = saved;
+  } catch (e) { /* private mode - stay on stable */ }
+  renderChannel();
+  if (chanSel) {
+    chanSel.addEventListener("change", () => {
+      updChannel = chanSel.value === "latest" ? "latest" : "stable";
+      try { localStorage.setItem(UPD_CHANNEL_KEY, updChannel); } catch (e) { /* not fatal */ }
+      renderChannel();
+      // Re-check rather than re-label a stale result: the rebuild check only
+      // runs on the latest channel, so the previous status may not apply.
+      index = null;
+      picker.hidden = true;
+      resetSteps();
+      setState("Not checked");
+      setStatus(updChannel === "latest"
+        ? "Latest build channel selected. Press Check for updates."
+        : "Stable channel selected. Press Check for updates.");
+      checkBtn.textContent = "Check for updates";
+      if (bridgeBtn) bridgeBtn.hidden = true;
+    });
+  }
+
+  checkBtn.addEventListener("click", check);
+  if (bridgeBtn) bridgeBtn.addEventListener("click", goBridge);
+  const goLink = $("updGoBridge");
+  if (goLink) goLink.addEventListener("click", goBridge);
+  if (installBtn) installBtn.addEventListener("click", install);
+  sel.addEventListener("change", renderNotes);
+  if (showAll) showAll.addEventListener("change", () => { if (index) renderPicker(); });
+}
+
+// ---------------------------------------------------------------------------
+// Home WiFi (bridge mode) card - PR #39 (louij2), ported. The controller joins
+// a home/garage network as a station alongside its own AP. Status is polled
+// because association takes a few seconds after a save or restart.
+//
+// The card exists twice - Diagnostics ("wifiSta..." ids) and the OTA tab
+// ("otaWifiSta..."), where it's the way to get the phone online for the GitHub
+// update check - so the element ids are built from a prefix.
+// ---------------------------------------------------------------------------
+function initWifiSta(prefix) {
+  const p = prefix || "wifiSta";
+  const ssidInput = document.getElementById(p + "SsidInput");
+  const ssidList = document.getElementById(p + "SsidList");
+  const scanBtn = document.getElementById(p + "Scan");
+  const pwInput = document.getElementById(p + "PasswordInput");
+  const pwToggle = document.getElementById(p + "PasswordToggle");
+  const status = document.getElementById(p + "Status");
+  const btnSave = document.getElementById(p + "Save");
+  const btnReset = document.getElementById(p + "Reset");
+  if (!ssidInput || !pwInput || !status || !btnSave || !btnReset) return;
+
+  // Unsaved edits in either field hold the periodic refresh off the SSID box,
+  // so typing is never clobbered - including after tabbing into the password.
+  let userEditing = false;
+  ssidInput.addEventListener("input", () => { userEditing = true; });
+  pwInput.addEventListener("input", () => { userEditing = true; });
+
+  const signalQuality = (rssi) => (rssi >= -50 ? "excellent" : rssi >= -60 ? "good" : rssi >= -70 ? "fair" : "weak");
+
+  function renderStatus(d) {
+    if (!d || !d.ssid) {
+      status.textContent = "Disabled - AP only";
+      status.style.color = "var(--text-dim)";
+    } else if (d.connected) {
+      const sig = typeof d.rssi === "number" ? " (" + signalQuality(d.rssi) + " signal, " + d.rssi + " dBm)" : "";
+      status.textContent = "\u2713 Connected to \"" + d.ssid + "\"" + sig + " - reachable at http://" + d.ip + "/ and http://openhaldex.local/";
+      status.style.color = "var(--success)";
+    } else {
+      status.textContent = "Configured for \"" + d.ssid + "\" - not connected (out of range, or still trying)";
+      status.style.color = "var(--text-dim)";
+    }
+  }
+
+  function refresh() {
+    fetchJson("/api/wifi/sta").then((d) => {
+      if (!d) return;
+      if (!userEditing) ssidInput.value = d.ssid || "";
+      renderStatus(d);
+    });
+  }
+  refresh();
+  setInterval(refresh, 5000);
+
+  if (pwToggle) pwToggle.addEventListener("click", () => {
+    const hidden = pwInput.type === "password";
+    pwInput.type = hidden ? "text" : "password";
+    pwToggle.textContent = hidden ? "\u{1F648}" : "\u{1F441}";
+  });
+
+  // Network scan: explicit button, never automatic - the single radio leaves
+  // the AP's channel for the scan. The device runs it asynchronously; poll
+  // until the list is back (a few seconds).
+  if (scanBtn) scanBtn.addEventListener("click", async () => {
+    scanBtn.disabled = true;
+    const prev = ssidInput.placeholder;
+    ssidInput.placeholder = "Scanning...";
+    let resp = null;
+    for (let i = 0; i < 12; i++) {
+      resp = await fetchJson("/api/wifi/scan");
+      if (resp && !resp.scanning) break;
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    ssidInput.placeholder = prev;
+    scanBtn.disabled = false;
+    if (!resp || !Array.isArray(resp.networks)) { showNotification("Scan failed", "error"); return; }
+    if (ssidList) {
+      ssidList.innerHTML = "";
+      resp.networks.forEach((n) => {
+        const o = document.createElement("option");
+        o.value = n.ssid;
+        o.textContent = n.ssid + (n.secure ? " \u{1F512}" : "") + " (" + n.rssi + " dBm)";
+        ssidList.appendChild(o);
+      });
+    }
+    showNotification(resp.networks.length + " network" + (resp.networks.length === 1 ? "" : "s") + " found - pick from the list");
+    ssidInput.focus();
+  });
+
+  btnSave.addEventListener("click", async () => {
+    const ssid = ssidInput.value.trim();
+    const pwd = pwInput.value;
+    if (ssid.length > 32) { showNotification("SSID too long (max 32)", "error"); return; }
+    if (pwd.length > 0 && pwd.length < 8) { showNotification("Password must be at least 8 characters, or blank", "error"); return; }
+    const resp = await fetchJson("/api/wifi/sta", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ssid: ssid, password: pwd }),
+    });
+    if (!resp) { showNotification("Failed to reach device", "error"); return; }
+    if (!resp.ok) { showNotification(resp.error || "Failed to save", "error"); return; }
+    userEditing = false;
+    pwInput.value = "";
+    if (ssid) {
+      status.textContent = "Connecting to \"" + ssid + "\"... (the AP restarts - reconnect if you drop off)";
+      status.style.color = "var(--text-dim)";
+      showNotification("Home WiFi saved - connecting...");
+    } else {
+      status.textContent = "Disabled - AP only";
+      showNotification("Bridge mode disabled");
+    }
+  });
+
+  btnReset.addEventListener("click", async () => {
+    const resp = await fetchJson("/api/wifi/sta/reset", { method: "POST" });
+    if (!resp || !resp.ok) { showNotification("Failed to disable", "error"); return; }
+    userEditing = false;
+    ssidInput.value = "";
+    pwInput.value = "";
+    status.textContent = "Disabled - AP only";
+    status.style.color = "var(--text-dim)";
+    showNotification("Bridge mode disabled");
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Backup & Restore card - PR #39 (louij2), ported and widened to everything
+// this firmware's /api/settings accepts back. The device already ignores keys
+// it doesn't know, so the list below is only there to keep out the entries
+// that are actions or would change what the controller is doing right now
+// (frame-edit commands, the SavvyCAN analyser toggles).
+// ---------------------------------------------------------------------------
+const BACKUP_GENERAL_KEYS = [
+  "haldexGeneration", "isStandalone", "useCANifAvailable", "broadcastOpenHaldexOverCAN", "disableController",
+  "disengageUnderSpeed", "disengageAboveSpeed", "disableThrottle",
+  "tcForceMode", "tcForceModeValue", "hazardForceMode", "hazardForceModeValue",
+  "extButtonForceMode", "extBtnForceModeValue", "forceModesPriority", "disableOnboardButton", "disableExternalButton",
+  "followBrake", "invertBrake", "followHandbrake", "invertHandbrake",
+  "fixHunting", "dangerZoneEnabled", "esp14MinFloorPct", "bpkCeilingNm",
+  "slipWheelbaseMm", "slipTrackFrontMm", "slipTrackRearMm", "slipSteeringRatio", "slipMinSpeedRaw",
+  "lockReleaseEnabled", "lockReleaseRampMs", "lockEngageRampMs",
+  "steeringGainEnabled", "steeringGainStartDeg", "steeringGainFullDeg", "steeringGainFloor",
+  "liveDiagEnabled", "ledBrightness",
+  "canSleepEnabled", "canSleepAggressive", "benchMode", "lpWakeThresholdFps",
+  "longLearnNotes", "bleEnabled",
+];
+
+function initBackupRestore() {
+  const btnExport = document.getElementById("backupExport");
+  const btnImport = document.getElementById("backupImportBtn");
+  const fileInput = document.getElementById("backupImportFile");
+  const status = document.getElementById("backupStatus");
+  const pwSection = document.getElementById("backupPwSection");
+  const pwInput = document.getElementById("backupPwInput");
+  const pwApply = document.getElementById("backupPwApply");
+  const staPwSection = document.getElementById("backupStaPwSection");
+  const staPwInput = document.getElementById("backupStaPwInput");
+  const staPwApply = document.getElementById("backupStaPwApply");
+  if (!btnExport || !btnImport || !fileInput || !status) return;
+
+  const setStatus = (msg, ok) => { status.textContent = msg; status.style.color = ok ? "var(--success)" : "var(--danger)"; };
+  const post = (url, body) => fetchJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+  btnExport.addEventListener("click", async () => {
+    setStatus("Exporting...", true);
+    const [settings, ssidData, pwData, staData, slotList] = await Promise.all([
+      fetchJson("/api/settings"), fetchJson("/api/wifi/ssid"), fetchJson("/api/wifi"), fetchJson("/api/wifi/sta"), fetchJson("/api/maps"),
+    ]);
+    if (!settings) { setStatus("Export failed - couldn't reach the device", false); return; }
+    const stamp = new Date().toISOString();
+    // The BLE pairing code is shown on the Bluetooth card but must not travel in a backup file.
+    const exportable = Object.assign({}, settings);
+    delete exportable.blePasskey;
+    // On-device map slots (Expert tab > Maps) so a firmware update cannot lose them.
+    const mapSlots = [];
+    if (slotList && Array.isArray(slotList.slots)) {
+      for (const sl of slotList.slots) {
+        if (!sl.used) continue;
+        const m = await fetchJson("/api/maps/get?index=" + sl.index);
+        if (m && m.ok) mapSlots.push({ index: sl.index, name: m.name, speedArray: m.speedArray, throttleArray: m.throttleArray, lockArray: m.lockArray });
+      }
+    }
+    const backup = {
+      _product: "OpenHaldex-C6",
+      _exportedAt: stamp,
+      _fwVersion: settings.FW_VERSION,
+      settings: exportable,
+      mapSlots: mapSlots,
+      wifi: { ssid: ssidData ? ssidData.ssid : null, passwordSet: !!(pwData && pwData.passwordSet) },
+      wifiSta: { ssid: staData && staData.ssid ? staData.ssid : null, passwordSet: !!(staData && staData.passwordSet) },
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "openhaldex-backup-" + stamp.replace(/[:.]/g, "-") + ".json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus("Exported \u2713 " + stamp, true);
+    showNotification("Config exported");
+  });
+
+  btnImport.addEventListener("click", () => fileInput.click());
+
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    if (pwSection) pwSection.style.display = "none";
+    if (staPwSection) staPwSection.style.display = "none";
+    setStatus("Reading " + file.name + "...", true);
+    let backup;
+    try { backup = JSON.parse(await file.text()); } catch (e) {
+      setStatus("Not a valid backup file (bad JSON)", false); fileInput.value = ""; return;
+    }
+    const s = backup.settings || {};
+    if (!Array.isArray(s.throttleArray) || !Array.isArray(s.speedArray) || !Array.isArray(s.lockArray)) {
+      setStatus("Backup file is missing the tune table", false); fileInput.value = ""; return;
+    }
+    if (!confirm("Restore settings from " + file.name + (backup._fwVersion ? " (exported from v" + backup._fwVersion + ")" : "") +
+      "?\n\nThis replaces the Expert tune, steering scale, frame edits and settings on the controller.")) { fileInput.value = ""; return; }
+
+    // 1. Generation first, so the frame-edit mask below lands on the right table.
+    if (typeof s.haldexGeneration === "number") await post("/api/settings", { haldexGeneration: s.haldexGeneration });
+
+    // 2. Tune table (+ steering scale if the backup has it).
+    setStatus("Restoring Expert tune...", true);
+    const tune = { throttleArray: s.throttleArray, speedArray: s.speedArray, lockArray: s.lockArray };
+    if (Array.isArray(s.steeringArray) && Array.isArray(s.steeringLockScaleArray)) {
+      tune.steeringArray = s.steeringArray;
+      tune.steeringLockScaleArray = s.steeringLockScaleArray;
+    }
+    const tuneResp = await post("/api/tune", tune);
+    if (!tuneResp || !tuneResp.ok) { setStatus("Failed to restore the tune table - is the device reachable?", false); fileInput.value = ""; return; }
+
+    // 3. General settings.
+    setStatus("Restoring settings...", true);
+    const general = {};
+    BACKUP_GENERAL_KEYS.forEach((k) => { if (k in s) general[k] = s[k]; });
+    await post("/api/settings", general);
+
+    // 4. Frame edits for this generation, one bit at a time (that's the API).
+    if (Array.isArray(s.frameBlocks)) {
+      for (const fb of s.frameBlocks) {
+        if (typeof fb.bit === "number" && typeof fb.enabled === "boolean") {
+          await post("/api/settings", { frameEditBit: fb.bit, frameEditOn: fb.enabled });
+        }
+      }
+    }
+
+    // 4b. Expert map slots (older backups have none).
+    if (Array.isArray(backup.mapSlots)) {
+      setStatus("Restoring map slots...", true);
+      for (const m of backup.mapSlots) {
+        if (m && typeof m.index === "number" && m.name) {
+          await post("/api/maps/save", { index: m.index, name: m.name, speedArray: m.speedArray, throttleArray: m.throttleArray, lockArray: m.lockArray });
+        }
+      }
+    }
+
+    // 5. WiFi identity (names only - passwords are never in the file).
+    const wifi = backup.wifi || {};
+    if (wifi.ssid) await post("/api/wifi/ssid", { ssid: wifi.ssid });
+    const wifiSta = backup.wifiSta || {};
+    if (wifiSta.ssid) await post("/api/wifi/sta", { ssid: wifiSta.ssid, password: "" });
+
+    const needsApPw = !!(wifi.passwordSet && pwSection);
+    const needsStaPw = !!(wifiSta.passwordSet && staPwSection);
+    if (needsApPw) pwSection.style.display = "";
+    if (needsStaPw) staPwSection.style.display = "";
+    if (needsApPw || needsStaPw) {
+      setStatus("Tune + settings restored \u2713. Enter the password(s) below to finish.", true);
+    } else {
+      setStatus("Restored \u2713 - reload the page to see the new values.", true);
+      showNotification("Config imported");
+    }
+    fileInput.value = "";
+  });
+
+  if (pwApply) pwApply.addEventListener("click", async () => {
+    const pwd = pwInput.value;
+    if (pwd.length < 8) { setStatus("Password must be at least 8 characters", false); return; }
+    const resp = await post("/api/wifi", { password: pwd });
+    if (!resp || !resp.ok) { setStatus("Failed to apply the AP password", false); return; }
+    pwInput.value = "";
+    pwSection.style.display = "none";
+    setStatus("Restored \u2713 - the AP is restarting, reconnect to WiFi...", true);
+    showNotification("Config imported");
+  });
+
+  if (staPwApply) staPwApply.addEventListener("click", async () => {
+    const pwd = staPwInput.value;
+    if (pwd.length > 0 && pwd.length < 8) { setStatus("Home WiFi password must be at least 8 characters (or blank for an open network)", false); return; }
+    const cur = await fetchJson("/api/wifi/sta");
+    const ssid = cur && cur.ssid ? cur.ssid : "";
+    const resp = await post("/api/wifi/sta", { ssid: ssid, password: pwd });
+    if (!resp || !resp.ok) { setStatus("Failed to apply the home WiFi password", false); return; }
+    staPwInput.value = "";
+    staPwSection.style.display = "none";
+    setStatus("Restored \u2713 - connecting to home WiFi...", true);
+    showNotification("Config imported");
+  });
 }

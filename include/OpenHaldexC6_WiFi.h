@@ -3,16 +3,15 @@
 #include <OpenHaldexC6_defs.h>
 #include <cstring>
 
-// WiFi AP setup and reset helpers. Implemented in OpenHaldexC6_WiFi.cpp.
-void setupWiFi();
-void disconnectWifi();
+// Legacy WiFi header - now just a stub
+// All WiFi functionality has moved to OpenHaldexC6_WebServer.h
 
-// Captive-DNS responder (resolves every query to 192.168.1.1) so phone OS
-// connectivity-check probes reach the web server and get a bare 404, letting the
-// phone conclude "no internet" and keep its own cellular data alive.
-void dnsStart();
-void dnsStop();
-void dnsProcess(); // pump once per loop() iteration
-void resetWifiPassword(); // clears WiFi password and restarts AP as open network
+// These functions are no longer used - kept for compatibility
+void setupWiFi();
+void startSoftAP();       // (re)start the local-only AP with current SSID/password (no DHCP gateway/DNS)
+void disconnectWifi();
 void resetWifiSsid();     // restores default SSID and restarts AP
-void resetWifi();         // clears password AND restores default SSID, restarts AP
+void resetWifi();         // mode-button long press: clears password AND restores default SSID, restarts AP in first-run setup mode
+void resetWifiSta();      // clears the home-network (bridge mode) credentials and restarts as AP only
+void pollWifiSta();       // call from loop(): tracks the bridge-mode STA connection + retry back-off
+inline void updateLabels(void *arg) {}
