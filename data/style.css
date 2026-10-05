@@ -2341,3 +2341,42 @@ button,
     .nav-tab { gap: 0.35rem; font-size: 0.72rem; letter-spacing: 0.03em; padding: 0.9rem 0.3rem; }
     .nav-tab > span { overflow: visible; text-overflow: clip; }
 }
+
+/* Calibrate > Car geometry */
+.geo-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.9rem;
+    margin: 0.75rem 0 1rem;
+}
+
+.geo-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.geo-name {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.geo-hint {
+    font-size: 0.8rem;
+    line-height: 1.35;
+    color: var(--text-dim);
+}
+
+.input-number.geo-input {
+    margin-top: auto;
+    font-size: 1.1rem;
+    margin-bottom: 0;
+    text-align: left;
+}
+
+@media (min-width: 720px) {
+    .geo-grid {
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem 1.5rem;
+    }
+}

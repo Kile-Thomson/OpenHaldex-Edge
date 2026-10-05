@@ -343,6 +343,7 @@
                     <li>Run the <strong>Learn</strong> (engine running, car stationary, Haldex CAN live).</li>
                     <li>Set <strong>Lock calibration</strong> to 1:1 using the learn chart.</li>
                     <li>Optional: raise the <strong>Launch PWM floor</strong>.</li>
+                    <li>Not a TT Mk3? Check the <strong>Car geometry</strong> numbers (only affects the wheel slip readout).</li>
                     <li>Still not smooth? Run <strong>Long Learn</strong> below, or edit the <strong>frame blocks</strong> by hand.</li>
                 </ol>
             </section>
@@ -430,6 +431,45 @@
                         <div class="slider-value"><span id="esp14MinFloorValue">0</span> %</div>
                     </div>
                 </div>
+            </section>
+
+            <section class="card" id="geometrySection">
+                <div class="calib-head">
+                    <h3 class="subsection-title">5 &middot; Car geometry (optional)</h3>
+                </div>
+                <p class="hint">Used only for the per-wheel slip readout on the Dashboard (how far each wheel is from the speed the steering says it should turn at). It does not change how the lock behaves. The defaults are for an <strong>Audi TT Mk3</strong>, so leave them alone for that car. For another car, take the numbers from its spec sheet or owner's manual (look under "Dimensions", "Track" and "Steering").</p>
+                <div class="geo-grid">
+                    <label class="geo-field" for="geoWheelbase">
+                        <span class="geo-name">Wheelbase (mm)</span>
+                        <span class="geo-hint">Axle to axle: the distance between the centre of the front wheels and the centre of the rear wheels. Spec sheet: "Wheelbase". TT Mk3: 2505.</span>
+                        <input type="number" id="geoWheelbase" class="input-number geo-input" min="1500" max="4000" step="1" inputmode="numeric">
+                    </label>
+                    <label class="geo-field" for="geoTrackFront">
+                        <span class="geo-name">Front track (mm)</span>
+                        <span class="geo-hint">Width between the centres of the two front tyres where they touch the road. Spec sheet: "Track, front". TT Mk3: 1572.</span>
+                        <input type="number" id="geoTrackFront" class="input-number geo-input" min="1000" max="2500" step="1" inputmode="numeric">
+                    </label>
+                    <label class="geo-field" for="geoTrackRear">
+                        <span class="geo-name">Rear track (mm)</span>
+                        <span class="geo-hint">The same width measured at the rear tyres. Spec sheet: "Track, rear". TT Mk3: 1543.</span>
+                        <input type="number" id="geoTrackRear" class="input-number geo-input" min="1000" max="2500" step="1" inputmode="numeric">
+                    </label>
+                    <label class="geo-field" for="geoSteerRatio">
+                        <span class="geo-name">Steering ratio (:1)</span>
+                        <span class="geo-hint">How many degrees you turn the steering wheel for each degree the front wheels turn. Spec sheet: "Steering ratio" (15.0 means 15:1). TT Mk3: 15.0.</span>
+                        <input type="number" id="geoSteerRatio" class="input-number geo-input" min="8" max="30" step="0.1" inputmode="decimal">
+                    </label>
+                    <label class="geo-field" for="geoMinSpeed">
+                        <span class="geo-name">Ignore slip below (km/h)</span>
+                        <span class="geo-hint">At crawling speed the slip numbers are mostly noise, so they are left blank under this speed. Default: 5.</span>
+                        <input type="number" id="geoMinSpeed" class="input-number geo-input" min="0" max="30" step="0.5" inputmode="decimal">
+                    </label>
+                </div>
+                <div class="learn-controls">
+                    <button class="btn-secondary" id="geoSave" type="button">Save geometry</button>
+                    <button class="btn-secondary" id="geoReset" type="button">Reset to Audi TT Mk3</button>
+                </div>
+                <p class="hint" id="geoStatus"></p>
             </section>
 
             <section class="card" id="longLearnSection">

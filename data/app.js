@@ -440,6 +440,8 @@ async function initStoredSettings() {
       if (esp14FloorVal) esp14FloorVal.textContent = data.esp14MinFloorPct;
     }
 
+    populateGeometry(data);
+
     const canSleepElem = document.getElementById("canSleepEnabled");
     if (canSleepElem) canSleepElem.checked = data.canSleepEnabled || false;
 
@@ -1187,6 +1189,8 @@ function initNavigation() {
       saveSetting("bpkCeilingNm", parseInt(bpkCeilingRange.value));
     });
   }
+
+  initGeometry();
 
   // ESP_14 Min-band launch-PWM floor. Same rationale as the BPK slider: update
   // the label live while dragging, only save on release so the car isn't streamed
@@ -2674,6 +2678,92 @@ function updateChartMarker() {
 // PAL-friendly explainers for the Calibrate tab. Keyed by the data-info value on
 // each .calib-info button; opened in the shared #calibInfoModal. Kept as plain
 // strings (no HTML) so the copy stays readable and can't inject markup.
+// ---- Calibrate > Car geometry (per-car slip geometry) -------------------
+// Firmware keys: slipWheelbaseMm, slipTrackFrontMm, slipTrackRearMm,
+// slipSteeringRatio, slipMinSpeedRaw. The speed floor is stored in raw wheel
+// speed units (1 unit = 0.0075 km/h), shown here in km/h.
+const GEO_DEFAULTS = { wheelbase: 2505, trackFront: 1572, trackRear: 1543, ratio: 15.0, minKmh: 5.0 };
+const GEO_RAW_PER_KMH = 1 / 0.0075;
+
+function geoFields() {
+  return {
+    wheelbase: document.getElementById("geoWheelbase"),
+    trackFront: document.getElementById("geoTrackFront"),
+    trackRear: document.getElementById("geoTrackRear"),
+    ratio: document.getElementById("geoSteerRatio"),
+    minKmh: document.getElementById("geoMinSpeed"),
+  };
+}
+
+function populateGeometry(data) {
+  const f = geoFields();
+  if (!f.wheelbase) return;
+  if (data.slipWheelbaseMm !== undefined) f.wheelbase.value = data.slipWheelbaseMm;
+  if (data.slipTrackFrontMm !== undefined) f.trackFront.value = data.slipTrackFrontMm;
+  if (data.slipTrackRearMm !== undefined) f.trackRear.value = data.slipTrackRearMm;
+  if (data.slipSteeringRatio !== undefined) f.ratio.value = Number(data.slipSteeringRatio).toFixed(1);
+  if (data.slipMinSpeedRaw !== undefined) f.minKmh.value = (data.slipMinSpeedRaw / GEO_RAW_PER_KMH).toFixed(1);
+}
+
+function initGeometry() {
+  const f = geoFields();
+  const save = document.getElementById("geoSave");
+  const reset = document.getElementById("geoReset");
+  const status = document.getElementById("geoStatus");
+  if (!f.wheelbase || !save || !reset) return;
+
+  const setStatus = (msg, ok) => {
+    if (!status) return;
+    status.textContent = msg;
+    status.style.color = ok ? "var(--success)" : "var(--danger)";
+  };
+  const num = (el, lo, hi) => {
+    const v = parseFloat(el.value);
+    return Number.isFinite(v) && v >= lo && v <= hi ? v : null;
+  };
+
+  save.addEventListener("click", async () => {
+    const wb = num(f.wheelbase, 1500, 4000);
+    const tf = num(f.trackFront, 1000, 2500);
+    const tr = num(f.trackRear, 1000, 2500);
+    const ratio = num(f.ratio, 8, 30);
+    const kmh = num(f.minKmh, 0, 30);
+    if (wb === null) { setStatus("Wheelbase must be 1500 to 4000 mm", false); return; }
+    if (tf === null) { setStatus("Front track must be 1000 to 2500 mm", false); return; }
+    if (tr === null) { setStatus("Rear track must be 1000 to 2500 mm", false); return; }
+    if (ratio === null) { setStatus("Steering ratio must be 8 to 30", false); return; }
+    if (kmh === null) { setStatus("Minimum speed must be 0 to 30 km/h", false); return; }
+    const ok = await saveGeometry({ wb, tf, tr, ratio, kmh });
+    setStatus(ok ? "Saved" : "Could not save - check the connection", ok);
+  });
+
+  reset.addEventListener("click", async () => {
+    const d = GEO_DEFAULTS;
+    f.wheelbase.value = d.wheelbase;
+    f.trackFront.value = d.trackFront;
+    f.trackRear.value = d.trackRear;
+    f.ratio.value = d.ratio.toFixed(1);
+    f.minKmh.value = d.minKmh.toFixed(1);
+    const ok = await saveGeometry({ wb: d.wheelbase, tf: d.trackFront, tr: d.trackRear, ratio: d.ratio, kmh: d.minKmh });
+    setStatus(ok ? "Reset to Audi TT Mk3 values" : "Could not save - check the connection", ok);
+  });
+}
+
+async function saveGeometry(g) {
+  const resp = await fetchJson("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      slipWheelbaseMm: Math.round(g.wb),
+      slipTrackFrontMm: Math.round(g.tf),
+      slipTrackRearMm: Math.round(g.tr),
+      slipSteeringRatio: Math.round(g.ratio * 10) / 10,
+      slipMinSpeedRaw: Math.round(g.kmh * GEO_RAW_PER_KMH),
+    }),
+  });
+  return !!(resp && resp.ok);
+}
+
 const CALIB_INFO = {
   gen: {
     title: "Generation",
@@ -4470,6 +4560,7 @@ const BACKUP_GENERAL_KEYS = [
   "extButtonForceMode", "extBtnForceModeValue", "forceModesPriority", "disableOnboardButton", "disableExternalButton",
   "followBrake", "invertBrake", "followHandbrake", "invertHandbrake",
   "fixHunting", "dangerZoneEnabled", "esp14MinFloorPct", "bpkCeilingNm",
+  "slipWheelbaseMm", "slipTrackFrontMm", "slipTrackRearMm", "slipSteeringRatio", "slipMinSpeedRaw",
   "lockReleaseEnabled", "lockReleaseRampMs", "lockEngageRampMs",
   "steeringGainEnabled", "steeringGainStartDeg", "steeringGainFullDeg", "steeringGainFloor",
   "liveDiagEnabled", "ledBrightness",
