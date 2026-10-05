@@ -131,7 +131,7 @@ def main() -> None:
         "channel": channel,
         "date": datetime.date.today().isoformat(),
         "ota": True,
-        "notes": release_notes(args.changelog, version),
+        "notes": release_notes(args.changelog, version.split("-")[0]),
         "firmware": {"path": f"V{version}/firmware.bin", "size": firmware.stat().st_size, "sha256": sha256(firmware)},
         "filesystem": {"path": f"V{version}/littlefs.bin", "size": littlefs.stat().st_size, "sha256": sha256(littlefs)},
     }

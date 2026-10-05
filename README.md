@@ -96,12 +96,12 @@ Everything below runs on the Forbes hardware.
 
 Things worth knowing when you move from Edge v8:
 
-- **Settings keys are unchanged.** The module still stores everything in the one `openhaldex` settings area, so a flash that leaves that area alone keeps your settings. The merged image is one file covering flash from 0x0 to the end of the web UI partition, and the settings area inside that range is filled with blank flash, so treat a merged-image USB flash as a factory reset and plan to set the unit up again. Edge v8 has no Backup & Restore, so write down your Expert table first or screenshot it. v9 units can export a backup (see [Backup & Restore](#backup--restore)).
+- **Settings keys are unchanged.** The module still stores everything in the one `openhaldex` settings area, so a flash that leaves that area alone keeps your settings. The merged image is one file covering flash from 0x0 to the end of the web UI partition, and the settings area inside that range is filled with blank flash, so a merged-image USB flash is a factory reset. To keep your settings, flash the separate parts instead, as shown under [First flash over USB](#first-flash-over-usb). Edge v8 has no Backup & Restore, so write down your Expert table or screenshot it either way. v9 units can export a backup (see [Backup & Restore](#backup--restore)).
 - **The speed window now gates every lock path.** Disengage under speed, disengage above speed and minimum throttle apply to force modes (TC, hazards, external button) and to Expert mode, not only to the fixed-ratio modes. On Edge v8 those two bypassed the window. If you relied on a force mode locking the car below your "disengage under" speed, lower that setting.
 - **From a home network the UI asks for a login.** Over the module's own WiFi nothing changes. See [Home WiFi](#home-wifi-bridge-mode).
 - **The learn sweep needs the car stationary** (5 km/h or less). It refuses to start, or aborts, in a moving car.
 - **The steering-angle lock taper is on by default on a fresh unit**, with the curve described under [Basic tab](#basic-tab-when-lock-is-allowed). A unit that carries Edge v8 settings keeps whatever its steering setting was.
-- **The default correction factor** used before you run a learn follows upstream's formula (lock/2 + 20), where Edge v8 used (lock + 20)/2. Run the learn and it stops mattering.
+- **The default correction factor** used before you run a learn stays Edge's (lock + 20)/2, which matches the fit written in the source. Upstream's code currently computes lock/2 + 20; a pull request to line the two up is open upstream. Run the learn and it stops mattering.
 
 ---
 
@@ -368,7 +368,7 @@ It clears itself. The moment either CAN bus shows traffic, Bench Mode switches i
 
 OpenHaldex can ask the Haldex for live measurements and show them in the web UI, as a scan tool would. This uses the module's diagnostic channel, so it is **off by default** (Settings > **Enable Live Diagnostics**). It picks the protocol from the generation you set.
 
-- **Gen5 (0CQ, 0AY, VAQ): UDS.** Terminal voltage, control module temperature, clutch temperature, cooling fin temperature, clutch current, PWM and voltage. Clutch and fin temperatures show `--` when the decoded value is not plausible rather than showing a wrong number.
+- **Gen5 (0CQ, 0AY, VAQ): UDS.** Terminal voltage, control module temperature, clutch temperature, cooling fin temperature, clutch current, PWM and voltage. Clutch and fin temperatures show `--` when the decoded value is not plausible.
 - **Gen2 and Gen4: KWP2000 over VW TP2.0.** Oil temperature, clutch plate temperature, supply voltage, oil pressure, estimated torque, clutch valve duty and current. Gen4 values are decoded; the raw measuring-block bytes are also exposed.
 
 If VCDS, ODIS or another scan tool is connected, the module detects its requests on the bus and pauses its own polling until the tool goes quiet, so the two do not collide. If a tool still will not connect, switch Live Diagnostics off. Extra CAN traffic can cause spurious dash errors.
@@ -534,7 +534,20 @@ esptool.py --chip esp32c6 write_flash 0x0 openhaldex-c6-<tag>-merged.bin
 
 Or drag it into a browser flasher such as [ESP Web Tools](https://web.esptool.js.org/). `SHA256SUMS.txt` is attached so you can check the download. The release also carries the separate app, littlefs, bootloader and partition binaries.
 
-Because the merged image blanks the settings area, a USB flash resets the module's settings (see [upgrading](#before-you-flash-upgrading-from-edge-v8-or-upstream)). If you are already on v9, export a backup first.
+The merged image blanks the settings area, so flashing it resets the module's settings.
+
+**Keeping your settings (Edge v8 to v9).** The settings area sits at the same place (`0x9000`) on v8 and v9, and v9 reads v8's settings unchanged. To keep them, flash the separate parts instead of the merged image, and clear the boot selector so the module starts the new firmware:
+
+```sh
+esptool.py --chip esp32c6 erase_region 0xd000 0x2000
+esptool.py --chip esp32c6 write_flash \
+  0x0      bootloader.bin \
+  0x8000   partitions.bin \
+  0x10000  openhaldex-c6-<tag>-app.bin \
+  0x390000 openhaldex-c6-<tag>-littlefs.bin
+```
+
+The offsets come from the v9 partition table; the release's `manifest.json` on the `ota` branch lists the same ones. Write down your Expert table anyway, in case something goes wrong. Once you are on v9, export a backup before any USB flash.
 
 ### Updating over WiFi
 

@@ -96,7 +96,8 @@ Differences from Edge v8 that you will notice:
   A partition table cannot change over the air, so a unit on Edge v8, or on an
   upstream build from before the Bluetooth release, takes v9 once over USB. A
   merged-image flash also blanks the settings area (expected from esptool's
-  padding, not yet checked on a unit), so note your settings first.
+  padding, not yet checked on a unit). The README shows how to flash the separate
+  parts instead, which leaves the settings area at 0x9000 alone.
 - **Settings keep their names.** The single `openhaldex` NVS namespace and its key
   names are unchanged, so Edge v8 settings are read as they were. The v8 steering
   taper (start, full, floor) is converted into upstream's five-point breakpoint
@@ -118,9 +119,10 @@ Differences from Edge v8 that you will notice:
   Update card moved from Settings to the Update tab as "Update from a File".
 - **Live Diagnostics replaces the UDS toggle** and covers UDS and TP2.0. It is off
   by default.
-- **Default correction factor without a learn table** follows upstream's formula
-  (lock/2 + 20), where Edge v8 used (lock + 20)/2. The E2E checksum DataID position
-  follows upstream's, verified against a capture.
+- **Default correction factor without a learn table** stays Edge's (lock + 20)/2,
+  which matches the fit in the source comment (upstream computes lock/2 + 20; an
+  upstream pull request lines them up). The E2E checksum DataID position follows
+  upstream's, verified against a capture.
 - **Learn no longer forces BPK packing.** The table is measured under the unit's own
   Fix Hunting setting. The v9 UI has no Fix Hunting switch; Long Learn tries it on
   Gen5 when the baseline is not smooth.
