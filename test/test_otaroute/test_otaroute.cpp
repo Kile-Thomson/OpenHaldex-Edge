@@ -11,10 +11,10 @@
 #include <OpenHaldexC6_OTARoute.h>
 
 // Flash layout from src/partitions_4mb.csv (4 MB part).
-static const size_t APP_SLOT_SIZE = 0x1A0000; // ota_0 / ota_1 size
+static const size_t APP_SLOT_SIZE = 0x1C0000; // ota_0 / ota_1 size
 static const size_t OTA0_ADDR     = 0x10000;
-static const size_t FS_ADDR       = 0x350000;
-static const size_t FS_SIZE       = 0xB0000;
+static const size_t FS_ADDR       = 0x390000;
+static const size_t FS_SIZE       = 0x70000;
 
 void setUp(void) {}
 void tearDown(void) {}
