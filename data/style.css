@@ -2138,3 +2138,206 @@ button,
 .calib-info-buttons {
     grid-template-columns: 1fr;
 }
+
+/* ==========================================================================
+   v9 additions: Update tab, Long Learn, frame blocks, Home WiFi / Bluetooth /
+   Backup cards, sign-in notice. Same dark red dashboard theme as above.
+   ========================================================================== */
+
+/* 7 tabs in the bottom bar now (Update joined the six) */
+.nav-tabs { grid-template-columns: repeat(7, 1fr); }
+@media (max-width: 400px) {
+    .nav-tab { font-size: 0.44rem; }
+    .nav-icon { width: 19px; height: 19px; }
+}
+
+.wifi-controls > :only-child { grid-column: 1 / -1; }
+
+/* Sign-in notice (401 from the module on the home network) */
+.auth-banner {
+    position: fixed;
+    left: 0.75rem;
+    right: 0.75rem;
+    top: calc(env(safe-area-inset-top, 0px) + 0.5rem);
+    z-index: 9000;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding: 0.85rem 1rem;
+    background: var(--surface);
+    border: 2px solid var(--warning);
+    border-radius: var(--radius-lg);
+    font-size: 0.9rem;
+    line-height: 1.4;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* Long Learn tracker */
+.ll-tracker { margin: 12px 0; padding: 10px 12px; background: var(--surface-light); border-radius: var(--radius-md); }
+.ll-row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 0.88rem; }
+.ll-key { color: var(--text-dim); flex-shrink: 0; }
+.ll-val { color: var(--text); font-weight: 600; text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.ll-bar-num { min-width: 2.6rem; text-align: right; font-size: 0.85rem; color: var(--text-dim); }
+.ll-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 24px; margin: 12px 0 4px; }
+.ll-results:empty { display: none; }
+.ll-block { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.85rem; padding: 5px 0; border-bottom: 1px solid var(--border); }
+.ll-block-name { color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.ll-block-name.off { color: var(--text-dim); text-decoration: line-through; }
+.ll-tag { font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-dim); white-space: nowrap; }
+.ll-tag.core { color: var(--primary-light); border-color: rgba(239, 68, 68, 0.5); }
+.ll-tag.needed { color: var(--success); border-color: rgba(16, 185, 129, 0.5); }
+.ll-tag.removed { color: var(--text-dim); }
+.ll-tag.harmful { color: var(--danger); border-color: rgba(239, 68, 68, 0.6); background: rgba(239, 68, 68, 0.1); }
+.ll-tag.testing { color: var(--warning); border-color: rgba(245, 158, 11, 0.5); }
+.ll-notes {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 1rem;
+    padding: 0.75rem;
+    background: var(--surface-light);
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+}
+.ll-notes:focus { outline: none; border-color: var(--primary); box-shadow: var(--focus-ring); }
+.ll-notes::placeholder { color: #6b7280; }
+
+/* Frame blocks (collapsible) */
+.frame-edit-details > summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 32px;
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text);
+}
+.frame-edit-details > summary::-webkit-details-marker { display: none; }
+.frame-edit-details > summary::after {
+    content: "";
+    width: 9px;
+    height: 9px;
+    border-right: 2.5px solid var(--text-dim);
+    border-bottom: 2.5px solid var(--text-dim);
+    transform: rotate(45deg);
+    margin: -4px 4px 0 8px;
+    transition: transform 0.2s;
+}
+.frame-edit-details[open] > summary::after { transform: rotate(-135deg); margin-top: 4px; }
+.frame-edit-details[open] > summary { margin-bottom: 0.75rem; }
+.frame-edit-list { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 20px; margin-bottom: 0.5rem; }
+.frame-edit-list .toggle-label { font-size: 0.9rem; line-height: 1.2; }
+.frame-edit-list .hint { grid-column: 1 / -1; }
+@media (max-width: 560px) { .frame-edit-list { grid-template-columns: 1fr; } .ll-results { grid-template-columns: 1fr; } }
+
+/* Update tab */
+.ota-info { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 0.9rem; }
+.ota-info > div {
+    background: var(--surface-light);
+    border-left: 3px solid var(--primary);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    min-width: 0;
+}
+.ota-info span { display: block; color: var(--text-dim); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.ota-info strong { display: block; font-size: 0.95rem; font-weight: 700; margin-top: 3px; overflow-wrap: anywhere; }
+.input-group { margin: 0.75rem 0; }
+.input-group label { display: block; margin-bottom: 0.4rem; color: var(--text-dim); font-size: 0.85rem; font-weight: 600; }
+.button-row { display: flex; flex-direction: column; gap: 0.6rem; margin: 0.75rem 0 0.5rem; }
+.upd-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.upd-primary:hover { background: var(--primary-light); border-color: var(--primary-light); }
+.upd-primary:disabled { opacity: 0.55; cursor: default; }
+.upd-beta { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 0.85rem; margin: 0.4rem 0; cursor: pointer; min-height: 32px; }
+.upd-beta input { width: 18px; height: 18px; accent-color: var(--primary); }
+.status-line { margin-top: 0.6rem; font-size: 0.85rem; color: var(--text-dim); line-height: 1.45; overflow-wrap: anywhere; }
+.status-line.error { color: var(--danger); }
+.status-line.ok { color: var(--success); }
+.upd-notes {
+    margin: 0.5rem 0;
+    padding: 10px 12px;
+    background: var(--surface-light);
+    border-radius: var(--radius-md);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+}
+.upd-notes:empty { display: none; }
+#updState.upd-available { color: var(--warning); }
+#updState.upd-current { color: var(--success); }
+#updState.upd-bad { color: var(--danger); }
+.ota-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0.9rem 0 0.6rem; }
+.ota-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--surface-light);
+    border-left: 3px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    font-weight: 600;
+    min-width: 0;
+}
+.ota-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--border);
+    color: var(--text);
+    font-size: 0.7rem;
+}
+.ota-step.active { border-left-color: var(--primary); color: var(--text); }
+.ota-step.active .ota-step-num { background: var(--primary); }
+.ota-step.done { border-left-color: var(--success); color: var(--success); }
+.ota-step.done .ota-step-num { background: var(--success); font-size: 0; }
+.ota-step.done .ota-step-num::after { content: "\2713"; font-size: 0.8rem; color: #fff; }
+#ota-page .hint a, .status-line a { color: var(--primary-light); }
+[hidden] { display: none !important; }
+.ota-file { max-width: 100%; color: var(--text-dim); }
+.ota-file::file-selector-button {
+    margin-right: 0.75rem;
+    padding: 0.6rem 1rem;
+    background: var(--surface-light);
+    border: 2px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    font-weight: 700;
+    cursor: pointer;
+}
+@media (max-width: 420px) {
+    .ota-info { gap: 6px; }
+    .ota-info > div { padding: 8px 9px; }
+    .ota-info strong { font-size: 0.82rem; }
+    .ota-steps { grid-template-columns: 1fr 1fr; }
+}
+@media (min-width: 700px) {
+    .button-row { flex-direction: row; }
+    .button-row .btn-secondary { width: auto; min-width: 220px; }
+}
+@media (max-width: 420px) {
+    /* header: title + 3 badges + fullscreen button must fit one row at 390px */
+    header { gap: 0.4rem; }
+    header h1 { font-size: 0.95rem; }
+    .status-bar { gap: 0.25rem; }
+    .status-badge { font-size: 0.62rem; padding: 0.2rem 0.35rem; letter-spacing: 0; }
+}
+
+/* Wheel slip: 2x2 on a phone, one row of four on wider screens */
+.slip-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+@media (min-width: 560px) { .slip-grid { grid-template-columns: repeat(4, 1fr); } }
+
+/* Seven tabs on a wide screen: tighten so no label is cut short */
+@media (min-width: 700px) {
+    .nav-tab { gap: 0.35rem; font-size: 0.72rem; letter-spacing: 0.03em; padding: 0.9rem 0.3rem; }
+    .nav-tab > span { overflow: visible; text-overflow: clip; }
+}
