@@ -1,12 +1,156 @@
 # Changelog
 
-All notable changes to OpenHaldex-C6 Edge are listed here.
+All notable changes to OpenHaldex Edge are listed here.
 
-This fork builds on Forbes Automotive's OpenHaldex-C6 **V8.00.2**. The entries
-below are what this fork changes on top of that base, each checked against the
-V8.00.2 source. Features already present in V8.00.2 - the MQB UDS live-data
-readout, hazard force-open, the low-power sleep system and lock-release rate
-limiting - are Forbes's own work and are not repeated here.
+Edge is a fork of Forbes Automotive's OpenHaldex-C6. From v9.01.0 it is built on
+upstream V9.00.0 plus the pull requests merged after it. The v8.00.x entries
+further down are the earlier Edge line, built on upstream V8.00.2; they stay as
+history. Upstream's own features are Forbes's work and the credited pull request
+authors', so they are listed once under v9.01.0 and not repeated version by
+version.
+
+---
+
+## v9.01.0 - Unreleased
+
+> Edge rebuilt on Forbes V9: Home WiFi, Bluetooth for DashCAN, Long Learn, Backup & Restore, OTA from GitHub, plus Edge's UI and safety work. First v9 flash is over USB.
+
+### Added
+
+From upstream V9.00.0 and its follow-up pull requests, now part of Edge (credit to
+Forbes Automotive, and to louij2 and danati for their pull requests):
+
+- **Long Learn** (Calibrate tab). Automated frame-block learning: a baseline sweep
+  with every block on, Gen5 torque-ceiling remediation when the baseline is not
+  smooth, then each extra block removed one at a time, and a confirmation sweep on
+  the final set. Live tracker, chassis notes saved on the unit and a `.txt` report.
+- **Frame blocks.** Switch individual edited CAN frames on or off per generation,
+  with Reset to Defaults.
+- **Gen5 VAQ** (generation 52), and Gen2/Gen4 handbrake read from CAN.
+- **Live Diagnostics** with KWP2000 over TP2.0 for Gen2/Gen4 next to UDS for Gen5.
+  It pauses itself while a VCDS/ODIS-style tool is on the bus.
+- **Home WiFi (bridge mode).** The module can also join a home or garage network as
+  a client. The scan is asynchronous, and it looks for the home network for 20 s
+  after starting, then once every 5 minutes (louij2, PR #39).
+- **Backup & Restore** on the Diagnostics tab and `tools/openhaldex_config.py`:
+  export and import the Expert tune, map slots, frame blocks, settings and WiFi
+  names as JSON. Passwords are never written to the file (louij2, PR #39).
+- **Bench Mode.** Holds the WiFi up on the bench. It clears itself when either CAN
+  bus shows traffic and cannot be switched on while CAN is live (louij2, PR #39).
+- **Bluetooth LE for the DashCAN app.** Live data, mode and controller on/off,
+  driving settings and Haldex diagnostics from the phone, with first-phone-free
+  pairing and a 6-digit code for later phones (danati, PR #44).
+- **Update tab with Update from GitHub.** Check for releases, pick a version,
+  stable / Latest build channels, optional beta and older versions, six-stage
+  progress, rollback warnings (PR #43). Rollback protection on the new firmware, and
+  a recovery page when the web UI will not mount.
+- **PCB, enclosure, BOM and documents** folders are now in this repo, as published
+  by Forbes Automotive.
+
+Added by Edge for v9.01.0:
+
+- **Web access rule for the home network.** A browser reaching the module through
+  your router must sign in: user `admin`, password the WiFi password, on every page
+  and every `/api` and `/ota` request. The module's own access point stays open to
+  anything that joined it.
+- **First-run password.** A fresh unit shows only a setup page until a WiFi password
+  of 8 to 64 characters is set. There is no open-network option afterwards.
+- **Analyzer gate.** Host-to-CAN injection from SavvyCAN is refused until the
+  password is set, and for any client that came in through the home network.
+- **Phone connectivity probes get a bare 404**, so a phone keeps its mobile data
+  while joined to the car.
+- **Update from a File takes one file.** `/ota/update` classifies the upload: the
+  merged image (split by flash offset into the app slot and web UI partition), a
+  bare `firmware.bin`, or a bare `littlefs.bin`. Offsets come from the running
+  partition table. Bootloader, partition table and settings bytes in a merged file
+  are never written.
+- **Map slots on the module.** `/api/maps`, `/api/maps/get`, `/api/maps/save` and
+  `/api/maps/delete`: five named slots, with the same checks as `/api/tune`.
+- **Car geometry card** on the Calibrate tab: wheelbase, front and rear track,
+  steering ratio and the speed floor for the per-wheel slip readout, with the Audi
+  TT Mk3 defaults and a reset. The values are included in backups.
+- **Release publishing.** CI builds, tests, and publishes each tag to GitHub
+  Releases and to the update feed on the `ota` branch, using the `> ` line under
+  the version heading in this file as the release notes.
+- **Settings keys** `forceModesPriority` and `boardRev` in `/api/settings`.
+
+Carried forward from Edge v8 into the v9 base (details under each v8.00.x entry
+below): the restyled dark UI with the live gauge, lock trace and connection badge;
+the Expert 3D surface and curve view; Calibrate tab with the not-calibrated
+banner; Launch PWM floor and per-car torque ceiling; lock engage and release ramps
+in milliseconds; steering-angle lock taper; per-corner slip and drive mode over the
+diagnostic channel; the learn interlock (refused above 5 km/h, previous table
+restored on cancel); stale CAN inputs failing safe; CAN bus-off recovery; the
+mutex around shared control state; installable PWA and full-screen toggle; the
+host-runnable test suite and the release build profile.
+
+### Changed
+
+Differences from Edge v8 that you will notice:
+
+- **The speed window now gates every lock path.** Disengage under speed, disengage
+  above speed and minimum throttle apply to force modes (TC, hazards, external
+  button) and to Expert mode. On Edge v8 those bypassed it.
+- **New flash layout, one USB flash.** The Bluetooth release made the app slots
+  larger (0x1C0000 each) and the web UI partition smaller (0x70000 at 0x390000).
+  A partition table cannot change over the air, so a unit on Edge v8, or on an
+  upstream build from before the Bluetooth release, takes v9 once over USB. A
+  merged-image flash also blanks the settings area (expected from esptool's
+  padding, not yet checked on a unit), so note your settings first.
+- **Settings keep their names.** The single `openhaldex` NVS namespace and its key
+  names are unchanged, so Edge v8 settings are read as they were. The v8 steering
+  taper (start, full, floor) is converted into upstream's five-point breakpoint
+  curve, which is now the one implementation; a fresh unit starts with that curve
+  on (100% to 45 deg, 80% at 90, 50% at 180, 20% at 360). A stock upstream unit is
+  migrated once from its old per-key namespaces.
+- **From the home network the UI asks for a login** (see above). The Update tab,
+  the backup tool and `curl` need `admin` and the WiFi password there.
+- **The AP password card no longer offers an open network.** Saving a new password
+  restarts the access point. The long press on the mode button clears the password
+  and the SSID back to the default and puts the unit into first-run setup mode.
+  `/api/wifi/reset` answers 409.
+- **One lock ramp.** The millisecond engage and release ramps are the mechanism.
+  Upstream's `lockReleaseRatePerSec` (web and the DashCAN settings characteristic)
+  maps onto the release ramp, so both front doors work.
+- **Update endpoints.** The web UI image goes to `/ota/update/fs` (v8 used
+  `/ota/updatefs`). The SHA-256 query on uploads is no longer used: the chip checks
+  the firmware image and the filesystem is checked by mounting it. The Software
+  Update card moved from Settings to the Update tab as "Update from a File".
+- **Live Diagnostics replaces the UDS toggle** and covers UDS and TP2.0. It is off
+  by default.
+- **Default correction factor without a learn table** follows upstream's formula
+  (lock/2 + 20), where Edge v8 used (lock + 20)/2. The E2E checksum DataID position
+  follows upstream's, verified against a capture.
+- **Learn no longer forces BPK packing.** The table is measured under the unit's own
+  Fix Hunting setting. The v9 UI has no Fix Hunting switch; Long Learn tries it on
+  Gen5 when the baseline is not smooth.
+
+### Fixed
+
+- **Update uploads no longer end the request early.** The upload callbacks used to
+  answer 200 on every chunk, which closed the connection mid-upload and could crash
+  the web server. The outcome is now sent once after the body (upstream engine,
+  kept). A short merged file is refused before anything is erased, and a half
+  written filesystem is erased so it cannot mount.
+- **CAN Sleep now gates the WiFi shutdown** as well as the CPU scaling, so switching
+  it off keeps the WiFi up (louij2, PR #39).
+- **Gen5 VAQ** is accepted by the settings API and its frames run in normal mode
+  (Forbes, V9.00.0).
+- **The lock-release fix** from the Bluetooth pull request (danati, PR #44).
+- **The access point hands out no gateway or DNS** (Forbes, V9.00.0), compatible
+  with the phone-probe 404 above.
+
+### Notes
+
+- The v9 firmware is built on upstream; Edge's firmware changes are ported onto it
+  rather than the other way round. `include/OpenHaldexC6_ver.h` has the V9.01.0
+  block.
+- Not carried over from upstream: the `Releases/` folder of Forbes binaries (Edge
+  publishes through tagged releases) and the Discord workflow. Upstream's dial
+  gauge customiser, steering lock-scale table editor and 3D lock map card are not
+  in Edge's UI; Edge has its own steering taper and 3D expert map.
+- This branch has been built and host-tested. Bench and in-car checks of the v9
+  build are still to do, and a USB flash from Edge v8 has not been run on a unit.
 
 ---
 
