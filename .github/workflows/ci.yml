@@ -108,6 +108,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check the tag matches FW_VERSION
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          fw=$(sed -n 's/^#define FW_VERSION "\([^"]*\)".*/\1/p' include/OpenHaldexC6_ver.h)
+          if [ "${tag%%-*}" != "$fw" ]; then
+            echo "error: tag ${GITHUB_REF_NAME} does not match FW_VERSION ${fw}" >&2
+            exit 1
+          fi
+
       - name: Download firmware artifacts
         uses: actions/download-artifact@v4
         with:
@@ -126,7 +138,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
-          gh release create "$tag" \
+          pre=""
+          case "$tag" in *-*) pre="--prerelease" ;; esac
+          gh release create "$tag" $pre \
             --repo "$GITHUB_REPOSITORY" \
             --title "$tag" \
             --generate-notes \
@@ -138,10 +152,34 @@ jobs:
 
           The merged image bundles the bootloader, partition table, firmware and the LittleFS web UI, so it is a complete flash-from-scratch build. \`SHA256SUMS.txt\` covers every asset. Individual \`app\`/\`littlefs\` binaries are attached for partial/OTA use.
 
-          This is a non-commercial modified fork of Forbes Automotive OpenHaldex-C6; the changes are listed in CHANGELOG.md. Distributed free of charge under the Forbes Automotive Source-Available License v1.0 (see LICENSE.md). Not affiliated with or endorsed by Forbes Automotive." \
+          OpenHaldex Edge is a fork of Forbes Automotive OpenHaldex-C6; what it changes is listed in CHANGELOG.md. See LICENSE.md and THIRD_PARTY_NOTICES.md for licensing. Not affiliated with or endorsed by Forbes Automotive." \
             "dist/openhaldex-c6-${tag}-merged.bin" \
             "dist/openhaldex-c6-${tag}-littlefs.bin" \
             "dist/openhaldex-c6-${tag}-app.bin" \
             "dist/bootloader.bin" \
             "dist/partitions.bin" \
             "dist/SHA256SUMS.txt"
+
+      - name: Publish to the OTA update feed (ota branch)
+        # The web UI's "Check for updates" reads Releases/releases.json and the
+        # per-version .bin files from the `ota` branch via raw.githubusercontent
+        # (CORS-enabled). Keep that branch binary-only and separate from main.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin ota >/dev/null 2>&1; then
+            git fetch --depth 1 origin ota
+            git worktree add ota-feed FETCH_HEAD
+            git -C ota-feed checkout -B ota
+          else
+            git worktree add --detach ota-feed
+            git -C ota-feed checkout --orphan ota
+            git -C ota-feed rm -rf -q .
+          fi
+          python3 scripts/publish_ota_feed.py --tag "${GITHUB_REF_NAME}" --dist dist \
+            --feed ota-feed --changelog CHANGELOG.md
+          git -C ota-feed add Releases
+          git -C ota-feed commit -m "OTA feed: ${GITHUB_REF_NAME}"
+          git -C ota-feed push origin ota
