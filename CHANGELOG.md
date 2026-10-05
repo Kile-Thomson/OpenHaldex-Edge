@@ -11,7 +11,7 @@ version.
 
 ---
 
-## v9.01.0 - Unreleased
+## v9.01.0-beta1 - 2026-10-06
 
 > Edge rebuilt on Forbes V9: Home WiFi, Bluetooth for DashCAN, Long Learn, Backup & Restore, OTA from GitHub, plus Edge's UI and safety work. First v9 flash is over USB.
 
