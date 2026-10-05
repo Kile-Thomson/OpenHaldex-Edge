@@ -1,0 +1,23 @@
+{
+  "product": "OpenHaldex-Edge",
+  "latest": "9.01.0-beta1",
+  "releases": [
+    {
+      "version": "9.01.0-beta1",
+      "channel": "beta",
+      "date": "2026-10-05",
+      "ota": true,
+      "notes": "Edge rebuilt on Forbes V9: Home WiFi, Bluetooth for DashCAN, Long Learn, Backup & Restore, OTA from GitHub, plus Edge's UI and safety work. First v9 flash is over USB.",
+      "firmware": {
+        "path": "V9.01.0-beta1/firmware.bin",
+        "size": 1670032,
+        "sha256": "eb20a0206455c699f2fb2ecae0897b10e4c0151557ec6a6a49f4a5715932ee50"
+      },
+      "filesystem": {
+        "path": "V9.01.0-beta1/littlefs.bin",
+        "size": 458752,
+        "sha256": "c21e64fa0c02d8ed3f3795ea8514d4c4f2883e74e7f4b248f093bc5945c7a5e3"
+      }
+    }
+  ]
+}
