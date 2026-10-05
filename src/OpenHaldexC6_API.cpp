@@ -109,7 +109,16 @@ static void statusOutgoing(AsyncWebServerRequest *request)
     const bool chassisOk = hasCANChassis;
     const bool haldexOk = hasCANHaldex;
 
-    data["mode"] = state.mode;
+    // Snapshot the control state under the lock: mode and lock_target are
+    // written by the CAN tasks, the buttons and the web/BLE writers.
+    openhaldex_mode_t modeSnapshot;
+    float lockTargetSnapshot;
+    {
+        StateLock lk;
+        modeSnapshot = state.mode;
+        lockTargetSnapshot = lock_target;
+    }
+    data["mode"] = modeSnapshot;
 
     // Ext-button force flag is driven by the external button
     data["extButtonActive"] = extButtonForceModeFlag;
@@ -166,11 +175,33 @@ static void statusOutgoing(AsyncWebServerRequest *request)
             else
                 slip.add(nullptr);
         }
+        // Same data under the v8 key (the dashboard reads cornerSlip).
+        JsonArray slip2 = data["cornerSlip"].to<JsonArray>();
+        for (uint8_t i = 0; i < 4; i++)
+        {
+            if (slipFresh && cornerSlip[i] != -128)
+                slip2.add((int)cornerSlip[i]);
+            else
+                slip2.add(nullptr);
+        }
     }
 
     // Steering-angle lock reduction (engagement-split display). Active only when
     // scaling ran this cycle and actually pulled the request back.
     data["steeringScaleEnabled"] = steeringScaleEnabled;
+    data["steeringGainEnabled"] = steeringScaleEnabled; // v8 name for the same toggle
+    {
+        // Gain the curve gives at the current angle, % (v8 "steeringGainNow").
+        const bool steerSupported = (haldexGeneration == 2 || haldexGeneration == 4 ||
+                                     haldexGeneration == 50 || haldexGeneration == 52);
+        const bool fresh = steerSupported && chassisOk && received_steering_ms != 0 &&
+                           (millis() - received_steering_ms) <= steeringStaleMs;
+        if (steeringScaleEnabled && fresh)
+            data["steeringGainNow"] = (int)(steering_curve_percent(fabsf(received_steering_angle), steeringArray,
+                                                                   steeringLockScaleArray, steeringArrayCount) + 0.5f);
+        else
+            data["steeringGainNow"] = nullptr;
+    }
     if (steering_scale_is_active())
     {
         data["steeringScaleActive"] = true;
@@ -209,7 +240,7 @@ static void statusOutgoing(AsyncWebServerRequest *request)
         data["handbrakeFromCAN"] = nullptr; // if chassis CAN not ok, set to null (displayed as "--" in the UI)
     }
 
-    data["lockTarget"] = int(lock_target);
+    data["lockTarget"] = int(lockTargetSnapshot);
 
     if (haldexOk) // if haldex CAN ok set related values
     {
@@ -273,8 +304,26 @@ static void statusOutgoing(AsyncWebServerRequest *request)
         JsonObject uds = data["uds"].to<JsonObject>();
         uds["terminalVoltage"] = udsTerminalVoltage;
         uds["moduleTemp"] = udsModuleTemp;
-        uds["clutchTemp"] = udsClutchTemp;
-        uds["coolingFinTemp"] = udsCoolingFinTemp;
+        // The 0x2BF1/0x2BE4 temperature scale is a disassembled guess that reads an
+        // impossible ~160 degC on the fin under load. Show the decoded value only
+        // when it is plausible, null otherwise; the raw LE16 is always reported so
+        // the scale can be re-derived from a log.
+        if (udsClutchTempValid && uds_temp_plausible(udsClutchTemp))
+            uds["clutchTemp"] = udsClutchTemp;
+        else
+            uds["clutchTemp"] = nullptr;
+        if (udsClutchTempValid)
+            uds["clutchTempRaw"] = udsClutchTempRaw;
+        else
+            uds["clutchTempRaw"] = nullptr;
+        if (udsCoolingFinTempValid && uds_temp_plausible(udsCoolingFinTemp))
+            uds["coolingFinTemp"] = udsCoolingFinTemp;
+        else
+            uds["coolingFinTemp"] = nullptr;
+        if (udsCoolingFinTempValid)
+            uds["coolingFinTempRaw"] = udsCoolingFinTempRaw;
+        else
+            uds["coolingFinTempRaw"] = nullptr;
         uds["clutchCurrent"] = udsClutchCurrent;
         uds["clutchPWM"] = udsClutchPWM;
         uds["clutchVoltage"] = udsClutchVoltage;
@@ -334,9 +383,30 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["disengageAboveSpeed"] = disengageAboveSpeed;
     data["disableThrottle"] = disableThrottle;
     data["mode"] = lastMode;
-    data["lockReleaseRatePerSec"] = lockReleaseRatePerSec;
+    // Lock ramp: one mechanism (ms for a full travel), two front doors. The v9
+    // %/s key is derived from the release ramp; the v8 ms keys are the stored form.
+    data["lockReleaseRatePerSec"] = lock_pct_rate_from_ramp_ms(lockReleaseRampMs);
+    data["lockReleaseRampMs"] = lockReleaseRampMs;
+    data["lockEngageRampMs"] = lockEngageRampMs;
     data["lockReleaseEnabled"] = lockReleaseEnabled;
     data["steeringScaleEnabled"] = steeringScaleEnabled;
+    {
+        // v8 three-knob taper view of the steering curve (start / full / floor).
+        // Exact when the curve was set through those keys; best effort otherwise.
+        data["steeringGainEnabled"] = steeringScaleEnabled;
+        uint16_t gStart, gFull;
+        uint8_t gFloor;
+        steering_taper_from_curve(steeringArray, steeringLockScaleArray, steeringArrayCount, gStart, gFull, gFloor);
+        data["steeringGainStartDeg"] = gStart;
+        data["steeringGainFullDeg"] = gFull;
+        data["steeringGainFloor"] = gFloor;
+    }
+    // Per-car geometry for the corner-slip calculation (Calibrate tab)
+    data["slipWheelbaseMm"] = slipWheelbaseMm;
+    data["slipTrackFrontMm"] = slipTrackFrontMm;
+    data["slipTrackRearMm"] = slipTrackRearMm;
+    data["slipSteeringRatio"] = slipSteeringRatio;
+    data["slipMinSpeedRaw"] = slipMinSpeedRaw;
     data["FW_VERSION"] = FW_VERSION;
 
     // bools
@@ -365,6 +435,7 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
     data["analyzerMode"] = analyzerMode;
     data["analyzerSerial"] = analyzerSerial;
     data["liveDiagEnabled"] = liveDiagEnabled;
+    data["udsMQBEnabled"] = liveDiagEnabled; // v8 name for the same toggle
 
     data["followBrake"] = followBrake;
     data["invertBrake"] = invertBrake;
@@ -440,10 +511,16 @@ static void settingsOutgoing(AsyncWebServerRequest *request)
 // manage settings (saved from Web, handled here): WebServer sends, this handles
 static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
 {
+    // Every path must respond: ESPAsyncWebServer holds the connection open until
+    // we do, and a silent return reads as a hung request on the client.
     JsonDocument data;
     if (deserializeJson(data, body) != DeserializationError::Ok)
     {
         DEBUG("Invalid JSON");
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Invalid JSON";
+        sendJSON(request, 400, resp);
         return;
     }
 
@@ -453,7 +530,9 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         if (generation == 1 || generation == 2 || generation == 4 || generation == 50 || generation == 51 || generation == 52 || generation == 41)
         {
             haldexGeneration = (uint8_t)generation;
-            lastMode = generation;
+            // lastMode is a different namespace from generation (drive mode 0-5 vs
+            // generation 1/2/4/41/50/51): a generation change must never touch it.
+            lastMode = last_mode_after_generation_change(lastMode, generation);
             udsApplyDefaultIds(); // move the UDS pair with the generation (no-op while the serial lab has it pinned)
         }
     }
@@ -477,6 +556,9 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         for (const auto &b : drivingBools)
             if (data[b.key].is<bool>())
                 applyDrivingSetting(b.id, data[b.key].as<bool>() ? 1 : 0);
+        // v8 name for liveDiagEnabled
+        if (data["udsMQBEnabled"].is<bool>())
+            applyDrivingSetting(DS_LIVE_DIAG_ENABLED, data["udsMQBEnabled"].as<bool>() ? 1 : 0);
 
         struct
         {
@@ -580,6 +662,62 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         esp14MinFloorPct = (uint8_t)constrain((int)data["esp14MinFloorPct"], 0, 100);
     }
 
+    // Lock ramp (ms for a full 0..100 travel; 0 = instant). The v9 %/s key
+    // (lockReleaseRatePerSec) is handled with the driving settings above and maps
+    // onto the same release ramp. The ms keys are applied after it, so a client
+    // sending both gets the ms value.
+    if (data["lockReleaseRampMs"].is<uint16_t>())
+    {
+        const uint16_t v = (uint16_t)constrain((int)data["lockReleaseRampMs"], 0, 1000);
+        StateLock lk;
+        lockReleaseRampMs = v;
+    }
+    if (data["lockEngageRampMs"].is<uint16_t>())
+    {
+        const uint16_t v = (uint16_t)constrain((int)data["lockEngageRampMs"], 0, 1000);
+        StateLock lk;
+        lockEngageRampMs = v;
+    }
+
+    // v8 steering taper (start / full / floor), one front door onto the v9
+    // breakpoint curve: the three knobs rebuild the 5-point curve. steeringGainEnabled
+    // is the v8 name of steeringScaleEnabled.
+    if (data["steeringGainEnabled"].is<bool>())
+    {
+        steeringScaleEnabled = data["steeringGainEnabled"];
+    }
+    if (data["steeringGainStartDeg"].is<uint16_t>() || data["steeringGainFullDeg"].is<uint16_t>() ||
+        data["steeringGainFloor"].is<uint8_t>())
+    {
+        StateLock lk;
+        uint16_t gStart, gFull;
+        uint8_t gFloor;
+        steering_taper_from_curve(steeringArray, steeringLockScaleArray, steeringArrayCount, gStart, gFull, gFloor);
+        if (data["steeringGainStartDeg"].is<uint16_t>())
+            gStart = (uint16_t)constrain((int)data["steeringGainStartDeg"], 0, 720);
+        if (data["steeringGainFullDeg"].is<uint16_t>())
+            gFull = (uint16_t)constrain((int)data["steeringGainFullDeg"], 0, 720);
+        if (data["steeringGainFloor"].is<uint8_t>())
+            gFloor = (uint8_t)constrain((int)data["steeringGainFloor"], 0, 100);
+        steering_curve_from_taper(gStart, gFull, gFloor, steeringArray, steeringLockScaleArray);
+    }
+
+    // Per-car geometry for the corner-slip calculation (Calibrate tab). Ranges
+    // reject nonsense, which would make the Ackermann maths meaningless.
+    {
+        StateLock lk;
+        if (data["slipWheelbaseMm"].is<uint16_t>())
+            slipWheelbaseMm = (uint16_t)constrain((int)data["slipWheelbaseMm"], 1500, 4000);
+        if (data["slipTrackFrontMm"].is<uint16_t>())
+            slipTrackFrontMm = (uint16_t)constrain((int)data["slipTrackFrontMm"], 1000, 2500);
+        if (data["slipTrackRearMm"].is<uint16_t>())
+            slipTrackRearMm = (uint16_t)constrain((int)data["slipTrackRearMm"], 1000, 2500);
+        if (data["slipSteeringRatio"].is<float>())
+            slipSteeringRatio = constrain(data["slipSteeringRatio"].as<float>(), 8.0f, 30.0f);
+        if (data["slipMinSpeedRaw"].is<uint16_t>())
+            slipMinSpeedRaw = (uint16_t)constrain((int)data["slipMinSpeedRaw"], 0, 5000);
+    }
+
     if (data["canSleepEnabled"].is<bool>())
     {
         canSleepEnabled = data["canSleepEnabled"];
@@ -675,6 +813,13 @@ static void longLearnStartIncoming(AsyncWebServerRequest *request, const String 
         resp["ok"] = false;
         resp["error"] = "Frame editing is not available for this generation";
     }
+    else if (!learn_speed_ok(received_vehicle_speed))
+    {
+        // Speed interlock: the sweeps command up to full lock, which is only
+        // safe stationary. startLongLearn refuses too; this gives the reason.
+        resp["ok"] = false;
+        resp["error"] = "Vehicle is moving - learn needs the car stationary";
+    }
     else if (!startLongLearn(testAll))
     {
         resp["ok"] = false;
@@ -690,26 +835,68 @@ static void longLearnStartIncoming(AsyncWebServerRequest *request, const String 
 // manage mode (saved from Web, handled here): WebServer sends, this handles
 static void modeIncoming(AsyncWebServerRequest *request, const String &body)
 {
+    // Every path must respond (see settingsIncoming).
     JsonDocument data;
     if (deserializeJson(data, body) != DeserializationError::Ok)
     {
         DEBUG("Invalid JSON");
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Invalid JSON";
+        sendJSON(request, 400, resp);
         return;
     }
 
-    if (data["mode"].is<uint8_t>())
+    if (!data["mode"].is<uint8_t>() || (uint8_t)data["mode"] >= (uint8_t)openhaldex_mode_t_MAX)
     {
-        requestMode(data["mode"]);
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Missing or invalid 'mode'";
+        sendJSON(request, 400, resp);
+        return;
     }
+
+    if (disableController)
+    {
+        JsonDocument resp;
+        resp["ok"] = false;
+        resp["error"] = "Controller is disabled";
+        sendJSON(request, 409, resp);
+        return;
+    }
+
+    requestMode(data["mode"]); // validates again, writes mode + lastMode under the lock
+    uint8_t applied;
+    {
+        StateLock lk;
+        applied = (uint8_t)state.mode;
+    }
+
+    JsonDocument resp;
+    resp["ok"] = true;
+    resp["mode"] = applied;
+    sendJSON(request, 200, resp);
 }
 
 // manage tune (saved from Web, handled here): WebServer sends, this handles
+static void tuneError(AsyncWebServerRequest *request, int code, const char *msg)
+{
+    DEBUG("tune rejected: %s", msg);
+    JsonDocument resp;
+    resp["ok"] = false;
+    resp["error"] = msg;
+    sendJSON(request, code, resp);
+}
+
 static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
 {
+    // Stage and validate everything first, then publish under stateMutex in one
+    // go: a rejected or half-parsed upload never leaves the live tune partly
+    // overwritten, and getLockData never reads a map mid-update.
     JsonDocument data;
     if (deserializeJson(data, body) != DeserializationError::Ok)
     {
-        DEBUG("Invalid JSON");
+        tuneError(request, 400, "Invalid JSON");
         return;
     }
 
@@ -717,39 +904,64 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
     JsonArray throttleArrayJSON = data["throttleArray"].as<JsonArray>();
     JsonArray lockArrayJSON = data["lockArray"].as<JsonArray>();
 
+    uint16_t stagedSpeed[speedArrayCount];
+    uint8_t stagedThrottle[throttleArrayCount];
+    uint8_t stagedLock[throttleArrayCount][speedArrayCount];
+    bool haveMap = false;
+
     // Speed/throttle/lock map (optional - only applied when present in the payload).
     if (!speedArrayJSON.isNull() || !throttleArrayJSON.isNull() || !lockArrayJSON.isNull())
     {
+        haveMap = true;
         if (speedArrayJSON.size() != speedArrayCount || throttleArrayJSON.size() != throttleArrayCount)
         {
-            DEBUG("Invalid Array Length");
+            tuneError(request, 400, "Invalid axis array length");
+            return;
+        }
+        for (uint8_t i = 0; i < throttleArrayCount; i++)
+            stagedThrottle[i] = (uint8_t)(throttleArrayJSON[i] | 0);
+        for (uint8_t i = 0; i < speedArrayCount; i++)
+            stagedSpeed[i] = (uint16_t)(speedArrayJSON[i] | 0);
+
+        // The expert map assumes ascending axes; a non-monotonic axis makes the
+        // interpolation bracket search pick the wrong pair and silently mis-lock.
+        if (!is_strictly_ascending_u16(stagedSpeed, speedArrayCount))
+        {
+            tuneError(request, 400, "Speed axis must be strictly ascending");
+            return;
+        }
+        uint16_t throttleAxis[throttleArrayCount];
+        for (uint8_t i = 0; i < throttleArrayCount; i++)
+            throttleAxis[i] = stagedThrottle[i];
+        if (!is_strictly_ascending_u16(throttleAxis, throttleArrayCount))
+        {
+            tuneError(request, 400, "Throttle axis must be strictly ascending");
             return;
         }
 
-        // fill throttle array
-        for (uint8_t i = 0; i < throttleArrayCount; i++)
+        if (lockArrayJSON.size() != throttleArrayCount)
         {
-            throttleArray[i] = (uint8_t)(throttleArrayJSON[i] | 0);
+            tuneError(request, 400, "Invalid lock table length");
+            return;
         }
-
-        // fill speed array
-        for (uint8_t i = 0; i < speedArrayCount; i++)
-        {
-            speedArray[i] = (uint16_t)(speedArrayJSON[i] | 0);
-        }
-
-        // fill lock array
         for (uint8_t throttle = 0; throttle < throttleArrayCount; throttle++)
         {
+            // each row is indexed by the SPEED axis
             JsonArray throttleRow = lockArrayJSON[throttle].as<JsonArray>();
-            if (throttleRow.size() != throttleArrayCount)
+            if (throttleRow.size() != speedArrayCount)
             {
-                DEBUG("Invalid lock array");
+                tuneError(request, 400, "Invalid lock table row length");
                 return;
             }
             for (uint8_t speed = 0; speed < speedArrayCount; speed++)
             {
-                lockArray[throttle][speed] = (uint8_t)throttleRow[speed];
+                const int v = (int)(throttleRow[speed] | 0);
+                if (v < 0 || v > 100)
+                {
+                    tuneError(request, 400, "Lock table values must be 0-100");
+                    return;
+                }
+                stagedLock[throttle][speed] = (uint8_t)v;
             }
         }
     }
@@ -757,17 +969,36 @@ static void tuneIncoming(AsyncWebServerRequest *request, const String &body)
     // Steering-angle lock-scale curve (optional - breakpoints + 0-100% multipliers).
     JsonArray steeringArrayJSON = data["steeringArray"].as<JsonArray>();
     JsonArray steeringScaleJSON = data["steeringLockScaleArray"].as<JsonArray>();
+    uint16_t stagedSteer[steeringArrayCount];
+    uint8_t stagedSteerScale[steeringArrayCount];
+    bool haveSteer = false;
     if (!steeringArrayJSON.isNull() || !steeringScaleJSON.isNull())
     {
+        haveSteer = true;
         if (steeringArrayJSON.size() != steeringArrayCount || steeringScaleJSON.size() != steeringArrayCount)
         {
-            DEBUG("Invalid steering array length");
+            tuneError(request, 400, "Invalid steering array length");
             return;
         }
         for (uint8_t i = 0; i < steeringArrayCount; i++)
         {
-            steeringArray[i] = (uint16_t)(steeringArrayJSON[i] | 0);
-            steeringLockScaleArray[i] = (uint8_t)constrain((int)(steeringScaleJSON[i] | 0), 0, 100);
+            stagedSteer[i] = (uint16_t)(steeringArrayJSON[i] | 0);
+            stagedSteerScale[i] = (uint8_t)constrain((int)(steeringScaleJSON[i] | 0), 0, 100);
+        }
+    }
+
+    {
+        StateLock lk;
+        if (haveMap)
+        {
+            memcpy(throttleArray, stagedThrottle, sizeof(throttleArray));
+            memcpy(speedArray, stagedSpeed, sizeof(speedArray));
+            memcpy(lockArray, stagedLock, sizeof(lockArray));
+        }
+        if (haveSteer)
+        {
+            memcpy(steeringArray, stagedSteer, sizeof(steeringArray));
+            memcpy(steeringLockScaleArray, stagedSteerScale, sizeof(steeringLockScaleArray));
         }
     }
 
@@ -966,14 +1197,19 @@ void setupAPI()
                      JsonDocument data;
                      data["active"]     = (bool)haldexLearnActive;
                      data["progress"]   = (uint8_t)haldexLearnStep;
-                     data["tableValid"] = haldexLearnTableValid;
                      data["currentCF"]  = (uint8_t)haldexLearnCF;
                      data["currentEng"] = received_haldex_engagement;
-                     if (haldexLearnTableValid)
+                     // read flag + table under the lock so a table mid-publish is
+                     // never serialized half-old half-new
                      {
-                         JsonArray table = data["table"].to<JsonArray>();
-                         for (uint8_t i = 0; i <= 100; i++)
-                             table.add(haldexLearnTable[i]);
+                         StateLock lk;
+                         data["tableValid"] = haldexLearnTableValid;
+                         if (haldexLearnTableValid)
+                         {
+                             JsonArray table = data["table"].to<JsonArray>();
+                             for (uint8_t i = 0; i <= 100; i++)
+                                 table.add(haldexLearnTable[i]);
+                         }
                      }
                      sendJSON(request, 200, data); });
 
@@ -1014,6 +1250,17 @@ void setupAPI()
                          JsonDocument resp;
                          resp["ok"]    = false;
                          resp["error"] = "No Haldex CAN data available";
+                         sendJSON(request, 200, resp);
+                         return;
+                     }
+                     // Speed interlock: the sweep ramps to full lock; refuse to start
+                     // it in a moving car. The sweep also aborts itself if the car
+                     // moves off mid-learn (runLearnSweep, progress 103).
+                     if (!learn_speed_ok(received_vehicle_speed))
+                     {
+                         JsonDocument resp;
+                         resp["ok"]    = false;
+                         resp["error"] = "Vehicle is moving - learn needs the car stationary";
                          sendJSON(request, 200, resp);
                          return;
                      }

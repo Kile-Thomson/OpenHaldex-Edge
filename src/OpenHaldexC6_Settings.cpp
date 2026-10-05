@@ -1,4 +1,5 @@
 #include <OpenHaldexC6_Settings.h>
+#include <OpenHaldexC6_Calculations.h> // lock ramp rate <-> ms
 
 // Driving settings reachable from both the web UI and the DashCAN app (BLE).
 // The web API used to validate these inline in settingsIncoming; the rules are
@@ -7,7 +8,8 @@
 #define DS_LOCK_RELEASE_MIN 5   // %/s, same range as the web UI slider
 #define DS_LOCK_RELEASE_MAX 500
 
-bool applyDrivingSetting(uint8_t id, uint16_t value)
+// Body of applyDrivingSetting; the caller holds stateMutex.
+static bool applyDrivingSettingLocked(uint8_t id, uint16_t value)
 {
   const bool isBoolValue = value <= 1;
   const bool on = value == 1;
@@ -77,7 +79,8 @@ bool applyDrivingSetting(uint8_t id, uint16_t value)
     lockReleaseEnabled = on;
     return true;
   case DS_LOCK_RELEASE_RATE:
-    lockReleaseRatePerSec = (float)constrain(value, DS_LOCK_RELEASE_MIN, DS_LOCK_RELEASE_MAX);
+    // One ramp mechanism: the %/s the app/UI sends maps onto the release ramp in ms.
+    lockReleaseRampMs = lock_ramp_ms_from_pct_rate((uint16_t)constrain(value, DS_LOCK_RELEASE_MIN, DS_LOCK_RELEASE_MAX));
     return true;
   case DS_LIVE_DIAG_ENABLED:
     if (!isBoolValue)
@@ -90,6 +93,13 @@ bool applyDrivingSetting(uint8_t id, uint16_t value)
   default:
     return false;
   }
+}
+
+bool applyDrivingSetting(uint8_t id, uint16_t value)
+{
+  // Writers (web task, BLE task) race the CAN tasks that read these in getLockData.
+  StateLock lk;
+  return applyDrivingSettingLocked(id, value);
 }
 
 uint8_t drivingSettingValueLen(uint8_t id)
@@ -113,6 +123,7 @@ static void put16le(uint8_t *p, uint16_t v)
 
 void buildDrivingSettings(uint8_t *out)
 {
+  StateLock lk; // coherent snapshot
   uint8_t flags = 0;
   if (tcForceMode)
     flags |= 1 << 0;
@@ -139,7 +150,7 @@ void buildDrivingSettings(uint8_t *out)
   put16le(&out[5], disengageUnderSpeed);
   put16le(&out[7], disengageAboveSpeed);
   out[9] = disableThrottle;
-  put16le(&out[10], (uint16_t)(lockReleaseRatePerSec + 0.5f));
+  put16le(&out[10], lock_pct_rate_from_ramp_ms(lockReleaseRampMs));
   out[12] = ledBrightness;
   out[13] = 0; // reserved flags
 }
