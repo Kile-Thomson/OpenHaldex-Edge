@@ -18,7 +18,8 @@
 
 extern uint8_t learn_reduce_samples(const uint8_t *samples, uint8_t n, uint8_t prev_recorded);
 extern uint8_t lookup_learn_correction_factor(const uint8_t *table, uint8_t target);
-extern bool motor11_use_bpk_packing(bool fix_hunting, bool learn_active, bool learn_table_valid);
+extern bool learn_speed_ok(uint16_t speed_kmh);
+extern void startHaldexLearn();
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -217,49 +218,50 @@ void test_all_zero_table_yields_zero_not_full_lock(void)
                                   "all-zero table commands zero, not full lock");
 }
 
-// --- Motor_11 packing selector: learn must force BPK ------------------------
-// V3 packing pins the torque fields at full, so a learn on V3 records a flat
-// ~100% table (the "sits at 100% regardless" symptom on the live MQB car). The
-// selector forces BPK whenever Fix Hunting is on, a learn is active, OR a valid
-// learn table exists (a learned table was measured under BPK, so it must be
-// applied under BPK - never against a V3 frame).
+// --- speed interlock ------------------------------------------------------
+// The sweep (manual Learn and Long Learn) commands up to full lock, which is only
+// safe with the car stationary: refuse above learnMaxSpeed (5 km/h) at start and
+// abort the sweep without publishing a partial table if the car moves.
 
-void test_bpk_off_when_idle_and_toggle_off(void)
+void test_learn_speed_ok_boundary(void)
 {
-  // Normal driving, Fix Hunting off, no table -> V3 packing (legacy default).
-  TEST_ASSERT_FALSE_MESSAGE(motor11_use_bpk_packing(false, false, false), "idle + toggle off + no table -> V3");
+  TEST_ASSERT_TRUE_MESSAGE(learn_speed_ok(0), "stationary is allowed");
+  TEST_ASSERT_TRUE_MESSAGE(learn_speed_ok(learnMaxSpeed), "exactly the limit is allowed");
+  TEST_ASSERT_FALSE_MESSAGE(learn_speed_ok(learnMaxSpeed + 1), "one km/h over is refused");
+  TEST_ASSERT_FALSE_MESSAGE(learn_speed_ok(120), "a moving car is refused");
 }
 
-void test_bpk_on_when_toggle_on(void)
+void test_start_learn_refused_when_moving(void)
 {
-  // User enabled Fix Hunting -> BPK, learn or not.
-  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(true, false, false), "toggle on -> BPK");
+  haldexLearnActive = false;
+  haldexLearnStep = 0;
+  received_vehicle_speed = 30;
+  startHaldexLearn();
+  TEST_ASSERT_FALSE_MESSAGE(haldexLearnActive, "no sweep may start in a moving car");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(103, haldexLearnStep, "refusal reports 103 (moving)");
+  received_vehicle_speed = 0;
 }
 
-void test_learn_forces_bpk_even_with_toggle_off(void)
+void test_start_learn_allowed_when_stationary(void)
 {
-  // A learn scan uses BPK regardless of the toggle, so it can never silently
-  // record a flat 100% table.
-  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(false, true, false), "learn active -> BPK despite toggle off");
+  haldexLearnActive = false;
+  longLearnActive = false;
+  haldexLearnStep = 7;
+  received_vehicle_speed = 0;
+  startHaldexLearn(); // host stub: xTaskCreate succeeds, the task body never runs
+  TEST_ASSERT_TRUE_MESSAGE(haldexLearnActive, "a stationary car may learn");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, haldexLearnStep, "progress reset for the new sweep");
+  haldexLearnActive = false;
 }
 
-void test_learn_and_toggle_both_on_still_bpk(void)
+void test_start_learn_ignored_while_running(void)
 {
-  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(true, true, false), "learn + toggle on -> BPK");
-}
-
-void test_valid_table_forces_bpk_with_toggle_off(void)
-{
-  // The fix: once a table has been learned (measured under BPK), driving with
-  // Fix Hunting off must still use BPK so the calibration is applied against the
-  // frame it was measured against - not a V3 frame this mode would otherwise send.
-  TEST_ASSERT_TRUE_MESSAGE(motor11_use_bpk_packing(false, false, true), "valid table -> BPK despite toggle off");
-}
-
-void test_no_table_toggle_off_stays_v3(void)
-{
-  // An untuned user (no learn table, Fix Hunting off) keeps the legacy V3 path.
-  TEST_ASSERT_FALSE_MESSAGE(motor11_use_bpk_packing(false, false, false), "no table + toggle off -> V3");
+  haldexLearnActive = true;
+  haldexLearnStep = 55;
+  received_vehicle_speed = 0;
+  startHaldexLearn();
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(55, haldexLearnStep, "a second start must not reset a running sweep");
+  haldexLearnActive = false;
 }
 
 // --- learn_finalize: interrupted sweeps restore the pre-learn calibration ----
@@ -348,25 +350,6 @@ void test_completed_all_zero_sweep_is_invalid_102(void)
   TEST_ASSERT_FALSE_MESSAGE(valid, "all-zero completed sweep stays invalid");
 }
 
-void test_task_create_failure_restores_backup(void)
-{
-  // startHaldexLearn wipes the table BEFORE spawning the sweep task. If
-  // xTaskCreate fails, nothing will ever republish, so it rolls back through
-  // the same finalize path as a cancel (cancelled=true, step untouched) and
-  // clears haldexLearnActive itself. Pin that rollback: the wiped table and
-  // valid flag must return exactly to the pre-learn snapshot.
-  uint8_t backup[101];
-  for (int i = 0; i <= 100; i++) { backup[i] = (uint8_t)(100 - i); }
-  uint8_t table[101] = {0}; // already wiped, no CF scanned yet (step 0)
-  bool valid = false;       // cleared by the wipe
-
-  uint8_t step = learn_finalize(table, &valid, backup, true, true, false, 0);
-
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, step, "create-failure rollback keeps step 0");
-  TEST_ASSERT_TRUE_MESSAGE(valid, "create-failure rollback restores the valid flag");
-  TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(backup, table, 101, "create-failure rollback restores the snapshot");
-}
-
 int main(int, char **)
 {
   UNITY_BEGIN();
@@ -394,19 +377,16 @@ int main(int, char **)
   RUN_TEST(test_argmax_prefers_lowest_cf_at_plateau);
   RUN_TEST(test_all_zero_table_yields_zero_not_full_lock);
 
-  RUN_TEST(test_bpk_off_when_idle_and_toggle_off);
-  RUN_TEST(test_bpk_on_when_toggle_on);
-  RUN_TEST(test_learn_forces_bpk_even_with_toggle_off);
-  RUN_TEST(test_learn_and_toggle_both_on_still_bpk);
-  RUN_TEST(test_valid_table_forces_bpk_with_toggle_off);
-  RUN_TEST(test_no_table_toggle_off_stays_v3);
 
   RUN_TEST(test_cancel_restores_valid_backup);
   RUN_TEST(test_cancel_with_no_prior_table_stays_invalid);
   RUN_TEST(test_speed_abort_restores_and_reports_103);
   RUN_TEST(test_completed_sweep_with_data_is_valid_101);
   RUN_TEST(test_completed_all_zero_sweep_is_invalid_102);
-  RUN_TEST(test_task_create_failure_restores_backup);
+  RUN_TEST(test_learn_speed_ok_boundary);
+  RUN_TEST(test_start_learn_refused_when_moving);
+  RUN_TEST(test_start_learn_allowed_when_stationary);
+  RUN_TEST(test_start_learn_ignored_while_running);
 
   return UNITY_END();
 }

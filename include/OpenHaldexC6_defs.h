@@ -38,6 +38,20 @@
 #include "InterruptButton.h" // for mode button (internal & external)
 
 // debug options
+// Release builds (-D OPENHALDEX_RELEASE, [env:esp32c6-release]) force every
+// debug flag OFF regardless of what the developer defaults below are set to.
+#ifdef OPENHALDEX_RELEASE
+#define enableDebug 0
+#define detailedDebug 0
+#define detailedDebugStack 0
+#define detailedDebugRuntimeStats 0
+#define detailedDebugCAN 0
+#define detailedDebugWiFi 0
+#define detailedDebugEEP 0
+#define detailedDebugIO 0
+#define detailedDebugArray 0
+#define debugCANSleep 0
+#else
 #define enableDebug 0               // set to 1 to enable debug messages over Serial; set to 0 to disable
 #define detailedDebug 0             // set to 1 to enable more detailed debug messages (only recommended when debugging specific issues, as it can be very verbose)
 #define detailedDebugStack 0        // set to 1 to print stack traces on errors (only useful if enableDebug is also 1)
@@ -48,6 +62,13 @@
 #define detailedDebugIO 0           // set to 1 to enable detailed IO debug messages (only recommended when debugging IO-related issues, as it can be very verbose)
 #define detailedDebugArray 0        // set to 1 to enable detailed debug messages for arrays (like throttle/speed/lock curves) - only recommended when debugging issues related to those, as it can be very verbose
 #define debugCANSleep 0             // set to 1 to skip the 5-min idle/60-s count and sleep after ~2 s with no clients
+#endif
+
+// Learn-sweep speed interlock: the sweep ramps the clutch to full lock over
+// ~30 s, which is only safe with the car stationary. Starting is refused and a
+// running sweep aborts above this speed (km/h). Standalone benches with no
+// chassis CAN read speed 0 and are unaffected.
+#define learnMaxSpeed 5
 
 // refresh rates
 #define eepRefresh 2000           // EEPROM save in ms
@@ -55,8 +76,10 @@
 #define serialMonitorRefresh 1000 // Serial Monitor refresh rate in ms
 #define updateTriggersRefresh 500 // change IO refresh rate in ms
 
-// debugging macros
-#ifdef enableDebug
+// debugging macros. Must be #if, not #ifdef: enableDebug is ALWAYS defined
+// (as 0 or 1) by the blocks above, so #ifdef selected the live Serial.printf
+// variant even in release builds.
+#if enableDebug
 #define DEBUG(x, ...) Serial.printf(x "\n", ##__VA_ARGS__)
 #define DEBUG_(x, ...) Serial.printf(x, ##__VA_ARGS__)
 #else
@@ -83,6 +106,15 @@
 #define CAN1_RS 22 // can_1 slope control
 #define CAN1_RX 20 // can_1 tx
 #define CAN1_TX 21 // can_1 rx
+
+// CAN bus-health alert masks: the full set enabled on both v2 buses, and the
+// subset that counts as a genuine failure (everything except RX_DATA, which is
+// just a frame-received notification, and BUS_RECOVERED, which signals recovery)
+#define CAN_ALERTS_ENABLE (TWAI_ALERT_RX_DATA | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_ERROR | TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_BUS_OFF | TWAI_ALERT_TX_FAILED | TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_RX_FIFO_OVERRUN | TWAI_ALERT_BUS_RECOVERED)
+#define CAN_ALERTS_FAILURE_MASK (TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_ERROR | TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_BUS_OFF | TWAI_ALERT_TX_FAILED | TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_RX_FIFO_OVERRUN)
+// The subset signalling a bus has finished recovering from a bus-off and can be
+// restarted (twai_start_v2) so the latched isBusFailure can clear.
+#define CAN_ALERTS_RECOVERED_MASK (TWAI_ALERT_BUS_RECOVERED)
 
 #define gpio_led 8       // gpio for led
 #define gpio_mode 19     // gpio mode button internal
@@ -115,7 +147,7 @@ void readBoardRev();
 // led settings
 #define led_channel 0              // channel for led
 #define led_brightness_default 255 // compile-time default
-extern uint8_t ledBrightness;      // runtime LED brightness (0–255, persisted)
+extern uint8_t ledBrightness;      // runtime LED brightness (0-255, persisted)
 
 // wifi settings
 #define wifiHostNameDefault "OpenHaldex-C6" // factory default AP SSID
@@ -160,6 +192,23 @@ extern bool isMPH;       // 0 = kph, 1 = mph
 
 // for EEP
 extern Preferences pref; // for EEPROM / storing settings
+
+// guards the shared control state (state, lock_target, expert tables, learn
+// table, disengage gates) against torn reads between the CAN tasks, the web
+// callbacks, the buttons and the standalone frame generators
+extern SemaphoreHandle_t stateMutex;
+
+// RAII holder for stateMutex: released on every exit path of the scope. The mutex
+// is not recursive, so never construct one while already holding it, and never
+// call a function that takes it (getLockData, requestMode, applyDrivingSetting)
+// from inside the scope.
+struct StateLock
+{
+  StateLock() { xSemaphoreTake(stateMutex, portMAX_DELAY); }
+  ~StateLock() { xSemaphoreGive(stateMutex); }
+  StateLock(const StateLock &) = delete;
+  StateLock &operator=(const StateLock &) = delete;
+};
 
 // for LED
 extern Freenove_ESP32_WS2812 strip; // 1 led, gpio pin, channel, type of LED
@@ -466,6 +515,12 @@ extern volatile bool canWakeRequest; // set by CAN_RX GPIO ISR when transceivers
 
 extern bool rebootWiFi;
 extern bool lowPowerMode;
+// esp_pm_lock_handle_t held while awake to block automatic light sleep from
+// powering down the TWAI controller mid-drive. Stored as void* so this header
+// stays free of esp_pm.h (it is compiled in the native test env). Created in
+// setup() when canSleepEnabled; released/re-acquired by the low-power state
+// machine on deliberate sleep/wake. null when CAN sleep is disabled.
+extern void *pmNoLightSleepLock;
 extern char wifiPassword[65]; // WiFi AP password - empty = open network
 
 extern bool hazardForceMode;     // setting: use hazard lights to activate force mode
@@ -596,14 +651,23 @@ extern uint8_t received_quer_sync;
 // Transmit-failure counters maintained by canTransmit() (see OpenHaldexC6_can.h).
 extern volatile uint32_t canTxDropBus0;
 extern volatile uint32_t canTxDropBus1;
-extern float udsTerminalVoltage; // 0x0286: raw × 0.1 V
-extern float udsModuleTemp;      // 0x028D: raw − 55 °C  (1 byte, offset 55)
-extern float udsClutchTemp;      // 0x2BF1: LE16 (D6×256+D5 − 22767)/100 °C
-extern float udsCoolingFinTemp;  // 0x2BE4: LE16 (D6×256+D5 − 22767)/100 °C
-extern float udsClutchCurrent;   // 0x2BE6: BE16 × 0.001 A
-extern uint8_t udsClutchPWM;     // 0x2BE7: raw % (1 byte, 0–100)
-extern float udsClutchVoltage;   // 0x2BE9: BE16 × 0.001 V
-extern uint8_t udsBlockagePct;   // unconfirmed DID — always 0
+extern float udsTerminalVoltage; // 0x0286: raw x 0.1 V
+extern float udsModuleTemp;      // 0x028D: raw - 55 degC  (1 byte, offset 55)
+extern float udsClutchTemp;      // 0x2BF1: LE16 (D6x256+D5 - 22767)/100 degC
+extern float udsCoolingFinTemp;  // 0x2BE4: LE16 (D6x256+D5 - 22767)/100 degC
+// Raw unscaled 16-bit wire value (LE = payload[1]<<8 | payload[0]) for the two
+// temp DIDs. The (raw-22767)/100 scale is Forbes' disassembled guess and produces
+// physically impossible values under load (fin ~160 degC). These expose the raw so
+// the decode can be solved against a trusted reference (module temp) - see
+// HALDEX-KNOWLEDGE.md. Byte-swap in the reader to test the big-endian /1024 candidate.
+extern uint16_t udsClutchTempRaw;     // 0x2BF1 raw LE16, unscaled
+extern uint16_t udsCoolingFinTempRaw; // 0x2BE4 raw LE16, unscaled
+extern bool udsClutchTempValid;       // true once 0x2BF1 decoded this session
+extern bool udsCoolingFinTempValid;   // true once 0x2BE4 decoded this session
+extern float udsClutchCurrent;   // 0x2BE6: BE16 x 0.001 A
+extern uint8_t udsClutchPWM;     // 0x2BE7: raw % (1 byte, 0-100)
+extern float udsClutchVoltage;   // 0x2BE9: BE16 x 0.001 V
+extern uint8_t udsBlockagePct;   // unconfirmed DID - always 0
 extern volatile uint32_t udsLastDecodeMs; // millis() of the last decoded UDS value (0 = none); freshness for BLE Diag
 
 // --- KWP2000 over VW TP2.0 diagnostics: Gen2 / Gen4 (PQ) Haldex ------------
@@ -612,9 +676,9 @@ extern volatile uint32_t udsLastDecodeMs; // millis() of the last decoded UDS va
 // the target logical address in byte0; the module answers on 0x200 + address.
 // Confirmed from a SavvyCAN/VCDS capture of a 1K0 Gen2 Haldex: the module
 // enumerates at logical address 0x0A and answers on 0x20A. (Address 0x22 /
-// "22-AWD" carried over from the S3 sources did NOT respond on this platform —
+// "22-AWD" carried over from the S3 sources did NOT respond on this platform -
 // that reference was misleading.) If your module enumerates elsewhere, change
-// KWP_TP20_HALDEX_ADDR (confirm from a VCDS / SavvyCAN capture) and rebuild —
+// KWP_TP20_HALDEX_ADDR (confirm from a VCDS / SavvyCAN capture) and rebuild -
 // every derived ID below tracks it automatically.
 #define KWP_TP20_HALDEX_ADDR   0x0Au                             // logical (diagnostic) address (confirmed 1K0 Gen2)
 #define KWP_TP20_SETUP_TX_ID   0x200u                             // tester -> broadcast channel setup
@@ -631,8 +695,8 @@ extern char kwpTp20RawDump[512];         // raw measuring-block capture (formula
 // Gen4 (0AY) scaled measuring values, decoded via VAG formulas confirmed from
 // VCDS captures. Group 0x01 = oil/plate temp + supply voltage; group 0x03 =
 // oil pressure, estimated torque, clutch valve duty and current.
-extern float kwpOilTemp;         // G01[0] formula 0x1A: b - a  (°C)
-extern float kwpPlateTemp;       // G01[1] formula 0x1A: b - a  (°C, heated in capture)
+extern float kwpOilTemp;         // G01[0] formula 0x1A: b - a  (degC)
+extern float kwpPlateTemp;       // G01[1] formula 0x1A: b - a  (degC, heated in capture)
 extern float kwpSupplyVoltage;   // G01[2] formula 0x06: 0.001*a*b  (V)
 extern float kwpOilPressure;     // G03[0] formula 0x0E: 0.01*a*(b-100)  (bar)
 extern float kwpEstTorque;       // G03[1] formula 0x5E: 0.1*a*(b-128)  (Nm)
@@ -642,8 +706,12 @@ extern float kwpClutchValveCurrent; // G03[3] formula 0x18: 0.001*a*b  (A)
 
 extern uint32_t alerts_to_enable;
 
-extern long lastCANChassisTick;
-extern long lastCANHaldexTick;
+// millis() timestamp of the last frame on each bus. Unsigned to match millis()
+// so the value never goes negative after the signed 32-bit rollover (~24.8 days
+// uptime) - a negative tick would silently defeat the everAliveTick > 0 guard
+// that arms the drive-critical CAN restart in canServiceRxFault.
+extern uint32_t lastCANChassisTick;
+extern uint32_t lastCANHaldexTick;
 extern volatile uint32_t lpChassisFrameCount; // chassis CAN frame counter for probe window activity check
 extern volatile uint32_t lpHaldexFrameCount;  // haldex CAN frame counter for standalone probe window activity check
 extern uint32_t canHealthTimeoutMs;
@@ -657,18 +725,11 @@ extern uint32_t rxtxcount; // frame counter
 extern uint32_t stackCHS;
 extern uint32_t stackHDX;
 
-extern uint32_t stackframes10;
 extern uint32_t stackframes13;
-extern uint32_t stackframes20;
-extern uint32_t stackframes25;
 extern uint32_t stackframes50;
-extern uint32_t stackframes100;
-extern uint32_t stackframes200;
 extern uint32_t stackframes250;
-extern uint32_t stackframes1000;
 
 extern uint32_t stackbroadcastOpenHaldex;
-extern uint32_t stackupdateLabels;
 extern uint32_t stackshowHaldexState;
 extern uint32_t stackwriteEEP;
 
@@ -677,7 +738,8 @@ extern openhaldex_state_t state;
 extern float lock_target;
 
 // Settings
-extern float lockReleaseRatePerSec;
+extern uint16_t lockReleaseRampMs; // ms for a full lock release travel; 0 = instant
+extern uint16_t lockEngageRampMs;  // ms for a full lock-up travel; 0 = instant
 extern bool lockReleaseEnabled;  // when false, lock target changes are instantaneous
 extern bool steeringScaleEnabled; // when false, steering-angle lock scaling is bypassed
 extern uint8_t forceModesPriority; // 0=Haz>TC>Ext, 1=TC>Haz>Ext, 2=Haz>Ext>TC, 3=TC>Ext>Haz, 4=Ext>TC>Haz, 5=Ext>Haz>TC
@@ -701,6 +763,11 @@ extern uint8_t lockArray[throttleArrayCount][speedArrayCount];
 #define steeringStaleMs 500    // steering considered stale/unhealthy after this (ms)
 extern uint16_t steeringArray[steeringArrayCount];
 extern uint8_t steeringLockScaleArray[steeringArrayCount];
+// On-device saved map library: a small fixed set of named slots persisted in
+// NVS (separate namespace from settings), so tunes are stored on the ESP itself
+// instead of the phone's browser. A slot is free when its stored name is empty.
+#define MAP_SLOT_COUNT 5  // number of on-device save slots
+#define MAP_NAME_MAX 24   // max stored slot name length, including NUL terminator
 
 // for running through vars to see effects
 extern uint8_t tempCounter;
@@ -782,9 +849,9 @@ extern const uint8_t ID_SEQ_0A7[16];
 extern const uint8_t ID_SEQ_08A[16];
 extern const uint8_t ID_SEQ_086[16];
 extern const uint8_t ID_SEQ_121[16];
-extern const uint8_t ID_SEQ_110[16];
 extern const uint8_t ID_SEQ_106[16];
 extern const uint8_t ID_SEQ_104[16];
+extern const uint8_t ID_SEQ_110[16];
 extern const uint8_t ID_SEQ_116[16];
 extern const uint8_t ID_SEQ_101[16];
 extern const uint8_t ID_SEQ_0fd[16];

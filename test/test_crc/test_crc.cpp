@@ -1,6 +1,9 @@
 // Characterization tests for the OpenHaldex pure-function checksum core.
 //
 // These pin the CURRENT byte-level outputs of crc8_autosar() and
+// NOTE (v9): the E2E CRC appends the counter-indexed DataID byte LAST (upstream
+// verified this against 4,400+ frames on 13 IDs of a real MQB capture; the older
+// DataID-first order was wrong). The goldens below are the DataID-last results.
 // calcChecksum() — the values the Haldex actually sees on the wire today.
 // They are a refactor safety net: any change that alters a wire byte turns
 // a named assertion red with the diverging expected-vs-actual value.
@@ -76,44 +79,44 @@ void test_crc8_all_FF_8(void) {
 
 void test_checksum_0A8_counter0(void) {
   uint8_t f[] = {0x00, 0x70, 0x00, 0x00, 0x00, 0x64, 0x0F, 0xAE};
-  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x82, calcChecksum(f, ID_SEQ_0A8),
+  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x03, calcChecksum(f, ID_SEQ_0A8),
                                  "calcChecksum Motor_12 (0x0A8) wire byte changed");
 }
 
 void test_checksum_0A7_counter0(void) {
   uint8_t f[] = {0x00, 0x40, 0xFA, 0xFA, 0x00, 0xFA, 0x12, 0x34};
-  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x5F, calcChecksum(f, ID_SEQ_0A7),
+  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x1D, calcChecksum(f, ID_SEQ_0A7),
                                  "calcChecksum Motor_11 (0x0A7) wire byte changed");
 }
 
 void test_checksum_0A7_counterA(void) {
   // frame[1]&0x0F == 0x0A -> indexes idSeq[10]; pins counter-dependent path.
   uint8_t f[] = {0x00, 0x4A, 0xFA, 0xFA, 0x00, 0xFA, 0xC8, 0xC8};
-  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x32, calcChecksum(f, ID_SEQ_0A7),
+  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xBC, calcChecksum(f, ID_SEQ_0A7),
                                  "calcChecksum Motor_11 counter=0x0A wire byte changed");
 }
 
 void test_checksum_08A_counter0(void) {
   uint8_t f[] = {0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE};
-  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xDE, calcChecksum(f, ID_SEQ_08A),
+  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xC5, calcChecksum(f, ID_SEQ_08A),
                                  "calcChecksum ESP_14 (0x08A) wire byte changed");
 }
 
 void test_checksum_106_counter5(void) {
   uint8_t f[] = {0x00, 0x85, 0x64, 0xC0, 0x00, 0x00, 0xFD, 0x00};
-  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xE4, calcChecksum(f, ID_SEQ_106),
+  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0xA5, calcChecksum(f, ID_SEQ_106),
                                  "calcChecksum ESP_05 (0x106) wire byte changed");
 }
 
 void test_checksum_116_counter3(void) {
   uint8_t f[] = {0x00, 0x03, 0x01, 0x04, 0x00, 0x40, 0x00, 0x55};
-  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, calcChecksum(f, ID_SEQ_116),
+  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x07, calcChecksum(f, ID_SEQ_116),
                                  "calcChecksum ESP_10 (0x116) wire byte changed");
 }
 
 void test_checksum_65d_counterF(void) {
   uint8_t f[] = {0x00, 0x3F, 0x2B, 0x10, 0x00, 0x00, 0xE2, 0x79};
-  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x68, calcChecksum(f, ID_SEQ_65d),
+  TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x37, calcChecksum(f, ID_SEQ_65d),
                                  "calcChecksum ESP_20 (0x65d) wire byte changed");
 }
 

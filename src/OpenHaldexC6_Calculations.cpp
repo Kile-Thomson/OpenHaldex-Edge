@@ -1,6 +1,9 @@
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_tasks.h>
 #include <math.h> // tanf/sqrtf/fabsf for the per-corner slip geometry
+#include <cstdlib> // malloc/free for http_body_alloc
+#include <cstring> // memset/memcpy for the request-body buffer helpers
+#include <cstdint> // SIZE_MAX for the overflow guard in http_body_alloc
 
 // Geometry-compensated per-corner slip. Adopted from OpenHaldex-Edge by Rekt
 // (Kile Thomson) - https://github.com/Kile-Thomson/OpenHaldex-Edge - see
@@ -99,13 +102,91 @@ bool compute_corner_slip(const uint16_t wheel_raw[4], int16_t steer_wheel_tenths
 // under-speed cut-off. A bound of 0 means that side of the window is disabled.
 // Expert mode used to bypass this entirely (its map has its own speed axis);
 // it is now gated too, matching the UI hint "disable ANY lock below...".
+
+// Speed-disengage gate. See include/OpenHaldexC6_Calculations.h for the full
+// rationale. Lock is permitted only while speed is at or above the lower bound
+// AND at or below the upper bound; a bound of 0 disables that side.
+bool speed_disengage_ok(uint16_t speed, uint16_t disengage_under, uint16_t disengage_above)
+{
+  bool above_lower = (disengage_under == 0) || (speed >= disengage_under);
+  bool below_upper = (disengage_above == 0) || (speed <= disengage_above);
+  return above_lower && below_upper;
+}
+
+// Hysteretic speed-disengage gate. See include/OpenHaldexC6_Calculations.h for
+// the full rationale. Sharp entry, deadband exit; hysteresis 0 reduces exactly to
+// speed_disengage_ok. The `speed + hysteresis` form (rather than
+// `speed >= disengage_under - hysteresis`) keeps the arithmetic in unsigned range
+// so a small bound can never underflow, and the upper cast prevents u16 overflow.
+bool disengage_gate_hysteresis(uint16_t speed, uint16_t disengage_under, uint16_t disengage_above,
+                               uint16_t hysteresis, bool currently_enabled)
+{
+  // Not yet engaged: entry is sharp, exactly the nominal band.
+  if (!currently_enabled)
+  {
+    return speed_disengage_ok(speed, disengage_under, disengage_above);
+  }
+
+  // Already engaged: hold until speed moves `hysteresis` past a bound.
+  bool above_lower = (disengage_under == 0) ||
+                     ((uint32_t)speed + hysteresis >= disengage_under);
+  bool below_upper = (disengage_above == 0) ||
+                     (speed <= (uint32_t)disengage_above + hysteresis);
+  return above_lower && below_upper;
+}
+
+// Integrating debounce for a force-mode CAN flag. See
+// include/OpenHaldexC6_Calculations.h for the full rationale. A raw edge must
+// persist for `threshold` consecutive disagreeing frames before it is accepted;
+// any agreeing frame resets the counter, so a blip must be sustained. threshold
+// <= 1 accepts every edge immediately, reducing to today's undebounced bitRead.
+bool debounce_force_flag(bool raw, bool debounced, uint8_t &counter, uint8_t threshold)
+{
+  // Raw agrees with the accepted state: nothing pending, drop the counter.
+  if (raw == debounced)
+  {
+    counter = 0;
+    return debounced;
+  }
+
+  // Raw disagrees. threshold <= 1 accepts the edge on the first frame (no-op).
+  if (threshold <= 1)
+  {
+    counter = 0;
+    return raw;
+  }
+
+  // Count consecutive disagreeing frames; flip once the edge has held long enough.
+  if (++counter >= threshold)
+  {
+    counter = 0;
+    return raw;
+  }
+  return debounced;
+}
+
+// Strictly-ascending axis check for the expert-map interpolation.
+// See include/OpenHaldexC6_Calculations.h.
+bool is_strictly_ascending_u16(const uint16_t* arr, uint8_t count)
+{
+  for (uint8_t i = 1; i < count; i++)
+  {
+    if (arr[i] <= arr[i - 1])
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+
 static inline bool lock_enabled()
 {
   const bool throttle_ok = (state.pedal_threshold == 0) || (int(received_pedal_value) >= state.pedal_threshold);
-  // Allow lock only within the window [disengageUnderSpeed, disengageAboveSpeed].
-  const bool under_ok = (disengageUnderSpeed == 0) || (received_vehicle_speed >= disengageUnderSpeed);
-  const bool above_ok = (disengageAboveSpeed == 0) || (received_vehicle_speed <= disengageAboveSpeed);
-  return throttle_ok && under_ok && above_ok;
+  // Lock is allowed only within the window [disengageUnderSpeed, disengageAboveSpeed]
+  // (a 0 bound disables that side). Pure seam: speed_disengage_ok().
+  const bool speed_ok = speed_disengage_ok(received_vehicle_speed, disengageUnderSpeed, disengageAboveSpeed);
+  return throttle_ok && speed_ok;
 }
 
 static float get_expert_lock_target()
@@ -178,6 +259,81 @@ static float get_expert_lock_target()
   return int(v);            // return lock target as an integer percentage (0-100)
 }
 
+// Inverse of steering_curve_from_taper for display: the lock stays 100% up to
+// start (the breakpoint before the first value below 100), reaches the floor (the
+// last value) at full (the first breakpoint holding the floor). Exact for curves
+// built by steering_curve_from_taper, best effort for hand-edited ones. Pure.
+void steering_taper_from_curve(const uint16_t *arr, const uint8_t *scale, uint8_t count,
+                               uint16_t &start_deg, uint16_t &full_deg, uint8_t &floor_pct)
+{
+  floor_pct = scale[count - 1];
+  start_deg = arr[count - 1];
+  for (uint8_t i = 1; i < count; i++)
+  {
+    if (scale[i] < 100)
+    {
+      start_deg = arr[i - 1];
+      break;
+    }
+  }
+  full_deg = arr[count - 1];
+  for (uint8_t i = 0; i < count; i++)
+  {
+    if (scale[i] == floor_pct && (i == 0 || scale[i - 1] > floor_pct))
+    {
+      full_deg = arr[i];
+      break;
+    }
+  }
+}
+
+// Piecewise-linear steering curve: lock multiplier (0-100) for a steering-wheel
+// angle magnitude (deg). Past the last breakpoint the last value holds. Pure.
+float steering_curve_percent(float angle, const uint16_t *arr, const uint8_t *scale, uint8_t count)
+{
+  if (count < 2)
+    return 100.0f;
+  angle = constrain(angle, 0, (float)arr[count - 1]);
+  if (angle >= arr[count - 1])
+    return constrain((float)scale[count - 1], 0, 100);
+
+  for (uint8_t i = 0; i < count - 1; i++)
+  {
+    if (angle <= arr[i + 1])
+    {
+      const float denom = (float)arr[i + 1] - (float)arr[i];
+      const float ratio = (denom > 0) ? ((angle - arr[i]) / denom) : 0;
+      const float v0 = scale[i];
+      const float v1 = scale[i + 1];
+      return constrain(v0 + ((v1 - v0) * ratio), 0, 100);
+    }
+  }
+  return 100.0f;
+}
+
+// Build the 5-point curve for Edge's three-knob taper (start / full / floor):
+// 100% up to start_deg, a straight line down to floor_pct at full_deg, floor
+// beyond. Lets the Calibrate-tab keys steeringGainStartDeg / FullDeg / Floor and
+// the upstream breakpoint curve be one implementation. Pure.
+void steering_curve_from_taper(uint16_t start_deg, uint16_t full_deg, uint8_t floor_pct,
+                               uint16_t arr[steeringArrayCount], uint8_t scale[steeringArrayCount])
+{
+  if (floor_pct > 100)
+    floor_pct = 100;
+  if (full_deg < start_deg)
+    full_deg = start_deg;
+  arr[0] = 0;
+  arr[1] = start_deg;
+  arr[2] = (uint16_t)(((uint32_t)start_deg + full_deg) / 2);
+  arr[3] = full_deg;
+  arr[4] = (full_deg < 360) ? 360 : (uint16_t)(full_deg + 1);
+  scale[0] = 100;
+  scale[1] = 100;
+  scale[2] = (uint8_t)((100 + floor_pct) / 2);
+  scale[3] = floor_pct;
+  scale[4] = floor_pct;
+}
+
 // Steering-angle third axis (FWD bias): returns a 0-100% multiplier for the
 // lock target based on |steering-wheel angle|. Max lock at low angle, reduced
 // lock as angle grows. Only gens with a steering source (2/4/50/52) use it;
@@ -193,24 +349,7 @@ static float get_steering_lock_scale()
   if (received_steering_ms == 0 || (millis() - received_steering_ms) > steeringStaleMs)
     return 100.0f; // no/stale steering -> full lock, bias off
 
-  float angle = fabsf(received_steering_angle);
-  angle = constrain(angle, 0, (float)steeringArray[steeringArrayCount - 1]);
-
-  if (angle >= steeringArray[steeringArrayCount - 1])
-    return constrain((float)steeringLockScaleArray[steeringArrayCount - 1], 0, 100);
-
-  for (uint8_t i = 0; i < steeringArrayCount - 1; i++)
-  {
-    if (angle <= steeringArray[i + 1])
-    {
-      const float denom = (float)steeringArray[i + 1] - (float)steeringArray[i];
-      const float ratio = (denom > 0) ? ((angle - steeringArray[i]) / denom) : 0;
-      const float v0 = steeringLockScaleArray[i];
-      const float v1 = steeringLockScaleArray[i + 1];
-      return constrain(v0 + ((v1 - v0) * ratio), 0, 100);
-    }
-  }
-  return 100.0f;
+  return steering_curve_percent(fabsf(received_steering_angle), steeringArray, steeringLockScaleArray, steeringArrayCount);
 }
 
 // Scale a lock target by the steering-angle curve. Applied to lock-producing
@@ -399,30 +538,11 @@ uint8_t get_lock_target_adjusted_value(uint8_t value, bool invert)
   uint8_t correction_factor = 0; // calculate correction factor based on learn table if valid, otherwise use a default formula to determine correction factor (which is not very accurate, but better than nothing)
   if (haldexLearnTableValid)
   {
-    // find the smallest correction factor where the learned engagement meets or exceeds lock_target
-    bool found = false;
-    for (uint8_t i = 0; i <= 100; i++)
-    {
-      if (haldexLearnTable[i] >= (uint8_t)lock_target)
-      {
-        correction_factor = i;
-        found = true;
-        break;
-      }
-    }
-    if (!found)
-    {
-      // requested lock exceeds anything the sweep learned - clamp to the highest learned entry
-      uint8_t best_engagement = 0;
-      for (uint8_t i = 0; i <= 100; i++)
-      {
-        if (haldexLearnTable[i] >= best_engagement)
-        {
-          best_engagement = haldexLearnTable[i];
-          correction_factor = i;
-        }
-      }
-    }
+    // smallest correction factor whose learned engagement meets lock_target;
+    // clamps to the CF of the highest learned engagement (argmax) when more lock
+    // is requested than was ever learned, instead of falling through to 0 or
+    // over-claiming the full frame.
+    correction_factor = lookup_learn_correction_factor(haldexLearnTable, (uint8_t)lock_target);
   }
   else if (haldexGeneration == 41)
   {
@@ -533,7 +653,9 @@ void fill_motor11_bpk(uint8_t data[8], uint8_t counter)
   // runtime tunable (see defs.h) so the serial lab can massage the wire
   // format live; the defaults are the values that were hardcoded here.
   // Signals are 10-bit with offset -509, i.e. raw = Nm + 509.
-  const uint16_t ceilNm = bpkCeilingNm;
+  // The 10-bit field with offset -509 encodes at most +514 Nm: clamp the ceiling to the
+  // documented 509 Nm signal maximum so a raised value can never wrap the 0x3FF mask.
+  const uint16_t ceilNm = (bpkCeilingNm > 509) ? 509 : bpkCeilingNm;
   const uint16_t floorNm = (bpkFloorNm < ceilNm) ? bpkFloorNm : 0;
 
   uint16_t torqueNm = get_lock_target_adjusted_value(0xFE, false);
@@ -591,20 +713,113 @@ void bpkLogSample(uint16_t torqueNm, uint16_t istNm, uint16_t solfNm)
   bpkLastSolfNm = solfNm;
 }
 
-void startHaldexLearn()
+// The v9 %/s lock-release setting (web lockReleaseRatePerSec and the BLE
+// Settings characteristic, 5..500 %/s) mapped onto the one ramp mechanism, which
+// stores milliseconds for a full 0..100 travel. 100000 / rate: 500 %/s = 200 ms,
+// 5 %/s = 20000 ms. Out-of-range rates are clamped, never rejected.
+uint16_t lock_ramp_ms_from_pct_rate(uint16_t rate_per_sec)
 {
-  if (haldexLearnActive || longLearnActive)
+  if (rate_per_sec < 5) rate_per_sec = 5;
+  if (rate_per_sec > 500) rate_per_sec = 500;
+  return (uint16_t)((100000UL + rate_per_sec / 2) / rate_per_sec);
+}
+
+// Inverse for reporting. 0 ms (instant) reads as the 500 %/s ceiling.
+uint16_t lock_pct_rate_from_ramp_ms(uint16_t ramp_ms)
+{
+  if (ramp_ms == 0) return 500;
+  uint32_t r = (100000UL + ramp_ms / 2) / ramp_ms;
+  if (r < 5) r = 5;
+  if (r > 500) r = 500;
+  return (uint16_t)r;
+}
+
+// Slew one step of the lock-target rate limiter. Ramp times are milliseconds for
+// a full 0<->100 travel: rising transitions take engage_ms, falling transitions
+// take release_ms. 0 ms = instant in that direction - rising 0 is the historical
+// instant lock-up; falling 0 is an instant release (the old %/s scheme floored
+// release at a nonzero rate because rate 0 meant "never releases", a stuck-locked
+// footgun; in ms, 0 cleanly means "release immediately"). A ramp of N ms moves
+// 100000 * dt_s / N percent per step.
+float lock_rate_limit_step(float current, float target, uint16_t engage_ms, uint16_t release_ms, float dt_s)
+{
+  if (target > current)
   {
-    return; // already running (Long Learn drives its own sweeps)
+    if (engage_ms == 0)
+    {
+      return target; // instant lock-up
+    }
+    const float max_rise = 100000.0f * dt_s / (float)engage_ms;
+    return (target < current + max_rise) ? target : current + max_rise;
   }
 
-  memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
+  if (target < current)
+  {
+    if (release_ms == 0)
+    {
+      return target; // instant release
+    }
+    const float max_drop = 100000.0f * dt_s / (float)release_ms;
+    return (target > current - max_drop) ? target : current - max_drop;
+  }
+
+  return target;
+}
+
+// Convert a persisted lock-ramp rate (%/s) to the new full-travel time in ms.
+// Used once when migrating a device that stored the pre-ms unit: rate <= 0 is
+// instant (0 ms), otherwise ms = round(100000 / rate) clamped to the 1000 ms
+// slider ceiling so a very slow legacy rate lands on the 1 s maximum.
+uint16_t lock_ramp_ms_from_rate(float rate_per_sec)
+{
+  if (rate_per_sec <= 0.0f)
+  {
+    return 0; // instant
+  }
+  const float ms = 100000.0f / rate_per_sec;
+  if (ms >= 1000.0f)
+  {
+    return 1000; // clamp a slow legacy rate to the 1 s ceiling
+  }
+  return (uint16_t)(ms + 0.5f); // round to nearest ms
+}
+
+// Learn interlock: the sweep commands up to full lock, which is only safe with
+// the car stationary. Pure so the 5 km/h limit is pinned by a host test.
+bool learn_speed_ok(uint16_t speed_kmh)
+{
+  return speed_kmh <= learnMaxSpeed;
+}
+
+void startHaldexLearn()
+{
+  if (!learn_speed_ok(received_vehicle_speed))
+  {
+    haldexLearnStep = 103; // refused: car is moving (same code a mid-sweep abort reports)
+    return;
+  }
+
+  // Guard + reserve in one critical section so two concurrent callers can never
+  // both pass the already-running check. runLearnSweep() snapshots and wipes
+  // the table itself, under the same mutex.
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
+  if (haldexLearnActive || longLearnActive)
+  {
+    xSemaphoreGive(stateMutex);
+    return; // already running (Long Learn drives its own sweeps)
+  }
   haldexLearnCancel = false;
   haldexLearnStep = 0;
   haldexLearnCF = 0;
   haldexLearnActive = true;
+  xSemaphoreGive(stateMutex);
 
-  xTaskCreate(haldexLearnTask, "haldexLearn", 4096, nullptr, 1, nullptr);
+  if (xTaskCreate(haldexLearnTask, "haldexLearn", 4096, nullptr, 1, nullptr) != pdPASS)
+  {
+    // Task never started, so nothing would ever clear the active flag.
+    haldexLearnActive = false;
+    DEBUG("startHaldexLearn: xTaskCreate failed - learn not started");
+  }
 }
 
 bool runLearnSweep(uint32_t preHoldMs)
@@ -616,10 +831,15 @@ bool runLearnSweep(uint32_t preHoldMs)
   // than whatever the reading was passing through. Held steady, this hardware
   // tracks the request 1:1 with no jitter at all, so a clean sweep should come
   // out close to an identity table.
+  // The window is reduced with learn_reduce_samples (lower median, then held
+  // monotonic against the previous CF): near lock-up the Haldex ECU's own duty
+  // loop briefly overshoots to a clean 100 for one frame, and a plain average
+  // would write that spike into the table.
   const uint32_t settleMs = 400;
-  const uint32_t observeMs = 200;
-  const uint32_t sampleMs = 50;
-  uint8_t peak = 0; // highest engagement recorded so far (monotonic hold)
+  const uint32_t sampleMs = 25;
+  const uint8_t sampleCount = 8; // 8 * 25 ms = 200 ms observation window
+  uint8_t prevRecorded = 0;
+  bool speedAborted = false;
 
   // The ESP_14 launch floor pins BR_Vorg_*_Min to Max, leaving the Haldex no
   // room to modulate - it drives the pump to full duty and corrupts the top of
@@ -630,11 +850,20 @@ bool runLearnSweep(uint32_t preHoldMs)
   const uint8_t floorBeforeLearn = esp14MinFloorPct;
   esp14MinFloorPct = 0;
 
+  // Snapshot the current calibration, then wipe and invalidate it in one
+  // critical section so the hot path never sees a valid flag over a half-wiped
+  // table. A cancelled or speed-aborted sweep restores the snapshot (see
+  // learn_finalize) instead of leaving the user with no table at all.
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
+  memcpy(haldexLearnTableBackup, haldexLearnTable, sizeof(haldexLearnTableBackup));
+  haldexLearnTableBackupValid = haldexLearnTableValid;
   memset(haldexLearnTable, 0, sizeof(haldexLearnTable));
+  haldexLearnTableValid = false;
   haldexLearnCancel = false;
   haldexLearnStep = 0;
   haldexLearnCF = 0;
   haldexLearnActive = true; // frames now carry haldexLearnCF regardless of mode
+  xSemaphoreGive(stateMutex);
 
   // Optional pre-hold at CF 0: wait for the clutch to release from the previous
   // sweep (engagement <= 2 % for five consecutive 100 ms ticks) or time out.
@@ -663,55 +892,49 @@ bool runLearnSweep(uint32_t preHoldMs)
       break;
     }
 
+    // Live speed interlock: abort without publishing the partial table if the
+    // car moves off mid-sweep. Step 103 tells the UI why.
+    if (!learn_speed_ok(received_vehicle_speed))
+    {
+      speedAborted = true;
+      if (longLearnActive)
+      {
+        longLearnSpeedAborted = true; // Long Learn restores everything and reports failure
+        longLearnCancel = true;
+      }
+      break;
+    }
+
     haldexLearnStep = (uint8_t)cf;
     haldexLearnCF = (uint8_t)cf;
 
     vTaskDelay(settleMs / portTICK_PERIOD_MS);
 
-    // Average the settled window rather than taking one instantaneous read.
-    uint32_t sum = 0;
-    uint16_t n = 0;
-    for (uint32_t o = 0; o < observeMs && !haldexLearnCancel; o += sampleMs)
+    uint8_t samples[sampleCount];
+    for (uint8_t i = 0; i < sampleCount; i++)
     {
       vTaskDelay(sampleMs / portTICK_PERIOD_MS);
-      sum += received_haldex_engagement;
-      n++;
-    }
-    uint8_t eng = n ? (uint8_t)(sum / n) : received_haldex_engagement;
-
-    // Engagement must rise (or plateau) as the requested lock climbs - it can
-    // never physically fall. A reading below the running peak is a data fault
-    // (e.g. a bad byte at the top end that returns 0 or a lower value), so hold
-    // the highest lock achieved so far instead of saving the drop. This keeps
-    // "the last available highest lock" as the learned value for higher requests.
-    if (eng < peak)
-    {
-      eng = peak; // last available highest lock remains
-    }
-    else
-    {
-      peak = eng;
+      samples[i] = received_haldex_engagement;
     }
 
-    haldexLearnTable[cf] = eng;
+    // Engagement can never physically fall as the request climbs, so the
+    // reducer holds the table monotonic against the previous CF as well.
+    prevRecorded = learn_reduce_samples(samples, sampleCount, prevRecorded);
+    haldexLearnTable[cf] = prevRecorded;
   }
 
-  bool anyNonZero = false;
-  if (!haldexLearnCancel)
-  {
-    // only mark valid if at least one non-zero engagement was recorded
-    for (uint8_t i = 0; i <= 100; i++)
-    {
-      if (haldexLearnTable[i] > 0)
-      {
-        anyNonZero = true;
-        break;
-      }
-    }
-    haldexLearnTableValid = anyNonZero;
-    haldexLearnStep = anyNonZero ? 101 : 102; // 101 = complete OK, 102 = complete but no data
-  }
+  // Publish the outcome (restore on cancel/speed-abort, validate on complete)
+  // together with the valid flag under the lock. The decision lives in
+  // learn_finalize, a pure seam pinned by test_learn.
+  bool tableValid = false;
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
+  haldexLearnStep = learn_finalize(haldexLearnTable, &tableValid,
+                                   haldexLearnTableBackup, haldexLearnTableBackupValid,
+                                   haldexLearnCancel, speedAborted, haldexLearnStep);
+  haldexLearnTableValid = tableValid;
+  xSemaphoreGive(stateMutex);
 
+  const bool anyNonZero = (haldexLearnStep == 101);
   const bool ok = !haldexLearnCancel && anyNonZero;
   haldexLearnActive = false;
   haldexLearnCF = 0;
@@ -763,6 +986,11 @@ bool startLongLearn(bool testAll)
 {
   if (longLearnActive || haldexLearnActive)
     return false;
+  if (!learn_speed_ok(received_vehicle_speed))
+  {
+    haldexLearnStep = 103; // refused: car is moving
+    return false;
+  }
   const int gi = frameEditGenIdx(haldexGeneration);
   if (gi < 0)
     return false; // gen41/42 etc. have no gated blocks to bisect
@@ -771,6 +999,7 @@ bool startLongLearn(bool testAll)
   longLearnGeneration = haldexGeneration;
   longLearnTestAll = testAll;
   longLearnCancel = false;
+  longLearnSpeedAborted = false;
   longLearnPhase = LL_SWEEP;
   longLearnSweepIdx = 0;
   longLearnSweepTotal = 0;
@@ -790,11 +1019,17 @@ bool startLongLearn(bool testAll)
 
 void getLockData(twai_message_t &rx_message_chs)
 {
-  // Calculate raw lock target then (optionally) apply rate-limited release decay.
+  // Hold stateMutex across the whole read + compute + frame edit so the Haldex
+  // never sees a half-rewritten expert table, learn table or mode. The guard
+  // releases on every return path below. No blocking calls inside, so the hold
+  // is bounded; nothing called from here takes the mutex again.
+  StateLock stateLock;
+
+  // Calculate raw lock target then (optionally) apply rate-limited slewing.
   // When lockReleaseEnabled is false, all transitions to new lock % are instantaneous.
-  // When enabled, rising transitions are always instantaneous; falling
-  // transitions are limited to `lockReleaseRatePerSec` %/s so the clutch
-  // releases gradually rather than snapping open.
+  // When enabled, falling transitions take `lockReleaseRampMs` ms for a full
+  // release so the clutch opens gradually rather than snapping, and rising
+  // transitions take `lockEngageRampMs` ms (0 = instantaneous, the default).
   static float smoothed_lock_target = 0.0f;
   static uint32_t last_lock_ms = 0;
 
@@ -811,17 +1046,8 @@ void getLockData(twai_message_t &rx_message_chs)
     const float dt_s = (last_lock_ms == 0) ? 0.0f : (float)(now_ms - last_lock_ms) / 1000.0f;
     last_lock_ms = now_ms;
 
-    if (raw_target >= smoothed_lock_target)
-    {
-      smoothed_lock_target = raw_target; // rise: immediate
-    }
-    else
-    {
-      const float max_drop = lockReleaseRatePerSec * dt_s;
-      smoothed_lock_target = (raw_target > smoothed_lock_target - max_drop)
-                                 ? raw_target
-                                 : smoothed_lock_target - max_drop;
-    }
+    smoothed_lock_target = lock_rate_limit_step(smoothed_lock_target, raw_target,
+                                                lockEngageRampMs, lockReleaseRampMs, dt_s);
   }
   lock_target = smoothed_lock_target;
 
@@ -1553,29 +1779,28 @@ void getLockData(twai_message_t &rx_message_chs)
 
       appliedTorque = get_lock_target_adjusted_value(0xFE, false);
 
-      // Launch PWM floor: raise BR_Vorg_*_Min while lock is commanded, clamped
-      // strictly below Max so the Haldex keeps room to modulate. 0% = unchanged,
-      // and it collapses to 0 whenever Max does (off-throttle, FWD, coasting).
-      // Adopted from OpenHaldex-Edge by Rekt (Kile Thomson) - see THIRD_PARTY_NOTICES.md.
+      // BR_Vorg_*_Max is the operating-RANGE ceiling (a permission envelope), not
+      // a torque request. Feeding it the CF-attenuated appliedTorque collapsed the
+      // declared ceiling to ~60% and capped PWM below stock's ~80%. esp14_range_max
+      // declares the full range scaled only by the RAW commanded lock fraction
+      // (lock_target), gated by the same lock-active signal appliedTorque already
+      // encodes (appliedTorque > 0 -> lock commanded).
       {
-        uint8_t esp14Floor = 0;
-        if (esp14MinFloorPct > 0 && appliedTorque > 1)
-        {
-          uint16_t f = ((uint16_t)appliedTorque * esp14MinFloorPct) / 100;
-          if (f > (uint16_t)(appliedTorque - 1))
-            f = (uint16_t)(appliedTorque - 1);
-          esp14Floor = (uint8_t)f;
-        }
-        // Danger Zone: at a full 50:50 request only, pin Min to Max so the
-        // Haldex has no modulation room and goes to full pump duty.
-        if (dangerZoneEnabled && lock_target >= 100 && appliedTorque > 1)
-          esp14Floor = (uint8_t)(appliedTorque - 1);
+        const uint8_t rangeMax = esp14_range_max((uint8_t)lock_target, appliedTorque > 0);
+        rx_message_chs.data[5] = rangeMax; // BR_Vorg_Quer_Max   - full range at full command
+        rx_message_chs.data[7] = rangeMax; // BR_Vorg_Allrad_Max - full range at full command
+
+        // BR_Vorg_*_Min launch-PWM floor (esp14MinFloorPct, 0 = unchanged). Shared
+        // helper: floor % of full command through the learn-corrected path, clamped
+        // strictly below Max so the Haldex keeps room to modulate.
+        uint8_t esp14Floor = esp14_min_floor(esp14MinFloorPct, rangeMax);
+        // Danger Zone: at a full 50:50 request only, pin Min to Max so the Haldex has
+        // no modulation room and goes to full pump duty.
+        if (dangerZoneEnabled && lock_target >= 100 && rangeMax > 1)
+          esp14Floor = (uint8_t)(rangeMax - 1);
         rx_message_chs.data[4] = esp14Floor; // BR_Vorg_Quer_Min
         rx_message_chs.data[6] = esp14Floor; // BR_Vorg_Allrad_Min
       }
-
-      rx_message_chs.data[5] = appliedTorque; // BR_Vorg_Quer_Max - lock-modulated (massive effect, ported from standalone)
-      rx_message_chs.data[7] = appliedTorque; // BR_Vorg_Allrad_Max - lock-modulated (massive effect)
       // massive effects (4>7)
 
       if (haldexGeneration == 52)
@@ -1929,5 +2154,522 @@ void getLockData(twai_message_t &rx_message_chs)
       rx_message_chs.data[7] = 0x78; //
       break;
     }
+  }
+}
+
+// NVS init policy. Pure decision over two booleans, no Arduino/NVS symbols, so
+// the readEEP first-run/migrate/seed branch is host-tested under env:native.
+// See include/OpenHaldexC6_Calculations.h.
+EepInitAction eeprom_init_action(bool new_ns_seeded, bool legacy_ns_has_data)
+{
+  // Already seeded on the canonical namespace -> nothing to migrate or write,
+  // just load. Checked first so a seeded device never re-reads legacy data.
+  if (new_ns_seeded)
+  {
+    return EEP_LOAD_EXISTING;
+  }
+  // Not seeded but the de-facto legacy namespace holds a prior install's
+  // settings -> migrate them forward so existing devices keep their config.
+  if (legacy_ns_has_data)
+  {
+    return EEP_MIGRATE_LEGACY;
+  }
+  // First ever run on a blank device -> write the compiled defaults.
+  return EEP_SEED_DEFAULTS;
+}
+
+// Boot-time mapping from the persisted lastMode byte to the runtime drive mode.
+// Valid stored values are 0..5; anything else (e.g. a haldexGeneration number
+// like 41/50/51 that a prior bug wrote into lastMode) is not a real mode and
+// falls back to MODE_FWD, matching the original boot switch's default arm.
+openhaldex_mode_t mode_from_last_mode(uint8_t last_mode)
+{
+  switch (last_mode)
+  {
+  case 0:
+    return MODE_STOCK;
+  case 1:
+    return MODE_FWD;
+  case 2:
+    return MODE_5050;
+  case 3:
+    return MODE_6040;
+  case 4:
+    return MODE_7525;
+  case 5:
+    return MODE_EXPERT;
+  default:
+    return MODE_FWD;
+  }
+}
+
+// Setting the haldex generation must leave the stored drive mode untouched -
+// they are separate namespaces (generation 1/2/4/41/50/51 vs mode 0..5). The
+// generation argument is intentionally unused: it exists so the seam documents
+// exactly which write path this guards, and so a test can pass generation values
+// and assert the returned mode is unchanged. Reintroducing the old
+// `lastMode = generation` bug means editing this return, which reddens the test.
+uint8_t last_mode_after_generation_change(uint8_t current_last_mode, int generation)
+{
+  (void)generation;
+  return current_last_mode;
+}
+
+// Learn-table lookup. Returns the smallest index i in 0..100 with table[i] >=
+// target - the lowest correction factor whose learned engagement meets the
+// requested lock target, matching the previous inline loop. When NO learned
+// entry meets target (more lock requested than was ever learned) we clamp to the
+// index of the MAXIMUM learned engagement, i.e. the CF that produced the most
+// lock the sweep ever actually measured - not a hardcoded 100.
+//
+// Why not 100: the table is only required to have one nonzero entry to be
+// "valid", so a light-load or interrupted sweep can top out well below 100 (e.g.
+// 25% engagement, or entries only up to CF 30 with the rest still 0). Returning
+// 100 then commands CF=100 -> value * 100 / 100 = the full frame value (full
+// bpkCeilingNm) for a target the car never learned - the stuck-at-100% field
+// symptom, and the exact inverse of the old fall-through-to-0 bug. Returning the
+// argmax commands the largest lock the sweep proved reachable and never
+// extrapolates past learned data. An all-zero table yields index 0 (zero lock,
+// safe) - table validity is enforced upstream. See the header.
+uint8_t lookup_learn_correction_factor(const uint8_t* table, uint8_t target)
+{
+  uint8_t max_idx = 0;
+  for (uint8_t i = 0; i <= 100; i++)
+  {
+    if (table[i] >= target)
+    {
+      return i;
+    }
+    if (table[i] > table[max_idx])
+    {
+      max_idx = i; // track highest learned engagement while scanning
+    }
+  }
+  return max_idx;
+}
+
+// See OpenHaldexC6_Calculations.h for the rationale. Median-of-window + monotonic
+// clamp so a lone pump-overshoot or dropout frame cannot poison the learn table.
+uint8_t learn_reduce_samples(const uint8_t* samples, uint8_t n, uint8_t prev_recorded)
+{
+  if (n == 0 || samples == nullptr)
+  {
+    return prev_recorded; // nothing sampled - hold the previous value
+  }
+
+  // Insertion sort a bounded local copy (learn windows are small, <= 32 samples).
+  // No dynamic allocation, no Arduino symbols, so this stays host-testable.
+  if (n > 32)
+  {
+    n = 32; // defensive cap - callers use ~8; never truncates a real learn window
+  }
+  uint8_t sorted[32];
+  for (uint8_t i = 0; i < n; i++)
+  {
+    uint8_t v = samples[i];
+    int8_t j = (int8_t)i - 1;
+    while (j >= 0 && sorted[j] > v)
+    {
+      sorted[j + 1] = sorted[j];
+      j--;
+    }
+    sorted[j + 1] = v;
+  }
+
+  // Lower median: for an even count this picks the lower of the two middles, so a
+  // clean 50/50 split between a spike cluster and the true value still rejects the
+  // spike (only a strict majority of spiked frames - i.e. sustained, real - wins).
+  const uint8_t median = sorted[(n - 1) / 2];
+
+  // Engagement can only rise with CF, so never record below the previous CF. This
+  // keeps lookup_learn_correction_factor coherent and glazes an all-zero (dropout)
+  // window back to the last good reading in one place.
+  return (median < prev_recorded) ? prev_recorded : median;
+}
+
+// Learn-sweep finalization. See the header for the contract; kept free of
+// Arduino/FreeRTOS symbols so the native tests exercise this exact code.
+uint8_t learn_finalize(uint8_t* table, bool* valid,
+                       const uint8_t* backup, bool backup_valid,
+                       bool cancelled, bool speed_aborted, uint8_t current_step)
+{
+  if (cancelled || speed_aborted)
+  {
+    // Interrupted sweep: restore the pre-learn calibration snapshotted by
+    // startHaldexLearn, so a cancel at CF=5 doesn't destroy a good table and
+    // silently revert the user to the default CF formula (and V3 packing).
+    memcpy(table, backup, 101);
+    *valid = backup_valid;
+    return speed_aborted ? 103 : current_step; // 103 = aborted: vehicle moving
+  }
+
+  // Completed sweep: only mark valid if at least one non-zero engagement was
+  // recorded.
+  bool anyNonZero = false;
+  for (uint8_t i = 0; i <= 100; i++)
+  {
+    if (table[i] > 0) { anyNonZero = true; break; }
+  }
+  *valid = anyNonZero;
+  return anyNonZero ? 101 : 102; // 101 = complete OK, 102 = complete but no data
+}
+
+// See OpenHaldexC6_Calculations.h for the full rationale. Single shared
+// implementation of the ESP_14 BR_Vorg_*_Min launch-PWM floor so the standalone
+// frame generator (OpenHaldexC6_StandaloneCAN.cpp) and the CAN-passthrough edit
+// path (getLockData below) can never drift apart - both wrote the same block by
+// hand. floor_pct 0 yields 0 (inherited Min=0). Otherwise the floor byte is a %
+// of full command routed through get_lock_target_adjusted_value, so it gates to
+// 0 whenever lock isn't commanded (off-throttle/FWD/coast), then clamped strictly
+// below applied_torque (Max) so the Haldex keeps modulation headroom.
+uint8_t esp14_min_floor(uint8_t floor_pct, uint8_t applied_torque)
+{
+  if (floor_pct == 0)
+  {
+    return 0;
+  }
+  const uint8_t floorByte = (uint8_t)((uint16_t)0xFE * floor_pct / 100);
+  uint8_t minFloor = get_lock_target_adjusted_value(floorByte, false);
+  if (minFloor >= applied_torque)
+  {
+    minFloor = (applied_torque > 0) ? (uint8_t)(applied_torque - 1) : 0;
+  }
+  return minFloor;
+}
+
+// See OpenHaldexC6_Calculations.h for the full rationale. The ESP_14 Max byte is
+// a PERMISSION envelope (how much operating range the Haldex may use), NOT a
+// torque request, so it must not be routed through the correction_factor that
+// translates lock_target into an engagement byte - that collapsed the ceiling to
+// ~60% and capped PWM. Declare the full 0xFE range scaled only by the RAW
+// commanded lock fraction: full command -> full range, partial command -> partial
+// range. Gated to 0 by the caller-supplied lock_active. (uint16 product 0xFE*100
+// = 25400 stays clear of overflow.)
+uint8_t esp14_range_max(uint8_t frac_pct, bool lock_active)
+{
+  if (!lock_active)
+  {
+    return 0;
+  }
+  if (frac_pct >= 100)
+  {
+    return 0xFE; // full command -> full declared range (the launch-authority lever)
+  }
+  return (uint8_t)((uint16_t)0xFE * frac_pct / 100);
+}
+
+// Scale a received Haldex engagement byte into a 0..100 percentage.
+// Pure integer math, no Arduino symbols, so it compiles and tests on host and
+// the wire result for valid in-window frames is byte-identical to the previous
+// Arduino map(raw, in_min, in_max, 0, 100) call. Unlike map(), this never
+// extrapolates: a raw byte below in_min or above in_max is clamped first, so the
+// uint8_t result can never wrap (e.g. -1 -> 255) or exceed 100.
+uint8_t scale_haldex_engagement(uint8_t raw, uint8_t in_min, uint8_t in_max)
+{
+  // Defensive: a non-positive input span has no meaningful scale; fail to 0
+  // rather than divide by zero or by a negative span.
+  if (in_max <= in_min)
+  {
+    return 0;
+  }
+
+  // Clamp into [in_min, in_max] BEFORE scaling so we interpolate, never
+  // extrapolate. Below-window -> in_min (0%), above-window -> in_max (100%).
+  int value = raw;
+  if (value < in_min)
+  {
+    value = in_min;
+  }
+  else if (value > in_max)
+  {
+    value = in_max;
+  }
+
+  // Same arithmetic as Arduino map() with out_min=0, out_max=100. int math keeps
+  // the (value - in_min) * 100 product (max 25000) well clear of any overflow.
+  int scaled = (value - (int)in_min) * 100 / ((int)in_max - (int)in_min);
+
+  // The clamp above already bounds scaled to 0..100; constrain again so the
+  // post-condition (0..100, no wrap) holds by construction.
+  if (scaled < 0)
+  {
+    scaled = 0;
+  }
+  else if (scaled > 100)
+  {
+    scaled = 100;
+  }
+  return (uint8_t)scaled;
+}
+
+// Auth policy. The WiFi AP password is the single auth boundary. Pure pointer
+// logic, no Arduino/NVS symbols, so it compiles under env:native and the
+// provisioning/injection decision lives in one reviewable, host-tested place.
+// See include/OpenHaldexC6_Calculations.h.
+bool wifi_password_provisioned(const char* ap_pw)
+{
+  // A WPA2 AP password must be >= 8 chars. Anything shorter (including "" / NULL)
+  // leaves the AP open, so the device is treated as unprovisioned and the
+  // dashboard forces the first-run password page. Count without <cstring> so the
+  // predicate stays dependency-free under env:native.
+  if (ap_pw == nullptr)
+  {
+    return false;
+  }
+  size_t n = 0;
+  while (ap_pw[n] != '\0')
+  {
+    if (++n >= 8)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+// See include/OpenHaldexC6_Calculations.h for the full rationale. Matches the
+// request path (up to any '?' query string, case-insensitively) against the
+// well-known phone-OS connectivity-probe URLs. Kept dependency-free of Arduino
+// so the URL set is host-tested; std::strncasecmp-free by hand-rolling the
+// compare so it builds identically under env:native.
+bool is_captive_probe(const char* path)
+{
+  if (path == nullptr)
+  {
+    return false;
+  }
+
+  // The exact request paths each OS hits to decide "is there internet here?".
+  // Android: /generate_204 and /gen_204 (various Google/vendor probe hosts).
+  // Apple:   /hotspot-detect.html and the /library/test/success.html variant.
+  // Windows: /ncsi.txt and /connecttest.txt (NCSI).
+  // Firefox: /canonical.html; some builds also request /success.txt.
+  static const char *const kProbes[] = {
+      "/generate_204",
+      "/gen_204",
+      "/hotspot-detect.html",
+      "/library/test/success.html",
+      "/ncsi.txt",
+      "/connecttest.txt",
+      "/success.txt",
+      "/canonical.html",
+  };
+
+  for (const char *probe : kProbes)
+  {
+    size_t i = 0;
+    bool match = true;
+    for (; probe[i] != '\0'; ++i)
+    {
+      char c = path[i];
+      // Lower-case the path char (ASCII); probe entries are already lower-case.
+      if (c >= 'A' && c <= 'Z')
+      {
+        c = (char)(c + ('a' - 'A'));
+      }
+      if (c != probe[i])
+      {
+        match = false;
+        break;
+      }
+    }
+    // A match requires the path to end here or continue only with a query string,
+    // so "/generate_204extra" does not match but "/generate_204?foo" does.
+    if (match && (path[i] == '\0' || path[i] == '?'))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Pure bus-health predicate: any failure bit set means a fault.
+// Plain arithmetic, no TWAI symbols, so it runs in the native test suite.
+bool can_alerts_indicate_failure(uint32_t alerts, uint32_t failure_mask)
+{
+  return (alerts & failure_mask) != 0;
+}
+
+// Pure bus-recovery predicate: true when a recovered bit is set, meaning a bus
+// that went off has finished recovery and can be restarted with twai_start_v2.
+// Plain arithmetic, no TWAI symbols, so it runs on host.
+bool can_alerts_indicate_recovered(uint32_t alerts, uint32_t recovered_mask)
+{
+  return (alerts & recovered_mask) != 0;
+}
+
+// Pure external-diagnostic-tool predicates - see the header for the rationale.
+// is_external_diag_request_id matches the reserved ISO/VAG tester request ids;
+// our own polling transmits on Bus 1, so any of these inbound on Bus 0 is a
+// foreign scan tool. No TWAI symbols, so both run in the native suite.
+bool is_external_diag_request_id(uint32_t can_id)
+{
+  return can_id == 0x7DFu || (can_id >= 0x700u && can_id <= 0x71Fu);
+}
+
+// Reserve 0 as the "never seen" sentinel: millis() returns 0 at boot and every
+// rollover, so map only that single tick to 1 (<=1 ms error) before storing.
+uint32_t external_diag_stamp(uint32_t now_ms)
+{
+  return now_ms == 0u ? 1u : now_ms;
+}
+
+// True while a tester was seen within timeout_ms. last_seen_ms == 0 means never
+// seen (never written as a real stamp - see external_diag_stamp). (uint32_t)(now
+// - last) is wrap-safe, so a millis() rollover during the window still reports
+// the correct elapsed time.
+bool external_diag_active(uint32_t last_seen_ms, uint32_t now_ms, uint32_t timeout_ms)
+{
+  return last_seen_ms != 0 && (uint32_t)(now_ms - last_seen_ms) < timeout_ms;
+}
+
+// HTTP request-body buffer ownership. Pure <cstdlib>/<cstring> logic,
+// no Arduino/Async symbols, so the malloc-owned single-block contract is pinned
+// by the env:native suite. See include/OpenHaldexC6_Calculations.h.
+char* http_body_alloc(size_t total)
+{
+  // A zero-length body has no buffer to own; return nullptr so the caller falls
+  // through to its empty-body path instead of holding a 1-byte allocation.
+  if (total == 0)
+  {
+    return nullptr;
+  }
+
+  // Guard against total + 1 wrapping to zero (SIZE_MAX edge case from a
+  // request-controlled Content-Length). malloc(0) returns a valid pointer on ESP32
+  // but the NUL-write at index `total` would write past the allocation.
+  if (total == SIZE_MAX)
+  {
+    return nullptr;
+  }
+
+  // One block of total + 1 bytes: the body plus a trailing NUL slot at index
+  // `total`. A single malloc means ESPAsyncWebServer's free(_tempObject) matches
+  // exactly and an aborted POST releases the whole thing in one call.
+  char* buf = (char*)malloc(total + 1);
+  if (buf == nullptr)
+  {
+    return nullptr; // allocation failed; caller treats as empty body
+  }
+
+  // Zero-fill so the NUL terminator at `total` (and any not-yet-written gap) is
+  // already in place before chunks arrive.
+  memset(buf, 0, total + 1);
+  return buf;
+}
+
+void http_body_write_chunk(char* buf, const uint8_t* data, size_t len, size_t index, size_t total)
+{
+  // Refuse every malformed call: no buffer, no source, a zero-length chunk, or
+  // an offset already at/after the terminator. Each is a no-op, never a write.
+  if (buf == nullptr || data == nullptr || len == 0 || index >= total)
+  {
+    return;
+  }
+
+  // Truncate a chunk that would run past `total` so the NUL guard at index
+  // `total` is never overwritten and we never write outside the allocation.
+  size_t writable = total - index;
+  if (len > writable)
+  {
+    len = writable;
+  }
+
+  memcpy(buf + index, data, len);
+}
+
+// ---- Gen5 (MQB) Haldex UDS live data ----------------------------------------
+// Wire format and scaling recovered from the upstream V8.00.2 binary and
+// confirmed against the author's V8.00.2 source. Pure byte/float arithmetic, no
+// TWAI/Arduino symbols, so the decode that feeds the dashboard values is pinned
+// on the host (test/test_uds). See include/OpenHaldexC6_Calculations.h.
+int uds_parse_sf_rdbi(const uint8_t *data, uint8_t dlc, uint16_t did, uint8_t *out, uint8_t out_cap)
+{
+  if (data == nullptr || out == nullptr)
+  {
+    return -1;
+  }
+  if (dlc < 1 || (data[0] & 0xF0) != 0x00)
+  {
+    return -1; // no PCI byte, or not an ISO-TP single frame
+  }
+  const uint8_t sfLen = data[0] & 0x0F; // declared single-frame payload length
+  if (sfLen < 3 || sfLen > 7)
+  {
+    return -1; // must at least carry 62 <DID_hi> <DID_lo>
+  }
+  if (dlc < (uint8_t)(sfLen + 1))
+  {
+    return -1; // frame shorter than its own declared length
+  }
+  if (data[1] != 0x62)
+  {
+    return -1; // not a positive ReadDataByIdentifier response (covers 0x7F NRC)
+  }
+  if (data[2] != (uint8_t)(did >> 8) || data[3] != (uint8_t)(did & 0xFF))
+  {
+    return -1; // response to a different DID
+  }
+  const uint8_t payloadLen = sfLen - 3;
+  if (payloadLen > out_cap)
+  {
+    return -1; // caller's buffer too small - no partial copy
+  }
+  memcpy(out, &data[4], payloadLen);
+  return payloadLen;
+}
+
+bool uds_temp_plausible(float degC)
+{
+  return degC >= -40.0f && degC <= 150.0f;
+}
+
+bool uds_scale_mqb_did(uint16_t did, const uint8_t *payload, uint8_t len, float &out)
+{
+  if (payload == nullptr)
+  {
+    return false;
+  }
+
+  switch (did)
+  {
+  case 0x0286: // terminal voltage, V
+    if (len < 1) return false;
+    out = payload[0] * 0.1f;
+    return true;
+
+  case 0x028D: // module temperature, degC
+    if (len < 1) return false;
+    out = (float)payload[0] - 55.0f;
+    return true;
+
+  case 0x2BF1: // clutch temperature, degC
+  case 0x2BE4: // cooling fin temperature, degC
+  {
+    if (len < 2) return false;
+    const uint16_t raw = (uint16_t)(((uint16_t)payload[1] << 8) | payload[0]);
+    out = ((float)raw - 22767.0f) / 100.0f;
+    return true;
+  }
+
+  case 0x2BE6: // clutch pump current, A
+  case 0x2BE9: // clutch pump voltage, V
+  {
+    // Big-endian on the wire, unlike the little-endian temperature DIDs -
+    // confirmed against the upstream V8.00.2 source (its poller reads
+    // data[4]<<8 | data[5] for these two DIDs only).
+    if (len < 2) return false;
+    const uint16_t raw = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);
+    out = raw * 0.001f;
+    return true;
+  }
+
+  case 0x2BE7: // clutch PWM duty, %, raw byte
+    if (len < 1) return false;
+    out = payload[0];
+    return true;
+
+  default:
+    return false; // unknown DID - caller ignores the frame
   }
 }

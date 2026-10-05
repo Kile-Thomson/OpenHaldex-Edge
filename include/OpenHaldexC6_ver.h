@@ -2,7 +2,7 @@
 #include <OpenHaldexC6_defs.h>
 
 // Current firmware version
-#define FW_VERSION "9.00.0" // also bump data/version.json ("fs")
+#define FW_VERSION "9.01.0" // also bump data/version.json ("fs")
 
 /*
 Version Control:
@@ -169,6 +169,29 @@ V9.00.0 - shared Forbes Automotive UI theme; automatic product web-asset
           bumped ?v= that kept being forgotten - phones were running a stale
           app.js against new HTML, so buttons on new cards did nothing.
 
+V9.01.0 - OpenHaldex Edge v9: upstream v9 base (bridge mode, BLE, Long Learn, OTA channels) plus the
+          Edge firmware work (https://github.com/Kile-Thomson/OpenHaldex-Edge). Firmware side:
+        - Shared control state guarded by one mutex: getLockData, the standalone frame builders,
+          learn / Long Learn, the mode and settings writers (web and BLE), the 0x6B0 broadcast and
+          the NVS snapshot. /api/tune stages and validates, then publishes in one go.
+        - Learn speed interlock (manual Learn and Long Learn): refused above 5 km/h, aborted without
+          publishing a partial table if the car moves (progress 103). The previous table is
+          snapshotted and restored on cancel/abort. Samples are reduced by median + monotonic hold.
+        - CAN: receive tasks time out at 250 ms and revive a stopped / bus-off controller (restart
+          after ~3 s if the chassis bus stays dead); light sleep off + no power-gating of the TWAI
+          domain; queues 128/64; bus-failure alerts via the shared seams; 0x6B0 speed clamps at 255.
+        - Lock ramp in milliseconds (engage + release). The v9 lockReleaseRatePerSec key (web and the
+          BLE Settings characteristic) maps onto the same release ramp.
+        - Steering taper: the v9 breakpoint curve is the one implementation; the v8 start/full/floor
+          keys build it. Per-car slip geometry (wheelbase, tracks, steering ratio, min speed) is a
+          setting.
+        - ESP_14 Max declares the full range scaled by the raw lock fraction; Min floor is a % of
+          full command, clamped below Max. Gen41 liveness ages out; Motor_5 counter fixed.
+        - NVS: one namespace ("openhaldex") + seeded sentinel. Stock v9 units (namespace
+          "broadcastOpen"/"udsMQBEn"/"learnTable") are migrated once. Drive mode self-heals.
+        - Stock passthrough also skips the brake/handbrake override; handlers answer on every path.
+        - Native test env (pio test -e native) and an esp32c6-release env (all debug flags off).
+
 */
 
 
@@ -176,7 +199,6 @@ V9.00.0 - shared Forbes Automotive UI theme; automatic product web-asset
 
 ** to do **:
         > add throttle/speed axis refresh
-        > add 'ota' to match existing layout
         > add reduction in throttle/speed off
         > move CAN into interrupt based - ESP_INTR_FLAG_IRAM
 */

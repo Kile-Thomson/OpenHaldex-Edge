@@ -399,16 +399,18 @@ void test_adjval_default_lt0_returns_floor(void)
 
 void test_adjval_default_lt40(void)
 {
-  // cf = (40 + 20) / 2 = 30. corrected = value*30/100.
+  // v9 default VAG formula (kept from upstream 8.00.3): cf = lock/2 + 20 = 40.
+  // corrected = value*40/100. (Edge v8 used (lock + 20) / 2 = 30; upstream's
+  // slightly higher factor is the shipped 0CQ behaviour, so it is the one pinned.)
   lock_target = 40.0f;
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, get_lock_target_adjusted_value(0x00, false), "adjval lt=40 val=0x00 inv=0");
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xFE, get_lock_target_adjusted_value(0x00, true),  "adjval lt=40 val=0x00 inv=1");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x17, get_lock_target_adjusted_value(0x4E, false), "adjval lt=40 val=0x4E inv=0");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xE7, get_lock_target_adjusted_value(0x4E, true),  "adjval lt=40 val=0x4E inv=1");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x26, get_lock_target_adjusted_value(0x7F, false), "adjval lt=40 val=0x7F inv=0");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xD8, get_lock_target_adjusted_value(0x7F, true),  "adjval lt=40 val=0x7F inv=1");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x4C, get_lock_target_adjusted_value(0xFE, false), "adjval lt=40 val=0xFE inv=0");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xB2, get_lock_target_adjusted_value(0xFE, true),  "adjval lt=40 val=0xFE inv=1");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x1F, get_lock_target_adjusted_value(0x4E, false), "adjval lt=40 val=0x4E inv=0");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xDF, get_lock_target_adjusted_value(0x4E, true),  "adjval lt=40 val=0x4E inv=1");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x32, get_lock_target_adjusted_value(0x7F, false), "adjval lt=40 val=0x7F inv=0");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xCC, get_lock_target_adjusted_value(0x7F, true),  "adjval lt=40 val=0x7F inv=1");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x65, get_lock_target_adjusted_value(0xFE, false), "adjval lt=40 val=0xFE inv=0");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x99, get_lock_target_adjusted_value(0xFE, true),  "adjval lt=40 val=0xFE inv=1");
 }
 
 void test_adjval_lt100_full_passthrough(void)
@@ -514,7 +516,7 @@ void test_adjval_learn_active_cf100(void)
 }
 
 // ===========================================================================
-// bpk_pack_motor11(out, command, counter, ceil_nm, ist_nm, solf_nm)
+// fill_motor11_bpk(data, counter)
 // ===========================================================================
 // The BPK Motor_11 torque spoof. These pin the DBC-verified semantics: the three
 // 10-bit torque fields (Soll_Roh at bit 12, Ist_Summe at bit 22, Soll_gefiltert
@@ -543,55 +545,81 @@ static int bpk_soll_roh_nm(const uint8_t *d) { return (int)bpk_decode_raw(d, 12)
 static int bpk_ist_nm(const uint8_t *d)      { return (int)bpk_decode_raw(d, 22) - 509; }
 static int bpk_solf_nm(const uint8_t *d)     { return (int)bpk_decode_raw(d, 42) - 509; }
 
+// fill_motor11_bpk() is the one shared packer (standalone and CAN-passthrough both
+// call it). It takes its command from get_lock_target_adjusted_value(0xFE), which
+// in a learn at CF 100 is the full 0xFE and at CF 0 is 0, so the tests can drive
+// the packed torque without a learn table. The slew state is a function-local
+// static, so every test first settles it with a zero command and no rate limit.
+extern void fill_motor11_bpk(uint8_t data[8], uint8_t counter);
+
+static void bpk_settle_at_floor(void)
+{
+  uint8_t out[8];
+  bpkSlewIst = 0;
+  bpkSlewSolf = 0; // 0 = no rate limit: Ist/Solf jump straight to the target
+  bpkForceIstNm = -1;
+  bpkForceSolfNm = -1;
+  haldexLearnActive = true;
+  haldexLearnCF = 0;
+  fill_motor11_bpk(out, 0x40);
+}
+
 void test_bpk_ceiling_maps_full_command_to_ceiling_nm(void)
 {
   uint8_t out[8];
-  uint16_t ist = 500, solf = 500; // pre-settled so Soll_Roh (un-slewed) shows ceiling
-  bpk_pack_motor11(out, 0xFE, 0x40, 220, &ist, &solf);
+  bpk_settle_at_floor();
+  haldexLearnCF = 100;
+  bpkCeilingNm = 220;
+  fill_motor11_bpk(out, 0x40);
   TEST_ASSERT_EQUAL_INT_MESSAGE(220, bpk_soll_roh_nm(out), "ceil=220 cmd=0xFE Soll_Roh");
 
-  ist = 500; solf = 500;
-  bpk_pack_motor11(out, 0xFE, 0x40, 500, &ist, &solf);
+  bpkCeilingNm = 500;
+  fill_motor11_bpk(out, 0x40);
   TEST_ASSERT_EQUAL_INT_MESSAGE(500, bpk_soll_roh_nm(out), "ceil=500 cmd=0xFE Soll_Roh");
 }
 
 void test_bpk_zero_command_is_floor(void)
 {
   uint8_t out[8];
-  uint16_t ist = 0, solf = 0;
-  bpk_pack_motor11(out, 0x00, 0x40, 220, &ist, &solf);
-  TEST_ASSERT_EQUAL_INT_MESSAGE(10, bpk_soll_roh_nm(out), "cmd=0 Soll_Roh is floor 10Nm");
+  bpk_settle_at_floor();
+  bpkCeilingNm = 220;
+  fill_motor11_bpk(out, 0x40);
+  TEST_ASSERT_EQUAL_INT_MESSAGE((int)bpkFloorNm, bpk_soll_roh_nm(out), "cmd=0 Soll_Roh is the floor");
 }
 
 void test_bpk_ceiling_clamps_to_509(void)
 {
+  // The 10-bit field with offset -509 tops out at +514 Nm: a ceiling above 509
+  // must clamp, not wrap the 0x3FF mask into a low torque.
   uint8_t out[8];
-  uint16_t ist = 999, solf = 999;
-  bpk_pack_motor11(out, 0xFE, 0x40, 1000, &ist, &solf); // absurd ceiling
+  bpk_settle_at_floor();
+  haldexLearnCF = 100;
+  bpkCeilingNm = 1000; // absurd ceiling
+  fill_motor11_bpk(out, 0x40);
   TEST_ASSERT_EQUAL_INT_MESSAGE(509, bpk_soll_roh_nm(out), "ceil clamps to 509 Nm max");
 }
 
 void test_bpk_slew_limits_ist_and_solf(void)
 {
   uint8_t out[8];
-  uint16_t ist = 0, solf = 0;
-  // First cycle from rest: Ist steps 8 Nm, Solf steps 32 Nm toward the 220 target.
-  bpk_pack_motor11(out, 0xFE, 0x40, 220, &ist, &solf);
-  TEST_ASSERT_EQUAL_INT_MESSAGE(8,  bpk_ist_nm(out),  "cycle1 Ist slew +8");
-  TEST_ASSERT_EQUAL_INT_MESSAGE(32, bpk_solf_nm(out), "cycle1 Solf slew +32");
-  TEST_ASSERT_EQUAL_UINT16_MESSAGE(8,  ist,  "cycle1 ist state out");
-  TEST_ASSERT_EQUAL_UINT16_MESSAGE(32, solf, "cycle1 solf state out");
-  // Second cycle continues ramping from the caller-owned state.
-  bpk_pack_motor11(out, 0xFE, 0x40, 220, &ist, &solf);
-  TEST_ASSERT_EQUAL_INT_MESSAGE(16, bpk_ist_nm(out),  "cycle2 Ist slew +8");
-  TEST_ASSERT_EQUAL_INT_MESSAGE(64, bpk_solf_nm(out), "cycle2 Solf slew +32");
+  bpk_settle_at_floor(); // Ist and Solf now sit at the 10 Nm floor
+  haldexLearnCF = 100;
+  bpkCeilingNm = 220;
+  bpkSlewIst = 8;
+  bpkSlewSolf = 32;
+  fill_motor11_bpk(out, 0x40);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(18, bpk_ist_nm(out),  "cycle1 Ist slew +8");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(42, bpk_solf_nm(out), "cycle1 Solf slew +32");
+  fill_motor11_bpk(out, 0x40);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(26, bpk_ist_nm(out),  "cycle2 Ist slew +8");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(74, bpk_solf_nm(out), "cycle2 Solf slew +32");
 }
 
 void test_bpk_counter_in_low_nibble(void)
 {
   uint8_t out[8];
-  uint16_t ist = 0, solf = 0;
-  bpk_pack_motor11(out, 0x80, 0x4A, 220, &ist, &solf);
+  bpk_settle_at_floor();
+  fill_motor11_bpk(out, 0x4A);
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x0A, out[1] & 0x0F, "counter low nibble preserved in byte1");
 }
 

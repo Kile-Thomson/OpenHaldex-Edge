@@ -5,11 +5,11 @@
 twai_handle_t twai_bus_0; // for ESP32 C6 CANBUS 0
 twai_handle_t twai_bus_1; // for ESP32 C6 CANBUS 1
 
-twai_message_t rx_message_hdx; // incoming haldex message
-twai_message_t rx_message_chs; // incoming chassis message
+twai_message_t rx_message_hdx = {}; // incoming haldex message
+twai_message_t rx_message_chs = {}; // incoming chassis message
 
-twai_message_t tx_message_hdx; // outgoing haldex message
-twai_message_t tx_message_chs; // outgoing chassis message
+twai_message_t tx_message_hdx = {}; // outgoing haldex message
+twai_message_t tx_message_chs = {}; // outgoing chassis message
 
 TaskHandle_t handle_frames1000; // for enabling/disabling 1000ms frames
 TaskHandle_t handle_frames250;  // for enabling/disabling 250ms frames
@@ -27,6 +27,10 @@ TaskHandle_t handle_updateTriggers      = nullptr; // notified by CAN_RX wake IS
 
 // for EEP
 Preferences pref; // for EEPROM / storing settings
+
+SemaphoreHandle_t stateMutex = nullptr; // created in setupTasks() before any task starts
+
+void *pmNoLightSleepLock = nullptr; // ESP-PM no-light-sleep lock; held while awake (see setup())
 
 // for LED - will be initialized in setupIO()
 Freenove_ESP32_WS2812 strip = Freenove_ESP32_WS2812(1, gpio_led, led_channel, TYPE_RGB); // 1 led, gpio pin, channel, type of LED
@@ -350,7 +354,7 @@ bool benchMode = false;          // opt-in: hold WiFi up on the bench until real
 bool bleEnabled = true;          // BLE link to the DashCAN app
 uint32_t blePasskey = 0;         // 0 = not made yet; setupBLE() generates one
 volatile bool canWakeRequest = false; // ISR-set wake flag when transceivers in standby see bus activity
-uint16_t lpWakeThresholdFps = 1100; // wake threshold fps; default 1100 — user adjustable via UI
+uint16_t lpWakeThresholdFps = 1100; // wake threshold fps; default 1100 - user adjustable via UI
 
 bool otaUpdate = false;
 
@@ -389,6 +393,13 @@ float udsTerminalVoltage = 0.0f;
 float udsModuleTemp = 0.0f;
 float udsClutchTemp = 0.0f;
 float udsCoolingFinTemp = 0.0f;
+uint16_t udsClutchTempRaw = 0;
+uint16_t udsCoolingFinTempRaw = 0;
+// Per-DID freshness: false until the DID decodes at least once this session,
+// cleared on session teardown. The API publishes null (not the reset 0) while
+// false so a capture client can distinguish "no sample yet" from a real 0.
+bool udsClutchTempValid = false;
+bool udsCoolingFinTempValid = false;
 float udsClutchCurrent = 0.0f;
 uint8_t udsClutchPWM = 0;
 float udsClutchVoltage = 0.0f;
@@ -419,8 +430,8 @@ uint8_t analyzerProtocol = ANALYZER_PROTOCOL_GVRET;
 
 uint32_t alerts_to_enable = 0;
 
-long lastCANChassisTick = 0;
-long lastCANHaldexTick = 0;
+uint32_t lastCANChassisTick = 0; // unsigned: survives the signed 32-bit millis() rollover (see defs.h)
+uint32_t lastCANHaldexTick = 0;
 uint32_t canHealthTimeoutMs = 1000;
 
 uint8_t lastMode = 0;
@@ -432,18 +443,11 @@ uint32_t rxtxcount = 0; // frame counter
 uint32_t stackCHS = 0;
 uint32_t stackHDX = 0;
 
-uint32_t stackframes10 = 0;
 uint32_t stackframes13 = 0;
-uint32_t stackframes20 = 0;
-uint32_t stackframes25 = 0;
 uint32_t stackframes50 = 0;
-uint32_t stackframes100 = 0;
-uint32_t stackframes200 = 0;
 uint32_t stackframes250 = 0;
-uint32_t stackframes1000 = 0;
 
 uint32_t stackbroadcastOpenHaldex = 0;
-uint32_t stackupdateLabels = 0;
 uint32_t stackshowHaldexState = 0;
 uint32_t stackwriteEEP = 0;
 
@@ -451,7 +455,8 @@ uint32_t stackwriteEEP = 0;
 openhaldex_state_t state;
 float lock_target = 0;
 
-float lockReleaseRatePerSec = 120.0f;
+uint16_t lockReleaseRampMs = 500; // ms for a full lock release; 0 = instant
+uint16_t lockEngageRampMs = 0;    // ms for a full lock-up; 0 = instant
 bool lockReleaseEnabled = true;  // when false, lock target changes are instantaneous
 bool steeringScaleEnabled = true; // when false, steering-angle lock scaling is bypassed (full lock)
 uint8_t forceModesPriority = 0; // 0=Haz>TC>Ext, 1=TC>Haz>Ext, 2=Haz>Ext>TC, 3=TC>Ext>Haz, 4=Ext>TC>Haz, 5=Ext>Haz>TC
@@ -480,6 +485,13 @@ uint8_t tempCounter;
 // Haldex learn table: index = correction factor (0-100%), value = observed engagement (0-100%)
 uint8_t haldexLearnTable[101];
 bool haldexLearnTableValid = false;
+// Snapshot of the table taken by startHaldexLearn before the sweep wipes it.
+// Restored by haldexLearnTask when the sweep is cancelled or speed-aborted, so
+// an interrupted learn does not destroy the previous good calibration (and,
+// via anything keying off learn_table_valid, silently flip the
+// user from BPK back to V3 packing).
+uint8_t haldexLearnTableBackup[101];
+bool haldexLearnTableBackupValid = false;
 volatile bool haldexLearnActive = false;
 volatile bool haldexLearnCancel = false;
 volatile uint8_t haldexLearnStep = 0;   // 0-100 = current step, 101 = complete
@@ -488,6 +500,7 @@ volatile uint8_t haldexLearnCF = 0;     // current correction factor override du
 // Long Learn state (see Calculations.h). Results persist in RAM until the next
 // run so the UI can show / export them after completion.
 volatile bool longLearnActive = false;
+volatile bool longLearnSpeedAborted = false;
 volatile bool longLearnCancel = false;
 volatile uint8_t longLearnPhase = LL_IDLE;
 volatile uint8_t longLearnSweepIdx = 0;
@@ -636,7 +649,7 @@ const uint8_t ID_SEQ_104[16] = {
     0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
     0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05};
 
-// CAN ID 0x116 - ESP_10
+// CAN ID 0x116 - ESP_10 (VW MQB E2E DataID 0xac)
 const uint8_t ID_SEQ_116[16] = {
     0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac,
     0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac};
@@ -762,11 +775,6 @@ extern uint8_t checksum_086(uint8_t *frame)
 extern uint8_t checksum_121(uint8_t *frame)
 {
     return calcChecksum(frame, ID_SEQ_121);
-}
-
-extern uint8_t checksum_110(uint8_t *frame)
-{
-    return calcChecksum(frame, ID_SEQ_110);
 }
 
 extern uint8_t checksum_106(uint8_t *frame)
