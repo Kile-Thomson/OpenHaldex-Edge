@@ -9,12 +9,129 @@ let _extBtnForceModeValue = 2;
 let _tcForceMode = false;
 let _hazardForceMode = false;
 let _extBtnForceMode = false;
-let _forceModesPriority = 0;
 let _haldexGeneration = 1;
 let _isStandalone = false;
 let _useCANifAvailable = false;
 let _disableController = false;
-const setIntervalDuration = 500; // set refresh duration (for quickly to poll ESP for data)
+// Floor gap between the end of one dashboard poll and the start of the next.
+// The poll loop is self-scheduling (see initDashboard): it fires the next
+// request as soon as the previous one settles, so the live rate tracks the
+// device's real response latency instead of being quantised to a fixed tick.
+// A small floor keeps a fast device from being hammered while still letting the
+// UI run several Hz when the ESP answers quickly.
+const POLL_MIN_GAP_MS = 150;
+
+// Optimistic mode tracking. The dashboard poll re-applies modeButton(data.mode)
+// every cycle so an externally-driven mode change (button, force trigger) shows
+// up. But right after the user picks a mode, a poll whose snapshot was taken
+// before the device processed the change would snap the highlight back to the
+// old mode - the "didn't respect which drive mode" report. While a change is
+// pending we hold the user's selection until the device echoes it back (or a
+// timeout elapses, so an ignored/failed change can't wedge the UI forever).
+let _pendingMode = null;
+let _pendingModeTs = 0;
+const PENDING_MODE_TIMEOUT_MS = 4000;
+
+// Reject taps that are really the tail of a scroll. On the phone a finger that
+// lands on a toggle while flicking the page up/down fires a click on touchend,
+// silently flipping high-consequence switches (Standalone, Disable Controller).
+// If the finger moved more than this many pixels between touchstart and the
+// click, we swallow the click so only a deliberate stationary tap toggles.
+const TAP_MOVE_TOLERANCE_PX = 12;
+function guardScrollTaps(selector) {
+  document.querySelectorAll(selector).forEach((el) => {
+    let startX = 0;
+    let startY = 0;
+    let moved = false;
+    el.addEventListener("touchstart", (e) => {
+      const t = e.touches[0];
+      startX = t.clientX;
+      startY = t.clientY;
+      moved = false;
+    }, { passive: true });
+    el.addEventListener("touchmove", (e) => {
+      const t = e.touches[0];
+      if (Math.abs(t.clientX - startX) > TAP_MOVE_TOLERANCE_PX ||
+          Math.abs(t.clientY - startY) > TAP_MOVE_TOLERANCE_PX) {
+        moved = true;
+      }
+    }, { passive: true });
+    el.addEventListener("click", (e) => {
+      if (moved) {
+        // It was a scroll, not a tap: cancel the label's default control toggle.
+        e.preventDefault();
+        e.stopPropagation();
+        moved = false;
+      }
+    });
+  });
+}
+
+// Require sliders to be grabbed by the thumb, not set by tapping the track. A
+// native <input type="range"> jumps its value to wherever you press on the bar,
+// so a stray tap (or a fat-finger meant for something else) can slam a setting
+// to a random value. Mobile browsers ignore preventDefault() on the range
+// input's pointerdown for this jump, so asking the browser not to move doesn't
+// work. Instead we let the browser do whatever it wants, then FORCIBLY reject
+// the change: on a press that doesn't land on the thumb we restore the value the
+// slider had before the press and stop the event so the app's save handlers
+// never see the jumped value. The value physically cannot change from an
+// off-thumb press. thumbPx is the rendered thumb diameter; a finger-slop margin
+// is added so the thumb stays easy to grab.
+const SLIDER_GRAB_SLOP_PX = 12;
+function guardTrackTaps(selector, thumbPx) {
+  const hitRadius = thumbPx / 2 + SLIDER_GRAB_SLOP_PX;
+  document.querySelectorAll(selector).forEach((el) => {
+    // While `blocked` is true, every value change the slider produces is undone
+    // and swallowed. It is (re)decided at the start of each press by hit-testing
+    // the press position against the thumb's current position.
+    let blocked = false;
+    let heldValue = el.value; // the value to snap back to when a press is blocked
+
+    const decideBlock = (clientX) => {
+      const min = parseFloat(el.min) || 0;
+      const max = parseFloat(el.max);
+      const rect = el.getBoundingClientRect();
+      if (!Number.isFinite(max) || max <= min || !rect.width) {
+        blocked = false; // can't hit-test - allow the interaction
+        return;
+      }
+      heldValue = el.value;
+      const frac = (parseFloat(el.value) - min) / (max - min);
+      // The thumb centre travels inset by half its width at each end.
+      const thumbCenterX = rect.left + thumbPx / 2 + frac * (rect.width - thumbPx);
+      blocked = Math.abs(clientX - thumbCenterX) > hitRadius;
+    };
+
+    el.addEventListener("pointerdown", (e) => {
+      decideBlock(e.clientX);
+      if (blocked) e.preventDefault(); // best-effort; browsers may ignore it
+    });
+    // Touch fallback for browsers that don't emit pointer events on the range.
+    el.addEventListener("touchstart", (e) => {
+      if (e.touches && e.touches[0]) decideBlock(e.touches[0].clientX);
+    }, { passive: true });
+
+    // Capture phase so this beats the app's own input/change save listeners
+    // (added on the bubble phase in initSettings) - stopImmediatePropagation
+    // then prevents them from firing with the jumped value.
+    const reject = (e) => {
+      if (!blocked) return;
+      el.value = heldValue; // undo the jump-to-tap
+      e.stopImmediatePropagation();
+    };
+    el.addEventListener("input", reject, true);
+    el.addEventListener("change", reject, true);
+
+    // A completed press clears the block so a later thumb grab or keyboard
+    // adjustment isn't wrongly suppressed. The next press re-hit-tests.
+    const release = () => { blocked = false; };
+    el.addEventListener("pointerup", release);
+    el.addEventListener("pointercancel", release);
+    el.addEventListener("touchend", release);
+    el.addEventListener("touchcancel", release);
+  });
+}
 
 var speedHeader = [0, 30, 60, 90, 120, 160, 180]; // default speed header (for x-axis)
 var throttleHeader = [0, 15, 30, 45, 60, 75, 90]; // default throttle header (for y-axis)
@@ -25,15 +142,18 @@ const arrayRows = throttleHeader.length; // var for number of rows
 var defaultSpeedHeader = [0, 30, 60, 90, 120, 160, 180]; // default speed header (for x-axis)
 var defaultThrottleHeader = [0, 15, 30, 45, 60, 75, 90]; // default throttle header (for y-axis)
 
-// constant for default lock (for restoring settings)
+// Default lock table for "Restore Defaults". This MUST mirror the firmware's
+// compiled-in default (lockArray in src/OpenHaldexC6_globals.cpp) so restoring
+// defaults in the UI reproduces exactly what the device ships with on a fresh
+// NVS. Rows = throttle (0..90), columns = speed (0..180).
 const defaultLock = [
   [0, 0, 0, 0, 0, 0, 0],
-  [100, 50, 20, 15, 10, 5, 0],
-  [100, 60, 30, 20, 15, 10, 0],
-  [100, 70, 40, 30, 15, 15, 10],
-  [100, 90, 60, 60, 30, 20, 10],
-  [100, 100, 80, 70, 50, 30, 15],
-  [100, 100, 100, 80, 60, 50, 40],
+  [0, 0, 0, 0, 0, 0, 0],
+  [5, 5, 5, 5, 5, 40, 40],
+  [40, 40, 40, 40, 40, 40, 40],
+  [80, 80, 80, 80, 80, 80, 80],
+  [80, 80, 80, 80, 80, 80, 80],
+  [80, 80, 80, 80, 80, 80, 80],
 ];
 
 // variable for current lock (to be used / traced)
@@ -47,62 +167,105 @@ var currentLock = [
   [10, 20, 30, 40, 40, 40, 40],
 ];
 
-// Steering-angle lock scale (third axis): breakpoints (deg) -> lock multiplier (%)
-var steeringHeader = [0, 45, 90, 180, 360]; // steering-wheel angle breakpoints (deg)
-var steeringScale = [100, 100, 80, 50, 20]; // lock multiplier at each breakpoint (%)
-var defaultSteeringHeader = [0, 45, 90, 180, 360];
-var defaultSteeringScale = [100, 100, 80, 50, 20];
-
 // once the document is loaded, start running the script - start with getting settings
 // await doesn't seem to work well - so if settings aren't captured first, the page draws WHILE settings are being grabbed.
 // this is possible a hack, but I can't think of a better way to do it(!)
 document.addEventListener("DOMContentLoaded", initStoredSettings);
 
+// Register the service worker so the app installs as a full-screen PWA and can
+// still open its shell when the module is briefly unreachable. Service workers
+// only run in a secure context (https or localhost); over plain http to the
+// module's LAN IP the registration rejects, so guard it and swallow the failure
+// rather than throw an uncaught error on every load.
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}
+
+// Header fullscreen toggle. The Fullscreen API works over plain http (unlike
+// PWA install, which needs a secure context), so this is the path to a
+// full-screen experience on an unmodified phone: one tap hides the browser
+// chrome. The button stays hidden where the API doesn't exist (iPhone Safari
+// has no page fullscreen).
+function initFullscreen() {
+  const btn = document.getElementById("fullscreenToggle");
+  if (!btn) return;
+
+  const root = document.documentElement;
+  const request = root.requestFullscreen || root.webkitRequestFullscreen;
+  if (!request) return; // leave the button hidden
+  btn.hidden = false;
+
+  const active = () =>
+    !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+  const sync = () => {
+    const on = active();
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.setAttribute("aria-label", on ? "Exit full screen" : "Enter full screen");
+    btn.title = on ? "Exit full screen" : "Full screen";
+  };
+
+  btn.addEventListener("click", () => {
+    if (active()) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+      // navigationUI:"hide" is ignored where unsupported; the promise rejects
+      // if the browser refuses (e.g. not a user gesture), which we swallow -
+      // the icon simply stays on "enter".
+      const p = request.call(root, { navigationUI: "hide" });
+      if (p && p.catch) p.catch(() => {});
+    }
+  });
+
+  document.addEventListener("fullscreenchange", sync);
+  document.addEventListener("webkitfullscreenchange", sync);
+  sync();
+}
+
 // once settings are stored, start applying data where required
 function initApp() {
-  //initStoredSettings(); // old
   initNavigation();
   initDashboard();
+  initDashTiles();
+  initModeDrawer();
   initModeButtons();
   initSettings();
   initExpertEditor();
+  initTuneSelection();
+  initTuneChart();
+  initCalibrate();
   initLearn();
   initLongLearn();
   initWifiSsid();
   initWifi();
   initBle();
-  initWifiSta("wifiSta");    // Diagnostics
-  initWifiSta("otaWifiSta"); // OTA tab copy - gets the phone online for the GitHub check
+  initWifiSta("wifiSta"); // Diagnostics
+  initWifiSta("otaWifiSta"); // Update tab copy: gets the phone online for the GitHub check
   initBackupRestore();
-  initOtaPage();
+  initOtaUpdate();
   initUpdateCheck();
-  initCollapsibleCards();
-  initGaugeUI();
-  drawTuneChart();
-  startIntroSweep(); // last: everything above is drawn; sweeps once the window has loaded and the first poll is in
-}
-
-// Collapse configuration-style cards by default so pages open compact and
-// tidy (like Can2Cluster). Tap a card heading to expand/collapse it. Add the
-// "no-collapse" class to any card that must stay permanently open.
-function initCollapsibleCards() {
-  ["basic-page", "expert-page", "settings-page", "diagnostics-page"].forEach((pageId) => {
-    const page = document.getElementById(pageId);
-    if (!page) return;
-    page.querySelectorAll(".card").forEach((card) => {
-      if (card.classList.contains("no-collapse")) return;
-      const h2 = card.querySelector("h2");
-      if (!h2) return;
-      card.classList.add("collapsible", "collapsed");
-      h2.addEventListener("click", () => card.classList.toggle("collapsed"));
-    });
-  });
+  initFullscreen();
+  guardScrollTaps(".toggle"); // stop scroll-flicks from flipping toggles
+  guardTrackTaps(".slider", 24); // grab the thumb to move; a track tap does nothing
+  guardTrackTaps(".slider-inline", 18);
 }
 
 // global function for getting data from the ESP
 async function fetchJson(url, options) {
   try {
     const request = await fetch(url, options); // request data from ESP
+    // Over the home network (bridge mode) the module wants HTTP Basic auth. The
+    // browser asks for it on the page load and then reuses it; a 401 here means
+    // that never happened (or the password changed), so say so instead of
+    // failing silently.
+    if (request.status === 401) {
+      noteAuthRequired();
+      return undefined;
+    }
     const result = await request.json(); // wait for response from ESP
     return result;
   } catch (error) {
@@ -110,11 +273,39 @@ async function fetchJson(url, options) {
   }
 }
 
+// Shown once when the module answers 401 (home-network access needs a login).
+function noteAuthRequired() {
+  window._authNeeded = true;
+  if (document.getElementById("authBanner")) return;
+  const bar = document.createElement("div");
+  bar.id = "authBanner";
+  bar.className = "auth-banner";
+  bar.setAttribute("role", "alert");
+  bar.innerHTML =
+    "<span>Sign-in needed. On the home network the module asks for a login: user <strong>admin</strong>, " +
+    "password = your access-point WiFi password.</span>";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn-secondary";
+  btn.textContent = "Reload & sign in";
+  btn.addEventListener("click", () => location.reload());
+  bar.appendChild(btn);
+  document.body.appendChild(bar);
+}
+
+function clearAuthRequired() {
+  if (!window._authNeeded) return;
+  window._authNeeded = false;
+  const bar = document.getElementById("authBanner");
+  if (bar) bar.remove();
+}
+
 // initialise stored settings (async function)
 async function initStoredSettings() {
   // initialise stored settings and parse them
   try {
     const data = await fetchJson("/api/settings");
+    if (!data) { initApp(); return; } // device unreachable - draw the UI with HTML defaults
     // values
     document.getElementById("haldexGeneration").value =
       data.haldexGeneration || 1;
@@ -141,36 +332,58 @@ async function initStoredSettings() {
     document.getElementById("ledBrightnessRange").value = ledBrightPct;
     document.getElementById("ledBrightnessValue").textContent = ledBrightPct;
 
-    const lockRateRange = document.getElementById("lockReleaseRateRange");
-    const lockRateVal   = document.getElementById("lockReleaseRateValue");
-    if (lockRateRange && data.lockReleaseRatePerSec !== undefined) {
-      lockRateRange.value = data.lockReleaseRatePerSec;
-      if (lockRateVal) lockRateVal.textContent = data.lockReleaseRatePerSec;
+    const lockReleaseRange = document.getElementById("lockReleaseRampRange");
+    const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
+    if (lockReleaseRange && data.lockReleaseRampMs !== undefined) {
+      lockReleaseRange.value = data.lockReleaseRampMs;
+      if (lockReleaseVal) lockReleaseVal.textContent = data.lockReleaseRampMs;
     }
 
-    const bpkRange = document.getElementById("bpkCeilingRange");
-    const bpkVal   = document.getElementById("bpkCeilingValue");
-    if (bpkRange && data.bpkCeilingNm !== undefined) {
-      bpkRange.value = data.bpkCeilingNm;
-      if (bpkVal) bpkVal.textContent = data.bpkCeilingNm;
+    const lockEngageRange = document.getElementById("lockEngageRampRange");
+    const lockEngageVal   = document.getElementById("lockEngageRampValue");
+    if (lockEngageRange && data.lockEngageRampMs !== undefined) {
+      lockEngageRange.value = data.lockEngageRampMs;
+      if (lockEngageVal) lockEngageVal.textContent = data.lockEngageRampMs;
     }
-
-    const esp14Range = document.getElementById("esp14MinFloorRange");
-    const esp14Val   = document.getElementById("esp14MinFloorValue");
-    if (esp14Range && data.esp14MinFloorPct !== undefined) {
-      esp14Range.value = data.esp14MinFloorPct;
-      if (esp14Val) esp14Val.textContent = data.esp14MinFloorPct;
-    }
-
-    const llNotes = document.getElementById("longLearnNotes");
-    if (llNotes && typeof data.longLearnNotes === "string") llNotes.value = data.longLearnNotes;
 
     const lockReleaseEnabledElem = document.getElementById("lockReleaseEnabled");
     if (lockReleaseEnabledElem) {
       lockReleaseEnabledElem.checked = data.lockReleaseEnabled !== undefined ? data.lockReleaseEnabled : true;
-      const container = document.getElementById("lockReleaseRateContainer");
-      if (container) container.style.opacity = lockReleaseEnabledElem.checked ? "" : "0.4";
-      if (lockRateRange) lockRateRange.disabled = !lockReleaseEnabledElem.checked;
+      const en = lockReleaseEnabledElem.checked;
+      const containers = ["lockReleaseRampContainer", "lockEngageRampContainer"];
+      containers.forEach((id) => {
+        const container = document.getElementById(id);
+        if (container) container.style.opacity = en ? "" : "0.4";
+      });
+      if (lockReleaseRange) lockReleaseRange.disabled = !en;
+      if (lockEngageRange) lockEngageRange.disabled = !en;
+    }
+
+    // Steering gain taper
+    const steerGainSliders = [
+      { range: "steeringGainStartRange", value: "steeringGainStartValue", key: "steeringGainStartDeg" },
+      { range: "steeringGainFullRange",  value: "steeringGainFullValue",  key: "steeringGainFullDeg" },
+      { range: "steeringGainFloorRange", value: "steeringGainFloorValue", key: "steeringGainFloor" },
+    ];
+    steerGainSliders.forEach(({ range, value, key }) => {
+      const rangeElem = document.getElementById(range);
+      const valueElem = document.getElementById(value);
+      if (rangeElem && data[key] !== undefined) {
+        rangeElem.value = data[key];
+        if (valueElem) valueElem.textContent = data[key];
+      }
+    });
+
+    const steerGainEnabledElem = document.getElementById("steeringGainEnabled");
+    if (steerGainEnabledElem) {
+      steerGainEnabledElem.checked = data.steeringGainEnabled || false;
+      const en = steerGainEnabledElem.checked;
+      steerGainSliders.forEach(({ range }) => {
+        const rangeElem = document.getElementById(range);
+        if (rangeElem) rangeElem.disabled = !en;
+        const container = document.getElementById(range.replace("Range", "Container"));
+        if (container) container.style.opacity = en ? "" : "0.4";
+      });
     }
 
     if (data.forceModesPriority !== undefined) {
@@ -178,10 +391,6 @@ async function initStoredSettings() {
     }
 
     document.getElementById("FW_VERSION").textContent = data.FW_VERSION || "--";
-    const boardRevEl = document.getElementById("BOARD_REV");
-    if (boardRevEl) boardRevEl.textContent = data.boardRev ? `rev ${data.boardRev}` : "--";
-
-    //document.getElementById('mode').value = data.mode || 1;
 
     // bools
     document.getElementById("disableController").checked =
@@ -217,18 +426,18 @@ async function initStoredSettings() {
     document.getElementById("disableExternalButton").checked =
       data.disableExternalButton || false;
 
-    const fixHuntingElem = document.getElementById("fixHunting");
-    if (fixHuntingElem) fixHuntingElem.checked = data.fixHunting || false;
+    const bpkCeilRange = document.getElementById("bpkCeilingRange");
+    const bpkCeilVal   = document.getElementById("bpkCeilingValue");
+    if (bpkCeilRange && data.bpkCeilingNm !== undefined) {
+      bpkCeilRange.value = data.bpkCeilingNm;
+      if (bpkCeilVal) bpkCeilVal.textContent = data.bpkCeilingNm;
+    }
 
-    const dangerZoneElem = document.getElementById("dangerZoneEnabled");
-    if (dangerZoneElem) dangerZoneElem.checked = data.dangerZoneEnabled || false;
-
-    const steeringScaleEnabledElem = document.getElementById("steeringScaleEnabled");
-    if (steeringScaleEnabledElem) {
-      steeringScaleEnabledElem.checked =
-        data.steeringScaleEnabled !== undefined ? data.steeringScaleEnabled : true;
-      const stbl = document.getElementById("steeringScaleTable");
-      if (stbl) stbl.style.opacity = steeringScaleEnabledElem.checked ? "" : "0.4";
+    const esp14FloorRange = document.getElementById("esp14MinFloorRange");
+    const esp14FloorVal   = document.getElementById("esp14MinFloorValue");
+    if (esp14FloorRange && data.esp14MinFloorPct !== undefined) {
+      esp14FloorRange.value = data.esp14MinFloorPct;
+      if (esp14FloorVal) esp14FloorVal.textContent = data.esp14MinFloorPct;
     }
 
     const canSleepElem = document.getElementById("canSleepEnabled");
@@ -236,16 +445,6 @@ async function initStoredSettings() {
 
     const canSleepAggrElem = document.getElementById("canSleepAggressive");
     if (canSleepAggrElem) canSleepAggrElem.checked = data.canSleepAggressive || false;
-
-    const benchModeElem = document.getElementById("benchMode");
-    if (benchModeElem) benchModeElem.checked = data.benchMode || false;
-
-    const bleEnabledElem = document.getElementById("bleEnabled");
-    if (bleEnabledElem) bleEnabledElem.checked = data.bleEnabled !== undefined ? data.bleEnabled : true;
-    if (data.blePasskey !== undefined) {
-      blePasskeyCache = data.blePasskey;
-      renderBlePairing(data.bleCodeRequired);
-    }
 
     // Aggressive implies basic - lock the basic checkbox while aggressive is on.
     if (canSleepElem && canSleepAggrElem) {
@@ -265,10 +464,31 @@ async function initStoredSettings() {
     const analyzerSerialElem = document.getElementById("analyzerSerial");
     if (analyzerSerialElem) analyzerSerialElem.checked = data.analyzerSerial || false;
 
-    const udsMqbElem = document.getElementById("liveDiagEnabled");
-    if (udsMqbElem) udsMqbElem.checked = data.liveDiagEnabled || false;
+    // Live diagnostics (UDS on Gen5, KWP/TP2.0 on Gen2/4). Older firmware only
+    // knew udsMQBEnabled for the same switch.
+    const liveDiagElem = document.getElementById("liveDiagEnabled");
+    if (liveDiagElem) liveDiagElem.checked = (data.liveDiagEnabled ?? data.udsMQBEnabled) || false;
 
-    // Frame-edit gating checkboxes (per-generation)
+    const dangerZoneElem = document.getElementById("dangerZoneEnabled");
+    if (dangerZoneElem) dangerZoneElem.checked = data.dangerZoneEnabled || false;
+
+    const benchModeElem = document.getElementById("benchMode");
+    if (benchModeElem) benchModeElem.checked = data.benchMode || false;
+
+    const bleEnabledElem = document.getElementById("bleEnabled");
+    if (bleEnabledElem) bleEnabledElem.checked = data.bleEnabled !== undefined ? data.bleEnabled : true;
+    if (data.blePasskey !== undefined) {
+      blePasskeyCache = data.blePasskey;
+      renderBlePairing(data.bleCodeRequired);
+    }
+
+    const llNotes = document.getElementById("longLearnNotes");
+    if (llNotes && typeof data.longLearnNotes === "string") llNotes.value = data.longLearnNotes;
+
+    const boardRevEl = document.getElementById("BOARD_REV");
+    if (boardRevEl) boardRevEl.textContent = data.boardRev ? `rev ${data.boardRev}` : "--";
+
+    // Per-generation frame blocks (Calibrate tab > Frame blocks)
     renderFrameBlocks(data.frameBlocks);
 
     // cache for banner / legend
@@ -278,7 +498,6 @@ async function initStoredSettings() {
     _tcForceMode = data.tcForceMode || false;
     _hazardForceMode = data.hazardForceMode || false;
     _extBtnForceMode = data.extButtonForceMode || false;
-    _forceModesPriority = data.forceModesPriority ?? 0;
     _haldexGeneration = data.haldexGeneration || 1;
     _isStandalone = data.isStandalone || false;
     _useCANifAvailable = data.useCANifAvailable || false;
@@ -288,10 +507,6 @@ async function initStoredSettings() {
     speedHeader = data.speedArray;
     throttleHeader = data.throttleArray;
     currentLock = data.lockArray;
-
-    // parse steering-angle lock-scale curve from the ESP
-    if (Array.isArray(data.steeringArray)) steeringHeader = data.steeringArray;
-    if (Array.isArray(data.steeringLockScaleArray)) steeringScale = data.steeringLockScaleArray;
 
     // parse the mode button
     if (data.mode !== undefined) {
@@ -305,9 +520,56 @@ async function initStoredSettings() {
 }
 
 // refresh ongoing data
+const POLL_TIMEOUT_MS = 2000; // bound a stalled poll so the in-flight guard can't wedge
+
+// Connection health. The dashboard is poll-based (no WebSocket), so "connected"
+// just means recent polls are landing. A dropped AP link in a moving car used to
+// leave the last gauge values frozen on screen looking live; now the header badge
+// flips to Reconnecting after the first miss and Offline after a few, so stale
+// numbers are never mistaken for current ones.
+const CONN_OFFLINE_AFTER = 3; // consecutive missed polls before declaring Offline
+
+function setConnStatus(state) {
+  const el = document.getElementById("connStatus");
+  if (!el) return;
+  el.classList.remove("connected", "stale", "error");
+  if (state === "offline") {
+    el.textContent = window._authNeeded ? "Sign in" : "Offline";
+    el.classList.add("error");
+  } else if (state === "stale") {
+    el.textContent = "Reconnecting…";
+    el.classList.add("stale");
+  } else {
+    el.textContent = "Live";
+    el.classList.add("connected");
+  }
+}
+
 async function refreshStatus() {
+  // one poll at a time: on a busy ESP a slow response must not let the 500ms
+  // interval stack requests and flood the async web server once it recovers
+  if (refreshStatus._inFlight) return;
+  refreshStatus._inFlight = true;
+  const ctrl = new AbortController();
+  const pollTimeout = setTimeout(() => ctrl.abort(), POLL_TIMEOUT_MS);
   try {
-    const data = await fetchJson("/api/dashboard"); // send request for basic data
+    const data = await fetchJson("/api/dashboard", { signal: ctrl.signal }); // send request for basic data
+    if (!data) {
+      // fetch failed or timed out - count the miss and surface staleness instead
+      // of silently freezing the dashboard on the last-known values
+      refreshStatus._missCount = (refreshStatus._missCount || 0) + 1;
+      const offline = refreshStatus._missCount >= CONN_OFFLINE_AFTER;
+      setConnStatus(offline ? "offline" : "stale");
+      // Clear the trace once the link is declared dead so the reconnect starts a
+      // fresh line instead of bridging the outage with a flat segment.
+      if (offline) resetLockTrace();
+      return;
+    }
+    // got data: link is live. Set this before the render block so a later DOM
+    // error can't leave the badge stuck on a stale state.
+    refreshStatus._missCount = 0;
+    clearAuthRequired();
+    setConnStatus("connected");
 
     // Live frame-rate monitor for LP wake threshold tuning
     if (data.lpChassisFrameCount !== undefined && data.lpHaldexFrameCount !== undefined) {
@@ -336,6 +598,9 @@ async function refreshStatus() {
     );
     document.getElementById("rpm").textContent = displayValue(data.rpm);
     document.getElementById("boost").textContent = displayValue(data.boost);
+    document.getElementById("steeringAngle").textContent = displayValue(data.steeringAngle);
+    document.getElementById("steeringGainNow").textContent = displayValue(data.steeringGainNow);
+    document.getElementById("throttleBar").style.width = `${data.throttle ?? 0}%`;
 
     document.getElementById("lockTarget").textContent = displayValue(
       data.lockTarget,
@@ -343,100 +608,78 @@ async function refreshStatus() {
     document.getElementById("lockActual").textContent = displayValue(
       data.lockActual,
     );
-    document.getElementById("engagementFill").style.width =
-      `${data.lockActual ?? 0}%`;
+    updateEngagementGauge(data.lockTarget ?? null, data.lockActual ?? null);
 
-    // Steering-angle reduction band on the engagement bar: shows the portion of
-    // the requested lock that the steering angle is holding back (cap -> request).
-    {
-      const redEl = document.getElementById("engagementReduction");
-      const noteEl = document.getElementById("steeringReductionNote");
-      const active = data.steeringScaleActive && data.lockRequested != null &&
-        data.lockScaled != null && data.lockRequested > data.lockScaled;
-      if (active) {
-        const req = Math.min(100, Math.max(0, data.lockRequested));
-        const cap = Math.min(100, Math.max(0, data.lockScaled));
-        if (redEl) {
-          redEl.style.display = "";
-          redEl.style.left = `${cap}%`;
-          redEl.style.width = `${req - cap}%`;
-        }
-        if (noteEl) {
-          noteEl.style.display = "";
-          noteEl.textContent = `Steering reduction: ${req}% \u2192 ${cap}% (\u2212${req - cap}%)`;
-        }
-      } else {
-        if (redEl) redEl.style.display = "none";
-        if (noteEl) noteEl.style.display = "none";
-      }
-    }
+    // Feed the rolling lock-response strip chart from the same poll.
+    const traceNow = Date.now();
+    pushLockSample(data.lockTarget, data.lockActual, traceNow);
+    renderLockTrace(traceNow);
 
-    // Haldex Data card (Gen 1–4, non-UDS)
+    // Glance card: reported engagement + clutch values, and the status chips
+    // (chips light when the ECU reports the flag active, grey out on no data).
     document.getElementById("haldexEngagement").textContent = displayValue(data.haldexEngagement);
     document.getElementById("clutch1Report").textContent   = displayValue(data.clutch1Report);
     document.getElementById("clutch2Report").textContent   = displayValue(data.clutch2Report);
-    document.getElementById("tempProtection").textContent  = displayOnOff(data.tempProtection);
-    document.getElementById("couplingOpen").textContent    = displayOnOff(data.couplingOpen);
-    document.getElementById("speedLimit").textContent      = displayOnOff(data.speedLimit);
-
-    // Per-corner slip [FL, FR, RL, RR]; null (no data / stale) shows as "--".
-    {
-      const slip = Array.isArray(data.slip) ? data.slip : [null, null, null, null];
-      ["slipFL", "slipFR", "slipRL", "slipRR"].forEach((id, i) => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = (slip[i] === null || slip[i] === undefined) ? "--" : slip[i];
-      });
-    }
+    setChip("chipTempProtection", data.tempProtection);
+    setChip("chipCouplingOpen", data.couplingOpen);
+    setChip("chipSpeedLimit", data.speedLimit);
+    setChip("chipClutch1", data.clutch1Report);
+    setChip("chipClutch2", data.clutch2Report);
 
     if (data.mode !== undefined) {
-      modeButton(data.mode); // set the mode button - there may be external influences
+      // Hold the user's just-picked mode until the device echoes it (or the
+      // pending window expires), so a stale in-flight poll can't snap the
+      // highlight back. External mode changes still show once nothing is pending.
+      if (_pendingMode !== null) {
+        if (data.mode === _pendingMode || Date.now() - _pendingModeTs > PENDING_MODE_TIMEOUT_MS) {
+          _pendingMode = null;
+          modeButton(data.mode);
+        }
+      } else {
+        modeButton(data.mode); // set the mode button - there may be external influences
+      }
     }
 
     const canStatus = document.getElementById("canStatus");
     const chassisOk = data.chassisCAN;
     const haldexOk = data.haldexCAN;
-    canStatus.textContent = `CAN: ${chassisOk ? "✓" : "X"} Chassis | ${haldexOk ? "✓" : "X"} Haldex`;
+    canStatus.textContent = `CAN C:${chassisOk ? "✓" : "✗"} H:${haldexOk ? "✓" : "✗"}`;
 
-    if (data.bleCodeRequired !== undefined) renderBlePairing(data.bleCodeRequired);
-
-    const bleStatus = document.getElementById("bleStatus");
-    if (bleStatus && data.bleConnected !== undefined) {
-      bleStatus.textContent = data.bleConnected ? "\u2713 Phone connected" : "No phone connected";
-      bleStatus.style.color = data.bleConnected ? "var(--success)" : "var(--text-dim)";
-    }
-
-    setStatusPill("diagChassisCAN", chassisOk, "Healthy", "Unhealthy");
-    setStatusPill("diagHaldexCAN", haldexOk, "Healthy", "Unhealthy");
-
-    // Bench Mode can only be switched while genuinely off-vehicle (both buses
-    // silent) - on top of the firmware's own clear-on-CAN latch, this stops it
-    // being flipped on by mistake while harnessed to a live car.
-    const benchModeElem = document.getElementById("benchMode");
-    const benchModeStatus = document.getElementById("benchModeStatus");
-    const canDetected = !!(chassisOk || haldexOk);
-    if (benchModeElem) benchModeElem.disabled = canDetected;
-    if (benchModeStatus) {
-      benchModeStatus.textContent = canDetected
-        ? "Locked - CAN traffic seen, so this unit is harnessed (sleep behaves normally)"
-        : "Available - no CAN on either bus";
-      benchModeStatus.style.color = canDetected ? "var(--text-dim)" : "var(--success)";
-    }
+    document.getElementById("diagChassisCAN").textContent = chassisOk
+      ? "✓ Healthy"
+      : "X Unhealthy";
+    document.getElementById("diagHaldexCAN").textContent = haldexOk
+      ? "✓ Healthy"
+      : "X Unhealthy";
     document.getElementById("diagThrottle").textContent = displayValue(
       data.throttle,
     );
     document.getElementById("diagSpeed").textContent = displayValue(data.speed);
-    setStatusPill("diagSteeringHealth", data.steeringHealthy, "Healthy", "Unhealthy");
-    const steerAngleEl = document.getElementById("diagSteeringAngle");
-    if (steerAngleEl) steerAngleEl.textContent = displayValue(data.steeringAngle);
-    setStatusPill("diagAsrStatus", data.asrOn, "On", "Off");
-    setStatusPill("diagTcStatus", data.tcOn, "On", "Off");
-    setStatusPill("diagHazardActive", data.hazardActive, "On", "Off");
-    setStatusPill("diagBrakeIn", data.brakeIn, "On", "Off");
-    setStatusPill("diagBrakeOut", data.brakeOut, "On", "Off");
-    setStatusPill("diagHandbrakeIn", data.handbrakeIn, "On", "Off");
-    setStatusPill("diagHandbrakeOut", data.handbrakeOut, "On", "Off");
-    setStatusPill("diagBrakeFromCAN", data.brakeFromCAN, "On", "Off");
-    setStatusPill("diagHandbrakeFromCAN", data.handbrakeFromCAN, "On", "Off");
+    document.getElementById("diagAsrStatus").textContent = displayOnOff(
+      data.asrOn,
+    );
+    document.getElementById("diagTcStatus").textContent = displayOnOff(
+      data.tcOn,
+    );
+    document.getElementById("diagHazardActive").textContent = displayOnOff(
+      data.hazardActive,
+    );
+    document.getElementById("diagBrakeIn").textContent = displayOnOff(
+      data.brakeIn,
+    );
+    document.getElementById("diagBrakeOut").textContent = displayOnOff(
+      data.brakeOut,
+    );
+    document.getElementById("diagHandbrakeIn").textContent =
+      displayOnOff(data.handbrakeIn);
+    document.getElementById("diagHandbrakeOut").textContent =
+      displayOnOff(data.handbrakeOut);
+    document.getElementById("diagBrakeFromCAN").textContent = displayOnOff(
+      data.brakeFromCAN,
+    );
+    document.getElementById("diagHandbrakeFromCAN").textContent = displayOnOff(
+      data.handbrakeFromCAN,
+    );
     document.getElementById("diagCpuUsage").textContent = displayValue(
       data.cpuUsage,
     );
@@ -471,71 +714,49 @@ async function refreshStatus() {
       gen41Card.style.display = "none";
     }
 
-    // UDS MQB diagnostic data — replaces the standard Haldex Data card when active
-    const haldexDataCard = document.getElementById("haldexDataCard");
-    const udsCard = document.getElementById("udsDataCard");
-    const kwpCard = document.getElementById("kwpDataCard");
-    if (data.uds) {
-      if (haldexDataCard) haldexDataCard.style.display = "none";
-      if (kwpCard) kwpCard.style.display = "none";
-      if (udsCard) {
-        udsCard.style.display = "";
-        document.getElementById("udsTerminalVoltage").textContent = data.uds.terminalVoltage?.toFixed(1) ?? "--";
-        document.getElementById("udsModuleTemp").textContent = data.uds.moduleTemp?.toFixed(1) ?? "--";
-        document.getElementById("udsClutchTemp").textContent = data.uds.clutchTemp?.toFixed(1) ?? "--";
-        document.getElementById("udsCoolingFinTemp").textContent = data.uds.coolingFinTemp?.toFixed(1) ?? "--";
-        document.getElementById("udsClutchCurrent").textContent = data.uds.clutchCurrent?.toFixed(3) ?? "--";
-        document.getElementById("udsClutchPWM").textContent = displayValue(data.uds.clutchPWM);
-        document.getElementById("udsClutchVoltage").textContent = data.uds.clutchVoltage?.toFixed(3) ?? "--";
-        document.getElementById("udsBlockagePct").textContent = displayValue(data.uds.blockagePct);
-        const udsStatus = document.getElementById("udsStatus");
-        if (udsStatus) udsStatus.textContent = data.diagToolActive ? "Paused — external diagnostic tool detected" : "";
-      }
-    } else if (data.kwp) {
-      // Gen2/Gen4 KWP2000-over-TP2.0 live data.
-      if (haldexDataCard) haldexDataCard.style.display = "none";
-      if (udsCard) udsCard.style.display = "none";
-      if (kwpCard) {
-        kwpCard.style.display = "";
-        document.getElementById("kwpOilTemp").textContent = data.kwp.oilTemp?.toFixed(1) ?? "--";
-        document.getElementById("kwpPlateTemp").textContent = data.kwp.plateTemp?.toFixed(1) ?? "--";
-        document.getElementById("kwpSupplyVoltage").textContent = data.kwp.supplyVoltage?.toFixed(2) ?? "--";
-        document.getElementById("kwpOilPressure").textContent = data.kwp.oilPressure?.toFixed(0) ?? "--";
-        document.getElementById("kwpEstTorque").textContent = data.kwp.estTorque?.toFixed(0) ?? "--";
-        document.getElementById("kwpClutchDuty").textContent = data.kwp.clutchDuty?.toFixed(0) ?? "--";
-        document.getElementById("kwpClutchValveCurrent").textContent = data.kwp.clutchValveCurrent?.toFixed(3) ?? "--";
-        const kwpStatus = document.getElementById("kwpStatus");
-        if (kwpStatus) {
-          kwpStatus.textContent = data.diagToolActive
-            ? "Paused — external diagnostic tool detected"
-            : (data.kwp.connected ? "Connected" : "Connecting…");
-        }
-      }
+    // UDS MQB diagnostic data: the API only includes `uds` while the poller
+    // toggle is on. The four headline values sit inline in the glance grid; the
+    // rest fold into the details block. Both hide when the feature is off.
+    const uds = data.uds;
+    // Glance tile visibility is user-controlled (see initDashTiles); only the
+    // full UDS details block is gated on whether the poller is returning data.
+    const udsDetails = document.getElementById("udsDetails");
+    if (udsDetails) udsDetails.style.display = uds ? "" : "none";
+    const udsStatusEl = document.getElementById("udsStatus");
+    if (udsStatusEl) udsStatusEl.textContent = uds && data.diagToolActive ? "Paused: an external diagnostic tool was detected." : "";
+    if (uds) {
+      document.getElementById("udsTerminalVoltage").textContent = uds.terminalVoltage?.toFixed(1) ?? "--";
+      document.getElementById("udsModuleTemp").textContent = uds.moduleTemp?.toFixed(1) ?? "--";
+      document.getElementById("udsClutchTemp").textContent = uds.clutchTemp?.toFixed(1) ?? "--";
+      document.getElementById("udsCoolingFinTemp").textContent = uds.coolingFinTemp?.toFixed(1) ?? "--";
+      document.getElementById("udsClutchCurrent").textContent = uds.clutchCurrent?.toFixed(3) ?? "--";
+      document.getElementById("udsClutchPWM").textContent = displayValue(uds.clutchPWM);
+      document.getElementById("udsClutchVoltage").textContent = uds.clutchVoltage?.toFixed(3) ?? "--";
+      document.getElementById("udsBlockagePct").textContent = displayValue(uds.blockagePct);
     } else {
-      if (haldexDataCard) haldexDataCard.style.display = "";
-      if (udsCard) udsCard.style.display = "none";
-      if (kwpCard) kwpCard.style.display = "none";
+      // UDS-sourced glance tiles stay in the grid when the poller is off; blank
+      // them back to "--" rather than leaving a stale reading on screen.
+      ["udsClutchTemp", "udsModuleTemp", "udsCoolingFinTemp", "udsClutchPWM"].forEach(
+        (id) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = "--";
+        },
+      );
     }
 
-    // Gauge & graph views (all optional, per-tile toggled in Display Options).
-    // While the intro sweep owns the strokes, park the latest values for it to
-    // land on instead of drawing over the animation.
-    if (introSweep.active) {
-      introSweep.pending = data;
-    } else {
-      updateEngagementGauge(data.lockTarget ?? null, data.lockActual ?? null);
-    }
-    const traceNow = Date.now();
-    pushLockSample(data.lockTarget, data.lockActual, traceNow);
-    if (gaugePrefs.trace) renderLockTrace(traceNow);
-    if (!introSweep.active) updateTileGauges();
+    updateV9Status(data, chassisOk, haldexOk);
+
+    refreshTrace(data); // update the live trace (editor-grid cell highlight)
+
+    // Ride the live operating point on the expert tune surface: cache the poll
+    // and move the dot without redrawing the whole surface each frame.
     lastDashData = data;
-    if (firstStatusResolve) { firstStatusResolve(data); firstStatusResolve = null; }
     updateChartMarker();
-
-    refreshTrace(data); // update the live trace
   } catch (error) {
     console.log("Status failed: " + error.message);
+  } finally {
+    clearTimeout(pollTimeout);
+    refreshStatus._inFlight = false;
   }
 }
 
@@ -543,57 +764,31 @@ function hex2bin(hex) {
   return ("00000000" + parseInt(hex, 16).toString(2)).substr(-8);
 }
 
-// Set a diagnostics value as a coloured status pill.
-// null/undefined -> orange "unavailable"; truthy -> green; falsy -> red.
-function setStatusPill(id, value, okText, badText, naText) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.classList.add("pill");
-  el.classList.remove("ok", "bad", "warn");
-  if (value === undefined || value === null) {
-    el.classList.add("warn");
-    el.textContent = naText ?? "Unavailable";
-  } else if (value) {
-    el.classList.add("ok");
-    el.textContent = okText;
-  } else {
-    el.classList.add("bad");
-    el.textContent = badText;
-  }
-}
-
-// Update the header subtitle with current mode and any active force mode.
+// Keep the hero mode pill reading the live base mode plus any active force
+// trigger. The header badge shows the base mode only; the force annotation -
+// which must never be silently active - rides here on the pill and refreshes
+// every poll.
 function updateBannerSubtitle(data) {
-  const el = document.getElementById("modeStatus");
+  const el = document.getElementById("modePillLabel");
   if (!el) return;
   const modeName = MODE_NAMES[data.mode] ?? "Unknown";
   let text = modeName;
 
-  const force = getActiveForceMode(data);
-  if (force) text += ` (${force.source}>${MODE_NAMES[force.mode] ?? "Unknown"})`;
-  el.textContent = text;
-}
+  // Surface EVERY active force trigger so a flag can never be silently active.
+  // Each trigger must be BOTH enabled and have its live flag asserted - matching
+  // the firmware gate in OpenHaldexC6_can.cpp. tcForceModeFlag/hazardForceModeFlag
+  // are CAN-driven and extButtonActive is button-driven, so any of them can fire
+  // without the user having touched the UI.
+  const active = [];
+  if (_tcForceMode     && data.tcOn === false)            active.push({ trig: "TC",     fmv: _tcForceModeValue });
+  if (_hazardForceMode && data.hazardActive === true)     active.push({ trig: "Hazard", fmv: _hazardForceModeValue });
+  if (_extBtnForceMode && data.extButtonActive === true)  active.push({ trig: "Ext",    fmv: _extBtnForceModeValue });
 
-function getActiveForceMode(data) {
-  const triggers = [
-    { source: "TC",  enabled: _tcForceMode,     active: data.tcOn === false,           mode: _tcForceModeValue },
-    { source: "Haz", enabled: _hazardForceMode, active: data.hazardActive === true,    mode: _hazardForceModeValue },
-    { source: "Ext", enabled: _extBtnForceMode, active: data.extButtonActive === true, mode: _extBtnForceModeValue },
-  ];
-  const priorityOrders = [
-    [1, 0, 2],
-    [0, 1, 2],
-    [1, 2, 0],
-    [0, 2, 1],
-    [2, 0, 1],
-    [2, 1, 0],
-  ];
-  const order = priorityOrders[_forceModesPriority] || priorityOrders[0];
-  for (const index of order) {
-    const trigger = triggers[index];
-    if (trigger.enabled && trigger.active) return trigger;
+  if (active.length) {
+    const parts = active.map((a) => `${MODE_NAMES[a.fmv] ?? "Unknown"} (${a.trig})`);
+    text += ` · Force: ${parts.join(", ")}`;
   }
-  return null;
+  el.textContent = text;
 }
 
 // Render a bit-by-bit legend for the Haldex state byte, generation-aware.
@@ -622,7 +817,7 @@ function renderHaldexStateLegend(rawHex, gen) {
     });
     html += `</table>`;
     el.innerHTML = html;
-  } else if (gen === 50) {
+  } else if (gen === 50 || gen === 52) {
     // MQB (Gen 5): Allrad_03 byte 3 = ALR_Charisma_FahrPr / ALR_Charisma_Status
     const prog = val & 0x0F;
     const flags = (val >> 4) & 0x0F;
@@ -659,56 +854,8 @@ async function saveLockTable() {
     }
   } catch (error) {
     console.error("Error saving map:", error);
+    showNotification("Failed to Save - check connection", "error");
   }
-}
-
-// render the steering-angle lock-scale editor (angle breakpoints + % multipliers)
-function renderSteeringTable() {
-  const table = document.getElementById("steeringScaleTable");
-  if (!table) return;
-  let angleRow = "<tr><th>Angle °</th>";
-  let scaleRow = "<tr><th>Lock %</th>";
-  for (let i = 0; i < steeringHeader.length; i++) {
-    angleRow += `<td><input type="number" min="0" max="1000" class="steering-angle-input" data-idx="${i}" value="${steeringHeader[i]}"></td>`;
-    scaleRow += `<td><input type="number" min="0" max="100" class="steering-scale-input" data-idx="${i}" value="${steeringScale[i]}"></td>`;
-  }
-  table.innerHTML = angleRow + "</tr>" + scaleRow + "</tr>";
-}
-
-// save the steering-angle lock-scale curve back to the ESP
-async function saveSteeringTable() {
-  document.querySelectorAll(".steering-angle-input").forEach((el) => {
-    steeringHeader[Number(el.dataset.idx)] = Math.max(0, Number(el.value) || 0);
-  });
-  document.querySelectorAll(".steering-scale-input").forEach((el) => {
-    steeringScale[Number(el.dataset.idx)] = Math.max(0, Math.min(100, Number(el.value) || 0));
-  });
-
-  try {
-    const response = await fetch("/api/tune", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        steeringArray: steeringHeader,
-        steeringLockScaleArray: steeringScale,
-      }),
-    });
-
-    if (response.ok) {
-      showNotification("Steering Scale Saved");
-    } else {
-      showNotification("Failed to Save", "error");
-    }
-  } catch (error) {
-    console.error("Error saving steering scale:", error);
-  }
-}
-
-// restore the steering-angle lock-scale curve to defaults (not yet saved)
-function restoreSteeringDefaults() {
-  steeringHeader = [...defaultSteeringHeader];
-  steeringScale = [...defaultSteeringScale];
-  renderSteeringTable();
 }
 
 // save individual setting immediately
@@ -722,11 +869,10 @@ async function saveSetting(key, value) {
       body: JSON.stringify(settings),
     });
 
-    if (!response.ok) {
+    if (!response || !response.ok) {
       showNotification("Failed to save setting", "error");
       return false;
     }
-    updateCachedSetting(key, value);
     return true;
   } catch (error) {
     console.log("Saving setting failed: " + error.message);
@@ -735,68 +881,228 @@ async function saveSetting(key, value) {
   }
 }
 
-function updateCachedSetting(key, value) {
-  if (key === "tcForceModeValue") _tcForceModeValue = value;
-  if (key === "hazardForceModeValue") _hazardForceModeValue = value;
-  if (key === "extBtnForceModeValue") _extBtnForceModeValue = value;
-  if (key === "forceModesPriority") _forceModesPriority = value;
-  if (key === "tcForceMode") _tcForceMode = value;
-  if (key === "hazardForceMode") _hazardForceMode = value;
-  if (key === "extButtonForceMode") _extBtnForceMode = value;
+// Status chip helper: 'on' lights the dot, 'unknown' greys the whole chip out
+// (no data - e.g. Haldex CAN down reports null for every flag).
+function setChip(id, value) {
+  const chip = document.getElementById(id);
+  if (!chip) return;
+  const unknown = value === undefined || value === null;
+  chip.classList.toggle("unknown", unknown);
+  chip.classList.toggle("on", !unknown && !!value);
 }
 
-// ---- Frame-edit gating (Diagnostics > Frame Editing) ----------------------
-// Render the per-generation editable-frame checkboxes from /api/settings data.
-function renderFrameBlocks(blocks) {
-  const list = document.getElementById("frameEditList");
-  if (!list) return;
-  if (!Array.isArray(blocks) || blocks.length === 0) {
-    list.innerHTML = '<p class="hint">Not available for this generation.</p>';
+// Semi-circular engagement arc, radius 80 centred at (100,100): the fill sweeps
+// with the ACTUAL engagement, the tick marks the TARGET, so the lag between them
+// (lock response ramp, coupling response) reads at a glance.
+const GAUGE_ARC_LEN = Math.PI * 80; // length of the 180-degree track
+
+function updateEngagementGauge(target, actual) {
+  const fill = document.getElementById("gaugeArcFill");
+  const tick = document.getElementById("gaugeTargetTick");
+  if (!fill) return;
+
+  const a = actual === null ? 0 : Math.max(0, Math.min(100, Number(actual) || 0));
+  fill.style.strokeDashoffset = GAUGE_ARC_LEN * (1 - a / 100);
+
+  if (tick) {
+    if (target === null || Number.isNaN(Number(target))) {
+      tick.setAttribute("visibility", "hidden");
+    } else {
+      const t = Math.max(0, Math.min(100, Number(target)));
+      tick.setAttribute("transform", `rotate(${t * 1.8} 100 100)`);
+      tick.setAttribute("visibility", "visible");
+    }
+  }
+}
+
+// ---- Live lock-response trace ----------------------------------------------
+// Rolling time-history of lock target vs actual engagement. The gauge shows the
+// instant target/actual pair; this shows how the actual chased the target over
+// the last window, so coupling lag and the effect of the attack/release rate
+// limits read at a glance while tuning. Poll-fed from /api/dashboard, so no
+// extra device load. Reset on a dropped link so a reconnect never draws a line
+// bridging the outage gap.
+const TRACE_WINDOW_MS = 15000; // rolling window shown on the strip chart
+const lockTrace = []; // ring of { t, target, actual }, pruned to the window
+
+function resetLockTrace() {
+  lockTrace.length = 0;
+  renderLockTrace(Date.now());
+}
+
+function pushLockSample(target, actual, now) {
+  // Target and actual drop out independently (CAN target absent vs. no engagement
+  // reading yet), so each is validated and stored on its own. A missing value is
+  // kept as null so the corresponding line *breaks* over that sample instead of
+  // coercing to a phantom 0 (Number(null) === 0 would plot it on the floor).
+  const hasTarget = target !== undefined && target !== null && Number.isFinite(Number(target));
+  const hasActual = actual !== undefined && actual !== null && Number.isFinite(Number(actual));
+  // Nothing to record if both are absent - skip so no empty sample enters the ring.
+  if (!hasTarget && !hasActual) return;
+  const t = hasTarget ? Math.max(0, Math.min(100, Number(target))) : null;
+  const a = hasActual ? Math.max(0, Math.min(100, Number(actual))) : null;
+  lockTrace.push({ t: now, target: t, actual: a });
+
+  // Drop points that have scrolled off the left edge, keeping one older sample
+  // so the leftmost segment enters from off-screen instead of starting mid-plot.
+  const cutoff = now - TRACE_WINDOW_MS;
+  let firstKept = 0;
+  while (firstKept < lockTrace.length - 1 && lockTrace[firstKept + 1].t < cutoff) firstKept++;
+  if (firstKept > 0) lockTrace.splice(0, firstKept);
+}
+
+function renderLockTrace(now) {
+  const svg = document.getElementById("lockTraceSvg");
+  if (!svg) return;
+
+  const W = 320, H = 160;
+  const padL = 26, padR = 6, padT = 8, padB = 18;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const baseY = padT + plotH; // 0% lock (chart floor)
+
+  const windowStart = now - TRACE_WINDOW_MS;
+  const xPix = (t) => Math.max(padL, Math.min(W - padR, padL + ((t - windowStart) / TRACE_WINDOW_MS) * plotW));
+  const yPix = (v) => padT + (1 - Math.max(0, Math.min(100, Number(v) || 0)) / 100) * plotH;
+
+  // Literal hex (not var()) so the colours render inside string-built SVG on all
+  // browsers, matching the tune chart. ACTUAL = --primary-light, others --text-dim/--border.
+  const GRID = "#404040", LABEL = "#9ca3af", ACTUAL = "#ef4444", TARGET = "#9ca3af";
+
+  let out = "";
+  for (let g = 0; g <= 100; g += 25) {
+    const y = yPix(g);
+    out += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="${GRID}" stroke-width="0.5"/>`;
+    out += `<text x="${padL - 4}" y="${(y + 3).toFixed(1)}" fill="${LABEL}" font-size="8" text-anchor="end">${g}</text>`;
+  }
+  out += `<text x="${padL}" y="${H - 5}" fill="${LABEL}" font-size="8" text-anchor="start">-15s</text>`;
+  out += `<text x="${W - padR}" y="${H - 5}" fill="${LABEL}" font-size="8" text-anchor="end">now</text>`;
+
+  // lockTrace is already pruned to the window (plus one older sample for a
+  // clean left edge), so it plots directly; xPix clamps any off-screen point.
+  const pts = lockTrace;
+  if (pts.length >= 2) {
+    // Actual: filled area to the floor plus a bold line on top, broken across any
+    // span where the engagement reading dropped out (p.actual === null) so a
+    // missing sample never bridges a false line through the gap.
+    let aSeg = [];
+    const flushActual = () => {
+      if (aSeg.length >= 2) {
+        const line = aSeg.map((p) => `${xPix(p.t).toFixed(1)},${yPix(p.actual).toFixed(1)}`).join(" ");
+        const x0 = xPix(aSeg[0].t).toFixed(1);
+        const xN = xPix(aSeg[aSeg.length - 1].t).toFixed(1);
+        out += `<polygon points="${x0},${baseY.toFixed(1)} ${line} ${xN},${baseY.toFixed(1)}" fill="${ACTUAL}" fill-opacity="0.15" stroke="none"/>`;
+        out += `<polyline points="${line}" fill="none" stroke="${ACTUAL}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+      }
+      aSeg = [];
+    };
+    for (const p of pts) {
+      if (p.actual === null) { flushActual(); continue; }
+      aSeg.push(p);
+    }
+    flushActual();
+
+    // Target: dashed line, only across the spans where a target was present. Its
+    // gaps are driven solely by a missing target, independent of actual dropouts.
+    let seg = "";
+    for (const p of pts) {
+      if (p.target === null) {
+        if (seg.trim()) { out += `<polyline points="${seg.trim()}" fill="none" stroke="${TARGET}" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`; seg = ""; }
+        continue;
+      }
+      seg += `${xPix(p.t).toFixed(1)},${yPix(p.target).toFixed(1)} `;
+    }
+    if (seg.trim()) out += `<polyline points="${seg.trim()}" fill="none" stroke="${TARGET}" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`;
+  }
+
+  svg.innerHTML = out;
+}
+
+// ---- Learn Haldex calibration chart ----------------------------------------
+// Plots the learned calibration table: X = commanded correction factor (0..100%),
+// Y = measured Haldex engagement (0..100%). A dashed 1:1 reference diagonal shows
+// where commanded equals measured, so the tuner can see at a glance where the
+// Haldex over- or under-responds. Render-only from the table the firmware already
+// returns on /api/learn/status when tableValid; no extra device load. Plain SVG,
+// no libraries - the page ships from the ESP32's flash.
+function renderLearnChart(table) {
+  const wrap = document.getElementById("learnChartWrap");
+  const svg = document.getElementById("learnChartSvg");
+  if (!svg || !wrap) return;
+  // A valid table is 101 points (CF 0..100 -> engagement 0..100). Anything shorter
+  // (no data yet, or malformed) hides the chart rather than drawing a broken axis.
+  if (!Array.isArray(table) || table.length < 2) {
+    wrap.style.display = "none";
+    svg.innerHTML = "";
     return;
   }
-  list.innerHTML = "";
-  blocks.forEach((b) => {
-    const row = document.createElement("label");
-    row.className = "toggle";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = !!b.enabled;
-    cb.dataset.bit = b.bit;
-    cb.addEventListener("change", () => saveFrameEdit(b.bit, cb.checked));
-    const slider = document.createElement("span");
-    slider.className = "toggle-slider";
-    const span = document.createElement("span");
-    span.className = "toggle-label";
-    span.textContent = b.name;
-    row.appendChild(cb);
-    row.appendChild(slider);
-    row.appendChild(span);
-    list.appendChild(row);
-  });
-}
+  wrap.style.display = "";
 
-// Toggle a single frame-edit block for the current generation.
-async function saveFrameEdit(bit, on) {
-  try {
-    const response = await fetchJson("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ frameEditBit: bit, frameEditOn: on }),
-    });
-    if (!response.ok) showNotification("Failed to save frame setting", "error");
-  } catch (error) {
-    showNotification("Error saving frame setting", "error");
+  const W = 320, H = 200;
+  const padL = 26, padR = 8, padT = 8, padB = 20;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const n = table.length;
+  const xOf = (cf) => padL + (Math.max(0, Math.min(100, cf)) / 100) * plotW;
+  const yOf = (eng) => padT + (1 - Math.max(0, Math.min(100, eng)) / 100) * plotH;
+
+  // Literal hex (not var()) so the colours render inside string-built SVG on all
+  // browsers, matching renderLockTrace. CURVE = --primary-light, REF/grid dim.
+  const GRID = "#404040", LABEL = "#9ca3af", REF = "#6b7280", CURVE = "#ef4444";
+
+  let out = "";
+  for (let g = 0; g <= 100; g += 25) {
+    const y = yOf(g);
+    out += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${(W - padR).toFixed(1)}" y2="${y.toFixed(1)}" stroke="${GRID}" stroke-width="0.5"/>`;
+    out += `<text x="${(padL - 4).toFixed(1)}" y="${(y + 3).toFixed(1)}" fill="${LABEL}" font-size="8" text-anchor="end">${g}</text>`;
+    const x = xOf(g);
+    out += `<text x="${x.toFixed(1)}" y="${H - 6}" fill="${LABEL}" font-size="8" text-anchor="middle">${g}</text>`;
   }
+
+  // 1:1 reference diagonal (commanded == measured).
+  out += `<line x1="${xOf(0).toFixed(1)}" y1="${yOf(0).toFixed(1)}" x2="${xOf(100).toFixed(1)}" y2="${yOf(100).toFixed(1)}" stroke="${REF}" stroke-width="1" stroke-dasharray="4 3"/>`;
+
+  // Learned curve: one vertex per table entry, index -> commanded CF %.
+  let line = "";
+  for (let i = 0; i < n; i++) {
+    const cf = (i / (n - 1)) * 100;
+    const eng = Number(table[i]) || 0;
+    line += `${xOf(cf).toFixed(1)},${yOf(eng).toFixed(1)} `;
+  }
+  out += `<polyline points="${line.trim()}" fill="none" stroke="${CURVE}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+  svg.innerHTML = out;
 }
 
-// Re-fetch settings and re-render the frame checkboxes (e.g. after a generation
-// change or a reset-to-defaults).
-async function refreshFrameBlocks() {
-  try {
-    const data = await fetchJson("/api/settings");
-    renderFrameBlocks(data.frameBlocks);
-  } catch (error) {
-    /* leave existing list in place on error */
+// The two speed cutoffs bracket the band where lock is allowed: lock is disabled
+// below the under-speed and above the above-speed, so it only engages between the
+// two. A bound of 0 means "no cut" on that side (matches speed_disengage_ok in
+// the firmware). If the under-speed meets or passes a non-zero above-speed the
+// allowed band collapses and lock silently never engages - surface that rather
+// than leave it a foot-gun (the shipped 120/120 default leaves a one-speed sliver).
+function updateDisableWindowHint() {
+  const hint = document.getElementById("disableWindowHint");
+  if (!hint) return;
+  const underEl = document.getElementById("disengageUnderSpeedRange");
+  const aboveEl = document.getElementById("disengageAboveSpeedRange");
+  if (!underEl || !aboveEl) return;
+  const under = parseInt(underEl.value, 10) || 0;
+  const above = parseInt(aboveEl.value, 10) || 0;
+  hint.style.display = "";
+  if (above > 0 && under >= above) {
+    hint.textContent = under === above
+      ? `Both cutoffs are ${under} km/h, so lock only engages at exactly ${under} km/h - widen the gap to give it a usable band.`
+      : `Under-speed (${under}) sits above the above-speed cutoff (${above}), so lock never engages. Lower the under-speed or raise the above-speed.`;
+    hint.style.color = "var(--warning)";
+  } else if (above > 0) {
+    hint.textContent = `Lock engages between ${under} and ${above} km/h.`;
+    hint.style.color = "";
+  } else if (under > 0) {
+    hint.textContent = `Lock disabled below ${under} km/h; no upper speed cutoff.`;
+    hint.style.color = "";
+  } else {
+    hint.textContent = "No speed cutoffs - lock allowed at any speed.";
+    hint.style.color = "";
   }
 }
 
@@ -810,8 +1116,12 @@ function initNavigation() {
     tab.addEventListener("click", () => {
       const page = tab.dataset.page;
 
-      tabs.forEach((t) => t.classList.remove("active"));
+      tabs.forEach((t) => {
+        t.classList.remove("active");
+        t.removeAttribute("aria-current");
+      });
       tab.classList.add("active");
+      tab.setAttribute("aria-current", "page");
 
       pages.forEach((p) => p.classList.remove("active"));
       document.getElementById(`${page}-page`).classList.add("active");
@@ -825,6 +1135,7 @@ function initNavigation() {
   const disengageUnderSpeed = document.getElementById("disengageUnderSpeed");
   disengageUnderSpeedRange.addEventListener("input", () => {
     disengageUnderSpeed.textContent = disengageUnderSpeedRange.value;
+    updateDisableWindowHint();
   });
 
   const disengageAboveSpeedRange = document.getElementById(
@@ -833,7 +1144,9 @@ function initNavigation() {
   const disengageAboveSpeed = document.getElementById("disengageAboveSpeed");
   disengageAboveSpeedRange.addEventListener("input", () => {
     disengageAboveSpeed.textContent = disengageAboveSpeedRange.value;
+    updateDisableWindowHint();
   });
+  updateDisableWindowHint(); // reflect the loaded values on first paint
   const disableThrottleRange = document.getElementById("disableThrottleRange");
   const disableThrottle = document.getElementById("disableThrottle");
   disableThrottleRange.addEventListener("input", () => {
@@ -860,20 +1173,148 @@ function initNavigation() {
     });
   }
 
-  // Lock release rate slider (display update only — save handled in initSettings)
-  const lockRateRange = document.getElementById("lockReleaseRateRange");
-  const lockRateVal   = document.getElementById("lockReleaseRateValue");
-  if (lockRateRange) {
-    lockRateRange.addEventListener("input", () => {
-      if (lockRateVal) lockRateVal.textContent = lockRateRange.value;
+  // BPK lock-calibration slider (per-car; the Nm the spoof frame claims at full
+  // command, not a strength dial - higher does not lock harder). Save on release
+  // (change), not on every input tick, so dragging doesn't stream calibration
+  // changes at a live car.
+  const bpkCeilingRange = document.getElementById("bpkCeilingRange");
+  const bpkCeilingValue = document.getElementById("bpkCeilingValue");
+  if (bpkCeilingRange) {
+    bpkCeilingRange.addEventListener("input", () => {
+      if (bpkCeilingValue) bpkCeilingValue.textContent = bpkCeilingRange.value;
+    });
+    bpkCeilingRange.addEventListener("change", () => {
+      saveSetting("bpkCeilingNm", parseInt(bpkCeilingRange.value));
     });
   }
+
+  // ESP_14 Min-band launch-PWM floor. Same rationale as the BPK slider: update
+  // the label live while dragging, only save on release so the car isn't streamed
+  // calibration changes mid-drag.
+  const esp14FloorRange = document.getElementById("esp14MinFloorRange");
+  const esp14FloorValue = document.getElementById("esp14MinFloorValue");
+  if (esp14FloorRange) {
+    esp14FloorRange.addEventListener("input", () => {
+      if (esp14FloorValue) esp14FloorValue.textContent = esp14FloorRange.value;
+    });
+    esp14FloorRange.addEventListener("change", () => {
+      saveSetting("esp14MinFloorPct", parseInt(esp14FloorRange.value));
+    });
+  }
+
+  // Lock response ramp sliders (display update only — save handled in initSettings)
+  const lockReleaseRange = document.getElementById("lockReleaseRampRange");
+  const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
+  if (lockReleaseRange) {
+    lockReleaseRange.addEventListener("input", () => {
+      if (lockReleaseVal) lockReleaseVal.textContent = lockReleaseRange.value;
+    });
+  }
+  const lockEngageRange = document.getElementById("lockEngageRampRange");
+  const lockEngageVal   = document.getElementById("lockEngageRampValue");
+  if (lockEngageRange) {
+    lockEngageRange.addEventListener("input", () => {
+      if (lockEngageVal) lockEngageVal.textContent = lockEngageRange.value;
+    });
+  }
+
+  // Steering gain sliders (display update only — save handled in initSettings)
+  [
+    ["steeringGainStartRange", "steeringGainStartValue"],
+    ["steeringGainFullRange",  "steeringGainFullValue"],
+    ["steeringGainFloorRange", "steeringGainFloorValue"],
+  ].forEach(([rangeId, valueId]) => {
+    const rangeElem = document.getElementById(rangeId);
+    const valueElem = document.getElementById(valueId);
+    if (rangeElem) {
+      rangeElem.addEventListener("input", () => {
+        if (valueElem) valueElem.textContent = rangeElem.value;
+      });
+    }
+  });
 }
 
 // initialise dashboard:
 function initDashboard() {
-  refreshStatus(); //
-  setInterval(refreshStatus, setIntervalDuration); // request for new data every xms
+  renderLockTrace(Date.now()); // draw the empty grid before the first poll lands
+
+  // Self-scheduling poll loop. The old design used a fixed 500ms setInterval with
+  // a one-in-flight guard: whenever a response landed just after a tick had
+  // already fired-and-bailed (previous poll still in flight), the next tick was a
+  // full interval away, collapsing a nominal 2Hz to ~1Hz and wasting the gap
+  // between "reply arrived" and "next tick". Here the next poll is scheduled only
+  // once the previous one has fully settled, plus a small floor, so the live rate
+  // follows the device's real latency instead of being quantised to a tick.
+  //
+  // A generation token gates the loop: bumping it stops the current loop (its
+  // post-await check fails) so visibility changes can't leave two loops running.
+  let pollGeneration = 0;
+
+  async function pollLoop(myGen) {
+    while (myGen === pollGeneration && !document.hidden) {
+      const started = Date.now();
+      await refreshStatus(); // resolves when the poll settles (success, miss, or timeout)
+      if (myGen !== pollGeneration || document.hidden) return; // superseded or backgrounded
+      const gap = POLL_MIN_GAP_MS - (Date.now() - started);
+      if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap));
+    }
+  }
+
+  pollLoop(++pollGeneration);
+
+  // Stop polling while the page is hidden (phone locked or app backgrounded) so
+  // we don't keep waking the ESP's web server; resume with a fresh read on return.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      pollGeneration++; // running loop exits at its next generation check
+    } else {
+      pollLoop(++pollGeneration); // fresh loop; any stale one exits on the token
+    }
+  });
+}
+
+// Short vibration on tap where the browser allows it - purely tactile feedback.
+function haptic(ms) {
+  try {
+    if (navigator.vibrate) navigator.vibrate(ms);
+  } catch (e) {
+    /* vibration blocked or unsupported - ignore */
+  }
+}
+
+// Drive-mode drawer: the dashboard shows the live mode as a pill, and tapping it
+// slides in the full six-button picker from the right. Keeps the mode grid off
+// the glance view so lock %, live data and the trace fit one screen.
+function setModeDrawer(open) {
+  const drawer = document.getElementById("modeDrawer");
+  const backdrop = document.getElementById("modeBackdrop");
+  const pill = document.getElementById("modePill");
+  if (!drawer) return;
+  drawer.classList.toggle("open", open);
+  drawer.setAttribute("aria-hidden", open ? "false" : "true");
+  // inert keeps the off-screen mode buttons out of the tab order and the
+  // accessibility tree while the drawer is closed.
+  drawer.inert = !open;
+  if (backdrop) backdrop.classList.toggle("open", open);
+  if (pill) pill.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function initModeDrawer() {
+  const pill = document.getElementById("modePill");
+  const backdrop = document.getElementById("modeBackdrop");
+  const closeBtn = document.getElementById("modeDrawerClose");
+  if (pill) {
+    pill.addEventListener("click", () => {
+      haptic(10);
+      setModeDrawer(true);
+    });
+  }
+  if (backdrop) backdrop.addEventListener("click", () => setModeDrawer(false));
+  if (closeBtn) closeBtn.addEventListener("click", () => setModeDrawer(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") setModeDrawer(false);
+  });
+  setModeDrawer(false); // establish the closed/inert state on load
 }
 
 // initialise mode buttons
@@ -901,8 +1342,12 @@ function initModeButtons() {
         return;
       }
 
+      haptic(15); // firmer tick for a mode change
+      _pendingMode = mode; // hold this selection against stale polls until echoed
+      _pendingModeTs = Date.now();
       modeButton(mode); // change highlighted mode
       sendMode(mode); // send new mode to ESP
+      setModeDrawer(false); // picked a mode - slide the drawer away
     });
   });
 
@@ -911,14 +1356,22 @@ function initModeButtons() {
       mode: mode, // send just the mode change
     };
 
-    try {
-      await fetchJson("/api/mode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sendData),
-      });
-    } catch (error) {
-      console.log("Save failed: " + error.message);
+    // fetchJson never throws - transport and parse failures resolve to
+    // undefined, so the !resp branch below covers them.
+    const resp = await fetchJson("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sendData),
+    });
+    if (!resp || resp.ok === false) {
+      // Failed on the module (or no response): drop the pending hold so the
+      // next poll snaps the highlight back to the real mode, and say why -
+      // a silently reverting button reads as a broken UI.
+      _pendingMode = null;
+      showNotification(
+        (resp && resp.error) ? resp.error : "Mode change failed - check connection",
+        "error"
+      );
     }
   }
 }
@@ -932,29 +1385,22 @@ function initSettings() {
     if (elem) {
       elem.addEventListener("change", async () => {
         await saveSetting(id, parseInt(elem.value));
-        // Generation change alters which frames are editable — refresh the list.
+        // A new generation changes which frame blocks can be edited.
         if (id === "haldexGeneration") refreshFrameBlocks();
       });
     }
   });
-
-  // Frame-edit reset-to-defaults button (Diagnostics > Frame Editing)
-  {
-    const feReset = document.getElementById("frameEditReset");
-    if (feReset) {
-      feReset.addEventListener("click", async () => {
-        await saveSetting("frameEditReset", true);
-        refreshFrameBlocks();
-      });
-    }
-  }
 
   // Range sliders
   const rangeSliders = [
     { element: "disengageUnderSpeedRange", key: "disengageUnderSpeed", parse: parseInt },
     { element: "disengageAboveSpeedRange", key: "disengageAboveSpeed", parse: parseInt },
     { element: "disableThrottleRange",     key: "disableThrottle",     parse: parseInt },
-    { element: "lockReleaseRateRange",     key: "lockReleaseRatePerSec", parse: parseFloat },
+    { element: "lockReleaseRampRange",     key: "lockReleaseRampMs",    parse: parseInt },
+    { element: "lockEngageRampRange",      key: "lockEngageRampMs",     parse: parseInt },
+    { element: "steeringGainStartRange",   key: "steeringGainStartDeg",  parse: parseInt },
+    { element: "steeringGainFullRange",    key: "steeringGainFullDeg",   parse: parseInt },
+    { element: "steeringGainFloorRange",   key: "steeringGainFloor",     parse: parseInt },
   ];
   rangeSliders.forEach(({ element, key, parse }) => {
     const elem = document.getElementById(element);
@@ -973,44 +1419,22 @@ function initSettings() {
     });
   }
 
-  // Gen5 calibration sliders: update the label live while dragging, but only
-  // save on release (change) so a live car isn't streamed calibration changes.
-  // Reset buttons put the slider back to the firmware default and save it,
-  // in case a page scroll nudged the value.
-  const bpkRange = document.getElementById("bpkCeilingRange");
-  const bpkVal = document.getElementById("bpkCeilingValue");
-  const bpkReset = document.getElementById("bpkCeilingResetBtn");
-  if (bpkRange) {
-    bpkRange.addEventListener("input", () => { if (bpkVal) bpkVal.textContent = bpkRange.value; });
-    bpkRange.addEventListener("change", () => { saveSetting("bpkCeilingNm", parseInt(bpkRange.value)); });
-    if (bpkReset) {
-      bpkReset.addEventListener("click", () => {
-        bpkRange.value = 220;
-        if (bpkVal) bpkVal.textContent = "220";
-        saveSetting("bpkCeilingNm", 220);
-      });
-    }
-  }
-  const esp14Range = document.getElementById("esp14MinFloorRange");
-  const esp14Val = document.getElementById("esp14MinFloorValue");
-  const esp14Reset = document.getElementById("esp14MinFloorResetBtn");
-  if (esp14Range) {
-    esp14Range.addEventListener("input", () => { if (esp14Val) esp14Val.textContent = esp14Range.value; });
-    esp14Range.addEventListener("change", () => { saveSetting("esp14MinFloorPct", parseInt(esp14Range.value)); });
-    if (esp14Reset) {
-      esp14Reset.addEventListener("click", () => {
-        esp14Range.value = 0;
-        if (esp14Val) esp14Val.textContent = "0";
-        saveSetting("esp14MinFloorPct", 0);
-      });
-    }
-  }
-
   // Checkboxes — keep cached state in sync for mode-button guards
   const checkboxCacheMap = {
     disableController: (v) => { _disableController = v; },
     isStandalone:      (v) => { _isStandalone = v; },
     useCANifAvailable: (v) => { _useCANifAvailable = v; },
+  };
+
+  // High-consequence toggles get a confirm when switched INTO their disruptive
+  // state, so a stray tap (or a scroll that slips past guardScrollTaps) can't
+  // silently take the car out of active control. Turning them back off is the
+  // recovery action and needs no confirm.
+  const confirmOnEnable = {
+    dangerZoneEnabled: "Enable Danger Zone? A full 50:50 request will demand maximum clutch duty: much higher pump load and current draw, and the Returned % will read lower.",
+    disableController: "Disable the Haldex controller? The unit stops modifying CAN frames and the car reverts to stock behaviour.",
+    isStandalone: "Switch to Standalone? The unit stops reading the car's CAN bus and synthesises frames on its own.",
+    analyzerMode: "Enter Analyzer (SavvyCAN) mode? The controller stops spoofing and only sniffs the bus.",
   };
 
   const checkboxIds = [
@@ -1026,23 +1450,26 @@ function initSettings() {
     "broadcastOpenHaldexOverCAN",
     "disableOnboardButton",
     "disableExternalButton",
-    "fixHunting",
-    "dangerZoneEnabled",
     "canSleepEnabled",
     "canSleepAggressive",
+    "dangerZoneEnabled",
     "benchMode",
     "bleEnabled",
     "liveDiagEnabled",
     "lockReleaseEnabled",
-    "steeringScaleEnabled",
+    "steeringGainEnabled",
   ];
   checkboxIds.forEach((id) => {
     const elem = document.getElementById(id);
     if (elem) {
       elem.addEventListener("change", async () => {
+        if (confirmOnEnable[id] && elem.checked && !confirm(confirmOnEnable[id])) {
+          elem.checked = false; // user backed out - revert without saving
+          return;
+        }
         if (checkboxCacheMap[id]) checkboxCacheMap[id](elem.checked);
         await saveSetting(id, elem.checked);
-        if (id === "isStandalone") refreshFrameBlocks();
+        if (id === "isStandalone") refreshFrameBlocks(); // standalone has no editable passthrough frames
       });
     }
   });
@@ -1060,24 +1487,33 @@ function initSettings() {
     }
   }
 
-  // Lock release: toggle slider enabled state and opacity when checkbox changes.
+  // Lock response: toggle slider enabled state and opacity when checkbox changes.
   const lockReleaseEnabledElem = document.getElementById("lockReleaseEnabled");
-  const lockReleaseRateElem    = document.getElementById("lockReleaseRateRange");
-  const lockReleaseContainer   = document.getElementById("lockReleaseRateContainer");
+  const lockReleaseElem    = document.getElementById("lockReleaseRampRange");
+  const lockReleaseContainer   = document.getElementById("lockReleaseRampContainer");
+  const lockEngageElem     = document.getElementById("lockEngageRampRange");
+  const lockEngageContainer    = document.getElementById("lockEngageRampContainer");
   if (lockReleaseEnabledElem) {
     lockReleaseEnabledElem.addEventListener("change", () => {
       const en = lockReleaseEnabledElem.checked;
-      if (lockReleaseRateElem) lockReleaseRateElem.disabled = !en;
+      if (lockReleaseElem) lockReleaseElem.disabled = !en;
       if (lockReleaseContainer) lockReleaseContainer.style.opacity = en ? "" : "0.4";
+      if (lockEngageElem) lockEngageElem.disabled = !en;
+      if (lockEngageContainer) lockEngageContainer.style.opacity = en ? "" : "0.4";
     });
   }
 
-  // Steering-angle scaling: dim the curve table when the feature is disabled.
-  const steeringScaleEnabledElem = document.getElementById("steeringScaleEnabled");
-  if (steeringScaleEnabledElem) {
-    steeringScaleEnabledElem.addEventListener("change", () => {
-      const stbl = document.getElementById("steeringScaleTable");
-      if (stbl) stbl.style.opacity = steeringScaleEnabledElem.checked ? "" : "0.4";
+  // Steering gain: toggle slider enabled state and opacity when checkbox changes.
+  const steerGainEnabledElem = document.getElementById("steeringGainEnabled");
+  if (steerGainEnabledElem) {
+    steerGainEnabledElem.addEventListener("change", () => {
+      const en = steerGainEnabledElem.checked;
+      ["steeringGainStart", "steeringGainFull", "steeringGainFloor"].forEach((base) => {
+        const rangeElem = document.getElementById(base + "Range");
+        const container = document.getElementById(base + "Container");
+        if (rangeElem) rangeElem.disabled = !en;
+        if (container) container.style.opacity = en ? "" : "0.4";
+      });
     });
   }
 
@@ -1106,6 +1542,10 @@ function initSettings() {
   const analyzerSerialElem = document.getElementById("analyzerSerial");
   if (analyzerModeElem && analyzerSerialElem) {
     analyzerModeElem.addEventListener("change", () => {
+      if (analyzerModeElem.checked && !confirm(confirmOnEnable.analyzerMode)) {
+        analyzerModeElem.checked = false; // user backed out - revert without saving
+        return;
+      }
       if (analyzerModeElem.checked) {
         analyzerSerialElem.checked = false;
         saveSetting("analyzerSerial", false);
@@ -1128,12 +1568,25 @@ function modeButton(mode) {
     btn.classList.toggle("active", parseInt(btn.dataset.mode) === mode);
   });
 
-  //document.getElementById('currentMode').textContent = MODE_NAMES[mode] || 'Unknown';
+  // Keep the dashboard mode pill reading the live mode (set here rather than in
+  // the click handler so external mode changes from the ESP also update it).
+  const pillLabel = document.getElementById("modePillLabel");
+  if (pillLabel) pillLabel.textContent = MODE_NAMES[mode] || "Unknown";
+
+  // Mirror the base mode onto the header badge so the running mode is visible
+  // from any tab, not just the dashboard. Force triggers still annotate the
+  // hero pill; this is the compact glance.
+  const hdr = document.getElementById("modeStatus");
+  if (hdr) hdr.textContent = "Mode " + (MODE_NAMES[mode] || "Unknown");
 }
 
 // initialise expert editor
-function initExpertEditor() {
+// Build the editor grid (axis headers + lock cells) from the current
+// speedHeader/throttleHeader/currentLock globals. Called on first init and
+// again whenever a map is loaded (preset, import, or restore defaults).
+function buildMapGrid() {
   const mapGrid = document.getElementById("mapGrid"); // find the 'map grid'
+  mapGrid.innerHTML = ""; // clear any prior grid so a reload doesn't stack cells
 
   const cellMarker = document.createElement("div"); // create the first element (which will be a dead cell)
   cellMarker.className = "map-cellHeader";
@@ -1191,15 +1644,19 @@ function initExpertEditor() {
       cell.max = 100;
       cell.textContent = String(currentLock[throttle][speed]); // update the cell text with the value in currentLock
 
-      cell.addEventListener("click", () => {
-        openEditValue(cell);
-      });
+      // Lock cells no longer bind a click handler: taps and drag-selection are
+      // handled by initTuneSelection() via pointer events on the grid so a single
+      // tap opens the editor while a drag selects a block of cells.
 
       updateCellColor(cell, currentLock[throttle][speed]); // update the colour (low/medium/high)
 
       mapGrid.appendChild(cell);
     }
   }
+}
+
+function initExpertEditor() {
+  buildMapGrid();
 
   document.getElementById("cancelEdit").addEventListener("click", cancelEdit);
   document.getElementById("confirmEdit").addEventListener("click", confirmEdit);
@@ -1208,13 +1665,315 @@ function initExpertEditor() {
     .getElementById("restoreDefaults")
     .addEventListener("click", restoreDefaults);
 
-  // Steering-angle lock-scale editor
-  renderSteeringTable();
-  const saveSteerBtn = document.getElementById("saveSteeringScale");
-  if (saveSteerBtn) saveSteerBtn.addEventListener("click", saveSteeringTable);
-  const restoreSteerBtn = document.getElementById("restoreSteeringScale");
-  if (restoreSteerBtn)
-    restoreSteerBtn.addEventListener("click", restoreSteeringDefaults);
+  // Selection toolbar (drag-select block edit + smooth).
+  const selSetValue = document.getElementById("selSetValue");
+  const selSmooth = document.getElementById("selSmooth");
+  const selClear = document.getElementById("selClear");
+  if (selSetValue) selSetValue.addEventListener("click", openEditSelection);
+  if (selSmooth) selSmooth.addEventListener("click", smoothSelection);
+  if (selClear) selClear.addEventListener("click", clearSelection);
+
+  initMapManager(); // presets, saved slots, import/export
+}
+
+// ---- Expert editor: drag-select, block edit, smooth, chart dots ------------
+// Selected lock cells are tracked as "row,col" (throttle,speed) keys. A single
+// tap opens the editor for one cell; a click-drag paints a rectangular block.
+// Every selected cell is mirrored as a dot on the pseudo-3D surface so the tuner
+// sees exactly which cells an edit or smooth will touch.
+let selectedCells = new Set();
+let selDragging = false;
+let selAnchor = null; // {r, c} where the drag started
+let selMoved = false; // did the pointer leave the anchor cell during this gesture
+let editMultiMode = false; // confirmEdit applies to the whole selection when true
+// Phone-friendly selection: a single tap opens the one-cell editor by default,
+// which conflicts with drag-to-select on touch (the page just scrolls). So block
+// selection behind an explicit "Select cells" toggle. When off: normal scroll +
+// tap-to-edit. When on: the grid stops scrolling, a tap toggles one cell, and a
+// drag paints a rectangular block.
+let selectMode = false;
+// Swallow the ghost click that trails a drag or long-press. A long-press (>450ms)
+// often makes the browser fire `contextmenu` instead of `click`, so the trailing
+// click never arrives - a naked boolean would then stay armed forever and eat the
+// user's *next* deliberate tap (the reported "first box doesn't highlight" bug).
+// Arming with an expiry timestamp fixes that: if no ghost click lands inside the
+// window, the guard has simply lapsed by the time the next real tap comes.
+let suppressClickUntil = 0; // ms timestamp; a click before this is treated as the ghost
+const SUPPRESS_CLICK_MS = 400; // ghost click follows its gesture within a few frames
+function armSuppressClick() {
+  suppressClickUntil = Date.now() + SUPPRESS_CLICK_MS;
+}
+
+function cellKey(r, c) {
+  return r + "," + c;
+}
+
+function getCellRC(el) {
+  if (!el || !el.classList || !el.classList.contains("map-cell")) return null;
+  const c = parseInt(el.getAttribute("speed"));
+  const r = parseInt(el.getAttribute("throttle"));
+  if (Number.isNaN(r) || Number.isNaN(c)) return null;
+  return { r, c };
+}
+
+function cellForRC(r, c) {
+  return document.querySelector(
+    `#mapGrid .map-cell[throttle="${r}"][speed="${c}"]`,
+  );
+}
+
+function setRectSelection(a, b) {
+  selectedCells.clear();
+  const r0 = Math.min(a.r, b.r), r1 = Math.max(a.r, b.r);
+  const c0 = Math.min(a.c, b.c), c1 = Math.max(a.c, b.c);
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) selectedCells.add(cellKey(r, c));
+  }
+  applySelectionHighlight();
+}
+
+function applySelectionHighlight() {
+  document.querySelectorAll("#mapGrid .map-cell").forEach((cell) => {
+    const rc = getCellRC(cell);
+    cell.classList.toggle(
+      "selected",
+      !!rc && selectedCells.has(cellKey(rc.r, rc.c)),
+    );
+  });
+  updateSelectionToolbar();
+  updateSelectionMarkers();
+}
+
+function clearSelection() {
+  selectedCells.clear();
+  applySelectionHighlight();
+}
+
+function updateSelectionToolbar() {
+  const bar = document.getElementById("selToolbar");
+  const count = document.getElementById("selCount");
+  if (!bar) return;
+  const n = selectedCells.size;
+  bar.style.display = n > 0 ? "" : "none";
+  if (count) count.textContent = `${n} ${n === 1 ? "cell" : "cells"} selected`;
+}
+
+// Paint a dot on the 3D surface for every selected cell. Reuses the same
+// projection the surface was drawn with so each dot lands on its cell exactly.
+function updateSelectionMarkers() {
+  const g = document.getElementById("selDots");
+  if (!g) return;
+  if (!tuneProject) {
+    g.innerHTML = "";
+    return;
+  }
+  let out = "";
+  selectedCells.forEach((k) => {
+    const [r, c] = k.split(",").map(Number);
+    if (!currentLock[r]) return;
+    const p = tuneProject(c, r, currentLock[r][c]);
+    out += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.2" fill="#38bdf8" stroke="#fff" stroke-width="1.2"/>`;
+  });
+  g.innerHTML = out;
+}
+
+// Flip select mode on/off, updating the grid, the toggle button, and clearing
+// any selection when leaving the mode.
+function setSelectMode(on) {
+  selectMode = on;
+  const grid = document.getElementById("mapGrid");
+  const btn = document.getElementById("selModeToggle");
+  if (grid) grid.classList.toggle("select-mode", on);
+  if (btn) {
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.textContent = on ? "Selecting - tap cells (done)" : "Select cells";
+  }
+  if (!on) clearSelection();
+}
+
+// Toggle one cell in/out of the selection (a tap while in select mode), so a
+// scattered set of cells can be built up by tapping.
+function toggleCell(rc) {
+  const k = cellKey(rc.r, rc.c);
+  if (selectedCells.has(k)) selectedCells.delete(k);
+  else selectedCells.add(k);
+  applySelectionHighlight();
+}
+
+function initTuneSelection() {
+  const grid = document.getElementById("mapGrid");
+  if (!grid) return;
+
+  const toggle = document.getElementById("selModeToggle");
+  if (toggle) toggle.addEventListener("click", () => setSelectMode(!selectMode));
+
+  // Primary, always-reliable path: a plain click on a cell. Mobile browsers
+  // deliver a click for every tap; the earlier pointer-only approach dropped
+  // taps on touch (the reported bug). In select mode a click toggles the cell
+  // in/out of the selection; otherwise it opens the single-cell editor.
+  grid.addEventListener("click", (e) => {
+    if (suppressClickUntil) {
+      // A gesture (drag or long-press) armed the ghost-click guard. Clear it
+      // unconditionally so it can never leak into a later tap; only swallow THIS
+      // click if it landed inside the ghost window - a click arriving after the
+      // window has lapsed is a genuine tap and must fall through and register.
+      const within = Date.now() < suppressClickUntil;
+      suppressClickUntil = 0;
+      if (within) return;
+    }
+    const rc = getCellRC(e.target);
+    if (!rc) return; // axis-header cells keep their own click handler
+    if (selectMode) {
+      toggleCell(rc);
+    } else {
+      const cell = cellForRC(rc.r, rc.c);
+      if (cell) openEditValue(cell);
+    }
+  });
+
+  // Progressive enhancement: drag to paint a rectangle while in select mode.
+  // Pointer events only, and layered so that if they misbehave on a given
+  // device the click path above still delivers tap-to-select.
+  const onMove = (e) => {
+    if (!selDragging) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const rc = getCellRC(el);
+    if (!rc) return;
+    if (rc.r !== selAnchor.r || rc.c !== selAnchor.c) selMoved = true;
+    // A drag paints a fresh rectangle from the anchor to the current cell.
+    setRectSelection(selAnchor, rc);
+  };
+
+  const teardown = () => {
+    selDragging = false;
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+    document.removeEventListener("pointercancel", onCancel);
+  };
+
+  const onUp = () => {
+    if (!selDragging) return;
+    teardown();
+    // Only a real drag (pointer left the anchor cell) owns the outcome; a tap
+    // that never moved falls through to the click handler above. Suppress the
+    // click that the browser fires after a drag so it can't undo the paint.
+    if (selMoved) armSuppressClick();
+  };
+
+  const onCancel = () => teardown();
+
+  // Long-press a cell (while NOT in select mode) to enter multi-select without
+  // reaching for the toolbar button - the standard mobile gesture. Holding ~450ms
+  // on a cell flips the mode on and seeds the selection with that cell. Any real
+  // finger movement first (a scroll) aborts the press so scrolling still works.
+  let lpTimer = null;
+  let lpStart = null;
+  const cancelLongPress = () => {
+    if (lpTimer) {
+      clearTimeout(lpTimer);
+      lpTimer = null;
+    }
+    lpStart = null;
+    document.removeEventListener("pointermove", onLongPressMove);
+    document.removeEventListener("pointerup", onLongPressEnd);
+    document.removeEventListener("pointercancel", onLongPressEnd);
+  };
+  const onLongPressMove = (e) => {
+    if (!lpStart) return;
+    const dx = e.clientX - lpStart.x;
+    const dy = e.clientY - lpStart.y;
+    if (dx * dx + dy * dy > 100) cancelLongPress(); // moved >10px: treat as scroll
+  };
+  const onLongPressEnd = () => cancelLongPress();
+
+  grid.addEventListener("pointerdown", (e) => {
+    if (!selectMode) {
+      // Arm a long-press to enter select mode; a short tap still edits one cell.
+      const rc = getCellRC(e.target);
+      if (!rc) return;
+      cancelLongPress();
+      lpStart = { x: e.clientX, y: e.clientY };
+      lpTimer = setTimeout(() => {
+        lpTimer = null;
+        cancelLongPress();
+        setSelectMode(true);
+        toggleCell(rc); // seed the selection with the held cell
+        armSuppressClick(); // swallow the click that trails this press, if one comes
+      }, 450);
+      document.addEventListener("pointermove", onLongPressMove);
+      document.addEventListener("pointerup", onLongPressEnd);
+      document.addEventListener("pointercancel", onLongPressEnd);
+      return;
+    }
+    const rc = getCellRC(e.target);
+    if (!rc) return;
+    e.preventDefault(); // claim the gesture so the page doesn't scroll-fight
+    selDragging = true;
+    selMoved = false;
+    selAnchor = rc;
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onCancel);
+  });
+
+  // Belt-and-suspenders for mobile Safari, where touch-action alone doesn't
+  // always stop the scroll: while dragging in select mode, kill touchmove.
+  grid.addEventListener(
+    "touchmove",
+    (e) => {
+      if (selectMode && selDragging) e.preventDefault();
+    },
+    { passive: false },
+  );
+}
+
+// Open the editor to set one value across the whole selection.
+function openEditSelection() {
+  if (selectedCells.size === 0) return;
+  editMultiMode = true;
+  currentEditCell = null;
+  const modal = document.getElementById("editModal");
+  const input = document.getElementById("editValue");
+  document.getElementById("editModalTitle").textContent =
+    `Set ${selectedCells.size} ${selectedCells.size === 1 ? "cell" : "cells"} (Lock %)`;
+  input.value = "";
+  modal.classList.add("active");
+  input.focus();
+}
+
+// Box-smooth: each selected cell becomes the average of itself and its four
+// orthogonal neighbours. Reads from a snapshot so the pass isn't biased by
+// cells already smoothed this round. With no selection, smooths the whole map.
+function smoothSelection() {
+  const keys = selectedCells.size
+    ? [...selectedCells]
+    : (() => {
+        const all = [];
+        for (let r = 0; r < arrayRows; r++)
+          for (let c = 0; c < arrayColumns; c++) all.push(cellKey(r, c));
+        return all;
+      })();
+  const src = currentLock.map((row) => row.slice());
+  keys.forEach((k) => {
+    const [r, c] = k.split(",").map(Number);
+    let sum = src[r][c], n = 1;
+    [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([dr, dc]) => {
+      const rr = r + dr, cc = c + dc;
+      if (rr >= 0 && rr < arrayRows && cc >= 0 && cc < arrayColumns) {
+        sum += src[rr][cc];
+        n++;
+      }
+    });
+    const v = Math.round(Math.max(0, Math.min(100, sum / n)));
+    currentLock[r][c] = v;
+    const cell = cellForRC(r, c);
+    if (cell) {
+      cell.textContent = String(v);
+      updateCellColor(cell, v);
+    }
+  });
+  drawTuneChart();
 }
 
 // find array position from a value
@@ -1230,9 +1989,7 @@ function arrayIndex(value, array) {
 function refreshTrace(data) {
   const cell = [...document.querySelectorAll(".map-cell")]; // find all the cells in the grid (as an array)
 
-  for (i in cell) {
-    cell[i].classList.remove("activeTrace"); // remove the active trace from all cells (so only the current one is highlighted)
-  }
+  cell.forEach((c) => c.classList.remove("activeTrace")); // clear the active trace from every cell so only the current one stays highlighted
 
   if (
     data.speed === undefined ||
@@ -1300,9 +2057,32 @@ function openEditValue(cell) {
 function cancelEdit() {
   document.getElementById("editModal").classList.remove("active");
   currentEditCell = null;
+  editMultiMode = false;
 }
 
 function confirmEdit() {
+  // Multi-cell: apply one lock value across the whole selection.
+  if (editMultiMode) {
+    const value = parseInt(document.getElementById("editValue").value);
+    if (isNaN(value) || value < 0 || value > 100) {
+      showNotification("Value must be between 0 and 100", "error");
+      return;
+    }
+    selectedCells.forEach((k) => {
+      const [r, c] = k.split(",").map(Number);
+      if (!currentLock[r]) return;
+      currentLock[r][c] = value;
+      const cell = cellForRC(r, c);
+      if (cell) {
+        cell.textContent = String(value);
+        updateCellColor(cell, value);
+      }
+    });
+    cancelEdit();
+    drawTuneChart();
+    return;
+  }
+
   if (!currentEditCell) return;
 
   const currentCell = document.getElementById("editValue"); // find the current edit cell
@@ -1339,36 +2119,742 @@ function confirmEdit() {
 
   currentEditCell.textContent = value;
   cancelEdit();
-  drawTuneChart(); // keep the 3D surface in sync with the edited cell/axis
+  drawTuneChart(); // keep the surface in sync with the edited cell/axis
 }
 // end tune edit
 
 function restoreDefaults() {
-  // todo - redraw the map-grid
-  for (let throttle = 0; throttle < arrayRows; throttle++) {
-    throttleHeader[throttle] = defaultThrottleHeader[throttle];
+  // One tap away from Apply and it discards the whole in-editor tune - make
+  // sure it was meant. (The device tune is untouched until Apply is hit.)
+  if (!confirm("Replace the current editor tune with the factory default map? Your edits are lost unless already applied or saved to a slot.")) {
+    return;
   }
+  applyMapToEditor(defaultSpeedHeader, defaultThrottleHeader, defaultLock);
+}
 
-  for (let speed = 0; speed < arrayColumns; speed++) {
-    speedHeader[speed] = defaultSpeedHeader[speed];
+// Load a map (axes + lock table) into the editor: repaint the grid, drop any
+// selection, and redraw the 3D surface. This does NOT push to the ESP - the
+// device holds one tune, committed only when the user hits Apply.
+function applyMapToEditor(speed, throttle, lock) {
+  speedHeader = speed.slice();
+  throttleHeader = throttle.slice();
+  currentLock = lock.map((r) => r.slice());
+  buildMapGrid();
+  clearSelection();
+  drawTuneChart();
+}
+
+// ---- Map library: on-device saved slots ------------------------------------
+// Saved slots live on the ESP itself (a small fixed set of named slots in device
+// NVS), so a tune saved from one phone is visible from any phone that connects.
+// Loading a slot only fills the editor; the ESP's live tune is committed only
+// when the user hits Apply. There is no phone-side storage and no file
+// import/export - the device is the single source of truth.
+
+// Cache of the device's slot list ([{index, name, used}, ...]) plus the max
+// name length the device accepts. Refreshed from GET /api/maps whenever the
+// dropdown repopulates so Save/Load/Delete act on current device state.
+let deviceSlots = [];
+let deviceNameMax = 23;
+
+async function fetchDeviceSlots() {
+  const data = await fetchJson("/api/maps");
+  if (data && Array.isArray(data.slots)) {
+    deviceSlots = data.slots;
+    if (Number.isFinite(data.nameMax)) deviceNameMax = data.nameMax;
+  } else {
+    deviceSlots = []; // device unreachable - show presets only
   }
+  return deviceSlots;
+}
 
-  const cell = [...document.querySelectorAll(".map-cell")];
-  let i = 0;
-  for (let throttle = 0; throttle < arrayRows; throttle++) {
-    for (let speed = 0; speed < arrayColumns; speed++) {
-      currentLock[throttle][speed] = defaultLock[throttle][speed];
-      cell[i].textContent = String(currentLock[throttle][speed]);
-      updateCellColor(cell[i], currentLock[throttle][speed]);
-      i++;
+// Validate a map has 7x7 dims with strictly-ascending, finite axes and 0..100
+// lock values. Returns a normalised {speed,throttle,lock} or null. This mirrors
+// the firmware's ascending-axis guard so an imported map can't mis-interpolate.
+function validateMap(m) {
+  if (!m || !Array.isArray(m.speed) || !Array.isArray(m.throttle) || !Array.isArray(m.lock))
+    return null;
+  if (m.speed.length !== arrayColumns || m.throttle.length !== arrayRows) return null;
+  if (m.lock.length !== arrayRows) return null;
+  const speed = m.speed.map(Number);
+  const throttle = m.throttle.map(Number);
+  const asc = (a) =>
+    a.every((v, i) => Number.isFinite(v) && (i === 0 || v > a[i - 1]));
+  if (!asc(speed) || !asc(throttle)) return null;
+  const lock = [];
+  for (let r = 0; r < arrayRows; r++) {
+    if (!Array.isArray(m.lock[r]) || m.lock[r].length !== arrayColumns) return null;
+    lock[r] = m.lock[r].map((v) => {
+      const n = Math.round(Number(v));
+      return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
+    });
+  }
+  return { speed, throttle, lock };
+}
+
+// Rebuild the dropdown from the device's saved slots. Slot options carry value
+// "slot:N" (N = device slot index). Empty slots are shown greyed as "Slot N
+// (empty)" so the user can see how many of the fixed slots remain.
+async function populateMapDropdown(selectValue) {
+  const sel = document.getElementById("mapPreset");
+  if (!sel) return;
+  await fetchDeviceSlots();
+  sel.innerHTML = "";
+
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "Select a map...";
+  sel.appendChild(ph);
+
+  // Only device slots live here now, so list them directly - no optgroup
+  // heading (with presets gone there is nothing to distinguish it from).
+  // Empty slots stay SELECTABLE (not disabled): the dropdown doubles as the
+  // "which slot do I save to?" picker, so the user must be able to pick an
+  // empty slot as a Save target. Load/Delete reject an empty selection at
+  // click time, so nothing breaks by leaving them enabled.
+  deviceSlots.forEach((slot) => {
+    const o = document.createElement("option");
+    o.value = "slot:" + slot.index;
+    o.textContent = slot.used
+      ? `Slot ${slot.index + 1}: ${slot.name}`
+      : `Slot ${slot.index + 1} (empty)`;
+    sel.appendChild(o);
+  });
+
+  if (selectValue) sel.value = selectValue;
+}
+
+async function loadSelectedMap() {
+  const sel = document.getElementById("mapPreset");
+  if (!sel || !sel.value) {
+    showNotification("Pick a map to load first", "error");
+    return;
+  }
+  const key = sel.value.slice(sel.value.indexOf(":") + 1);
+
+  // Device slot: pull the tune off the ESP, then drop it into the editor.
+  const data = await fetchJson("/api/maps/get?index=" + encodeURIComponent(key));
+  if (!data || !data.ok) {
+    showNotification("That slot is empty", "error");
+    return;
+  }
+  const m = validateMap({
+    speed: data.speedArray,
+    throttle: data.throttleArray,
+    lock: data.lockArray,
+  });
+  if (!m) {
+    showNotification("Stored map is invalid", "error");
+    return;
+  }
+  applyMapToEditor(m.speed, m.throttle, m.lock);
+  showNotification(`Loaded "${data.name}" - hit Apply to keep it`);
+}
+
+// Save the editor's current map into a device slot. Targets the selected slot if
+// one is picked, otherwise the first free slot; if all slots are full and none
+// is selected, tells the user to pick one to overwrite.
+async function saveMapAs() {
+  const sel = document.getElementById("mapPreset");
+  let targetIndex = -1;
+
+  if (sel && sel.value.startsWith("slot:")) {
+    targetIndex = parseInt(sel.value.slice(5), 10);
+  } else {
+    const free = deviceSlots.find((s) => !s.used);
+    if (free) {
+      targetIndex = free.index;
+    } else {
+      showNotification(
+        "All slots full - select a slot in the list to overwrite",
+        "error",
+      );
+      return;
     }
   }
+
+  const existing = deviceSlots.find((s) => s.index === targetIndex);
+  if (existing && existing.used) {
+    if (!confirm(`Overwrite "${existing.name}" (slot ${targetIndex + 1})?`))
+      return;
+  }
+
+  let name = (prompt("Save map as:", existing && existing.used ? existing.name : "") || "").trim();
+  if (!name) return;
+  if (name.length > deviceNameMax) name = name.slice(0, deviceNameMax);
+
+  const res = await fetchJson("/api/maps/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      index: targetIndex,
+      name,
+      speedArray: speedHeader,
+      throttleArray: throttleHeader,
+      lockArray: currentLock.map((r) => r),
+    }),
+  });
+  if (res && res.ok) {
+    await populateMapDropdown("slot:" + targetIndex);
+    showNotification(`Saved "${name}" to slot ${targetIndex + 1}`);
+  } else {
+    showNotification((res && res.error) || "Save failed", "error");
+  }
+}
+
+async function deleteSelectedMap() {
+  const sel = document.getElementById("mapPreset");
+  if (!sel || !sel.value.startsWith("slot:")) {
+    showNotification("Pick a saved slot to delete", "error");
+    return;
+  }
+  const idx = parseInt(sel.value.slice(5), 10);
+  const slot = deviceSlots.find((s) => s.index === idx);
+  if (!slot || !slot.used) {
+    showNotification("That slot is already empty", "error");
+    return;
+  }
+  if (!confirm(`Delete "${slot.name}" from slot ${idx + 1}?`)) return;
+
+  const res = await fetchJson("/api/maps/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index: idx }),
+  });
+  if (res && res.ok) {
+    await populateMapDropdown("");
+    showNotification(`Deleted slot ${idx + 1}`);
+  } else {
+    showNotification("Delete failed", "error");
+  }
+}
+
+function initMapManager() {
+  populateMapDropdown("");
+  const bind = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("click", fn);
+  };
+  bind("mapLoad", loadSelectedMap);
+  bind("mapSaveAs", saveMapAs);
+  bind("mapDelete", deleteSelectedMap);
+}
+
+// ---- Dashboard: user-selectable glance tiles -------------------------------
+// The glance grid holds a fixed catalogue of tiles (each carries data-signal).
+// The user picks which ones show; the choice persists in this browser. Values
+// are still populated by refreshStatus regardless - we only toggle visibility.
+
+const DASH_TILE_KEY = "ohEdgeDashTiles";
+
+// id -> label, in grid order. Keep in sync with the data-signal attributes in
+// index.html's glance grid.
+const DASH_SIGNALS = [
+  { id: "udsClutchTemp", label: "Clutch Temp" },
+  { id: "udsModuleTemp", label: "Module Temp" },
+  { id: "udsCoolingFinTemp", label: "Cooling Fin" },
+  { id: "speed", label: "Speed" },
+  { id: "throttle", label: "Throttle" },
+  { id: "rpm", label: "RPM" },
+  { id: "boost", label: "Boost" },
+  { id: "haldexEngagement", label: "Reported lock" },
+  { id: "udsClutchPWM", label: "Clutch PWM" },
+  { id: "steeringAngle", label: "Steering" },
+  { id: "steeringGainNow", label: "Steer Gain" },
+];
+
+const DASH_DEFAULT_ON = [
+  "udsClutchTemp",
+  "udsModuleTemp",
+  "udsCoolingFinTemp",
+  "speed",
+  "throttle",
+  "boost",
+  "haldexEngagement",
+  "rpm",
+];
+
+function loadDashSelection() {
+  try {
+    const raw = localStorage.getItem(DASH_TILE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr);
+    }
+  } catch (e) {
+    /* fall through to defaults */
+  }
+  return new Set(DASH_DEFAULT_ON);
+}
+
+function saveDashSelection(set) {
+  try {
+    localStorage.setItem(DASH_TILE_KEY, JSON.stringify([...set]));
+  } catch (e) {
+    /* storage full/blocked - selection just won't persist */
+  }
+}
+
+function applyDashSelection(set) {
+  DASH_SIGNALS.forEach((sig) => {
+    const tile = document.querySelector(
+      `.glance-card [data-signal="${sig.id}"]`,
+    );
+    if (tile) tile.style.display = set.has(sig.id) ? "" : "none";
+  });
+}
+
+function buildDashCustomizer(set) {
+  const host = document.getElementById("dashTileOptions");
+  if (!host) return;
+  host.innerHTML = "";
+  DASH_SIGNALS.forEach((sig) => {
+    const label = document.createElement("label");
+    label.className = "tile-opt";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = set.has(sig.id);
+    cb.addEventListener("change", () => {
+      if (cb.checked) set.add(sig.id);
+      else set.delete(sig.id);
+      saveDashSelection(set);
+      applyDashSelection(set);
+    });
+    const span = document.createElement("span");
+    span.textContent = sig.label;
+    label.appendChild(cb);
+    label.appendChild(span);
+    host.appendChild(label);
+  });
+}
+
+function initDashTiles() {
+  const set = loadDashSelection();
+  applyDashSelection(set);
+  buildDashCustomizer(set);
+}
+
+// ---- Tune surface (pseudo-3D) ----------------------------------------------
+// Renders currentLock as an isometric SVG surface: speed and throttle are the
+// two ground axes, lock% is the height, and each facet is shaded on the same
+// green -> amber -> red heat ramp as the editor grid so the table and the
+// surface read the same. A dot rides the surface at the live operating point.
+// Plain SVG, no libraries - the page ships from the ESP32's flash.
+let lastDashData = null;
+
+// Projection closure built by drawTuneChart and reused by updateChartMarker so
+// the live dot lands on exactly the surface that was drawn.
+let tuneProject = null;
+
+// Heat ramp shared by the surface and the editor grid: green (low lock) through
+// amber to red (high lock). Returns an "r,g,b" triple for a 0..1 fraction.
+function heatRGB(frac) {
+  const stops = [
+    [16, 185, 129],  // green (#10b981) - low lock
+    [245, 158, 11],  // amber (#f59e0b) - mid
+    [220, 38, 38],   // red   (#dc2626) - high lock
+  ];
+  const f = Math.min(1, Math.max(0, frac));
+  const pos = f * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(pos));
+  const t = pos - i;
+  const mix = stops[i].map((c, k) => Math.round(c + (stops[i + 1][k] - c) * t));
+  return `${mix[0]},${mix[1]},${mix[2]}`;
+}
+
+// Linear interpolation helper over an ascending header array. Returns the
+// fractional index for a value, clamped to the ends (mirrors the firmware's
+// bracket scan).
+function fracIndex(value, header) {
+  if (value <= header[0]) return 0;
+  const last = header.length - 1;
+  if (value >= header[last]) return last;
+  for (let i = 0; i < last; i++) {
+    if (value < header[i + 1]) {
+      return i + (value - header[i]) / (header[i + 1] - header[i]);
+    }
+  }
+  return last;
+}
+
+function initTuneChart() {
   drawTuneChart();
+}
+
+function drawTuneChart() {
+  const host = document.getElementById("tuneChart");
+  const legend = document.getElementById("chartLegend");
+  if (!host) return;
+
+  const cols = speedHeader.length;    // speed breakpoints (c axis)
+  const rows = throttleHeader.length; // throttle breakpoints (r axis)
+  const W = 340, H = 250;
+
+  // Perspective camera. The grid lies flat on the ground (speed = x across,
+  // throttle = depth into the scene), lock lifts straight up. We yaw the ground
+  // clockwise, tilt the camera down to a 3/4 view, then divide by depth so the
+  // far edge converges. That convergence is what makes the surface read as
+  // sitting flat on the ground - a parallel projection keeps the far edge as
+  // wide as the near one, which is why it looked like it was floating.
+  const yaw = -30 * Math.PI / 180;  // counter-clockwise orbit of the ground plane
+  const pitch = 26 * Math.PI / 180; // camera tilt: 90 = top-down, 0 = side-on; ~26 = front 3/4
+  const sinYaw = Math.sin(yaw), cosYaw = Math.cos(yaw);
+  const sinPit = Math.sin(pitch), cosPit = Math.cos(pitch);
+  const midC = (cols - 1) / 2, midR = (rows - 1) / 2;
+  const heightUnits = (cols - 1) * 0.6; // full-lock peak height in grid units
+  const camDist = (cols - 1) * 2.4;     // smaller = stronger perspective
+  // Returns screen x/y (pre-fit) plus camera depth for painter ordering.
+  const world = (c, r, lock) => {
+    const gx = c - midC;                  // centre the grid so it rotates in place
+    const gy = r - midR;
+    const gz = (lock / 100) * heightUnits;
+    const x = gx * cosYaw + gy * sinYaw;  // yaw about the vertical axis
+    const y = -gx * sinYaw + gy * cosYaw;
+    const up = gz * cosPit + y * sinPit;      // screen-up: height, plus receding ground
+    const depth = y * cosPit - gz * sinPit;   // into the scene: far ground, less for peaks
+    const persp = camDist / (camDist + depth);
+    return { x: x * persp, y: -up * persp, depth };
+  };
+
+  // Fit the whole surface (plus its lock-0 floor corners) into the viewBox by
+  // measuring the projected bounding box, then scaling and centring to it.
+  const pts = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) pts.push(world(c, r, currentLock[r][c]));
+  }
+  pts.push(world(0, 0, 0), world(cols - 1, 0, 0), world(0, rows - 1, 0), world(cols - 1, rows - 1, 0));
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  pts.forEach((p) => {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  });
+  const mX = 16, mTop = 12, mBot = 30; // room for the axis captions along the base
+  const scale = Math.min((W - 2 * mX) / (maxX - minX || 1), (H - mTop - mBot) / (maxY - minY || 1));
+  const ox = (W - (maxX - minX) * scale) / 2 - minX * scale;
+  const oy = mTop - minY * scale;
+  tuneProject = (c, r, lock) => {
+    const w = world(c, r, lock);
+    return { x: ox + w.x * scale, y: oy + w.y * scale };
+  };
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Lock map surface: speed and throttle on the ground, lock percent as height">`;
+
+  // Facets painter-ordered far-to-near by camera depth so nearer cells overdraw
+  // farther ones. Each facet is shaded by the mean lock of its corners. The fill
+  // is translucent and every facet carries a light gridline edge: where a peak
+  // overhangs a dip behind it the stacked fills composite toward opaque, so the
+  // wireframe edges are what keep the hidden dip readable through the surface.
+  const facets = [];
+  for (let r = 0; r < rows - 1; r++) {
+    for (let c = 0; c < cols - 1; c++) {
+      const depth =
+        (world(c, r, currentLock[r][c]).depth +
+          world(c + 1, r, currentLock[r][c + 1]).depth +
+          world(c, r + 1, currentLock[r + 1][c]).depth +
+          world(c + 1, r + 1, currentLock[r + 1][c + 1]).depth) / 4;
+      facets.push({ r, c, depth });
+    }
+  }
+  facets.sort((a, b) => b.depth - a.depth);
+  facets.forEach(({ r, c }) => {
+    const corners = [[r, c], [r, c + 1], [r + 1, c + 1], [r + 1, c]];
+    const poly = corners
+      .map(([rr, cc]) => {
+        const p = tuneProject(cc, rr, currentLock[rr][cc]);
+        return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+      })
+      .join(" ");
+    const avg = (currentLock[r][c] + currentLock[r][c + 1] + currentLock[r + 1][c] + currentLock[r + 1][c + 1]) / 4;
+    svg += `<polygon points="${poly}" fill="rgb(${heatRGB(avg / 100)})" fill-opacity="0.55" stroke="rgba(0,0,0,0.7)" stroke-width="0.5" stroke-linejoin="round"/>`;
+  });
+
+  // Floor footprint: outline the full lock-0 square under the surface, then drop
+  // a dotted line from each surface corner down to the matching base corner so
+  // the height of the four corners reads against the ground.
+  const floorPt = (c, r) => tuneProject(c, r, 0);
+  const fc = {
+    near:  floorPt(0, rows - 1),          // speed 0,   throttle max (front-left)
+    right: floorPt(cols - 1, rows - 1),   // speed max, throttle max (front-right)
+    back:  floorPt(cols - 1, 0),          // speed max, throttle 0   (back-right)
+    left:  floorPt(0, 0),                 // speed 0,   throttle 0   (back-left)
+  };
+  const floorLine = (pa, pb) =>
+    `<line x1="${pa.x.toFixed(1)}" y1="${pa.y.toFixed(1)}" x2="${pb.x.toFixed(1)}" y2="${pb.y.toFixed(1)}" stroke="#4b5563" stroke-width="1"/>`;
+  svg += floorLine(fc.left, fc.back) + floorLine(fc.back, fc.right) +
+         floorLine(fc.right, fc.near) + floorLine(fc.near, fc.left);
+
+  const corners3d = [[0, 0], [cols - 1, 0], [0, rows - 1], [cols - 1, rows - 1]];
+  corners3d.forEach(([c, r]) => {
+    const topP = tuneProject(c, r, currentLock[r][c]);
+    const footP = tuneProject(c, r, 0);
+    svg += `<line x1="${footP.x.toFixed(1)}" y1="${footP.y.toFixed(1)}" x2="${topP.x.toFixed(1)}" y2="${topP.y.toFixed(1)}" stroke="#6b7280" stroke-width="0.8" stroke-dasharray="2 2"/>`;
+  });
+
+  const speedEdge = { pa: fc.near, pb: fc.right };
+  const throttleEdge = { pa: fc.back, pb: fc.right };
+
+  // Axis captions just outside their edge midpoints, and the end values so the
+  // surface reads with real numbers rather than bare geometry.
+  const speedMid = tuneProject((cols - 1) / 2, rows - 1, 0);
+  const throttleMid = tuneProject(cols - 1, (rows - 1) / 2, 0);
+  svg += `<text x="${speedMid.x.toFixed(1)}" y="${(speedMid.y + 16).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="#9ca3af">SPEED (KM/H)</text>`;
+  svg += `<text x="${(throttleMid.x + 6).toFixed(1)}" y="${(throttleMid.y + 14).toFixed(1)}" text-anchor="start" font-size="8" font-weight="700" fill="#9ca3af">THROTTLE (%)</text>`;
+  svg += `<text x="${(speedEdge.pa.x - 3).toFixed(1)}" y="${(speedEdge.pa.y + 10).toFixed(1)}" text-anchor="end" font-size="7.5" fill="#6b7280">${speedHeader[0]}</text>`;
+  svg += `<text x="${(speedEdge.pb.x + 3).toFixed(1)}" y="${(speedEdge.pb.y + 10).toFixed(1)}" text-anchor="start" font-size="7.5" fill="#6b7280">${speedHeader[cols - 1]}</text>`;
+  svg += `<text x="${(throttleEdge.pa.x + 4).toFixed(1)}" y="${(throttleEdge.pa.y + 2).toFixed(1)}" text-anchor="start" font-size="7.5" fill="#6b7280">${throttleHeader[0]}</text>`;
+
+  // Live operating point: a dashed stem from the floor up to a dot riding the
+  // surface. Both are positioned by updateChartMarker.
+  svg += `<line id="chartMarkerStem" stroke="#fff" stroke-width="1" stroke-dasharray="2 2" visibility="hidden"/>`;
+  svg += `<circle id="chartMarker" r="4" fill="#dc2626" stroke="#fff" stroke-width="1.5" visibility="hidden"/>`;
+  // Dots for the currently selected editor cells, filled by updateSelectionMarkers.
+  svg += `<g id="selDots"></g>`;
+  svg += `</svg>`;
+
+  host.innerHTML = svg;
+
+  if (legend) {
+    legend.innerHTML =
+      `<div class="chart-legend-caption">Lock % (surface height &amp; colour)</div>` +
+      `<div class="chart-legend-bar" style="background:linear-gradient(90deg, rgb(${heatRGB(0)}), rgb(${heatRGB(0.5)}), rgb(${heatRGB(1)}))"></div>` +
+      `<div class="chart-legend-scale"><span>0</span><span>50</span><span>100</span></div>`;
+  }
+  updateChartMarker();
+  updateSelectionMarkers();
+}
+
+function updateChartMarker() {
+  const marker = document.getElementById("chartMarker");
+  const stem = document.getElementById("chartMarkerStem");
+  if (!marker || !tuneProject || !lastDashData) return;
+
+  const speed = Number(lastDashData.speed);
+  const throttle = Number(lastDashData.throttle);
+  if (Number.isNaN(speed) || Number.isNaN(throttle)) {
+    marker.setAttribute("visibility", "hidden");
+    if (stem) stem.setAttribute("visibility", "hidden");
+    return;
+  }
+
+  const c = fracIndex(speed, speedHeader);
+  const r = fracIndex(throttle, throttleHeader);
+
+  // Land the dot on the drawn surface by bilinearly blending the four projected
+  // facet corners it sits between, so it rides the rendered grid exactly rather
+  // than floating above it.
+  const c0 = Math.floor(c), c1 = Math.min(speedHeader.length - 1, c0 + 1), tc = c - c0;
+  const r0 = Math.floor(r), r1 = Math.min(throttleHeader.length - 1, r0 + 1), tr = r - r0;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const blend = (q00, q10, q01, q11) => ({
+    x: lerp(lerp(q00.x, q10.x, tc), lerp(q01.x, q11.x, tc), tr),
+    y: lerp(lerp(q00.y, q10.y, tc), lerp(q01.y, q11.y, tc), tr),
+  });
+  const corner = (cc, rr) => tuneProject(cc, rr, currentLock[rr][cc]);
+  const top = blend(corner(c0, r0), corner(c1, r0), corner(c0, r1), corner(c1, r1));
+  // Blend the projected floor corners the same way, so the stem foot rides the
+  // drawn floor grid lines instead of the perspective-curved path a fractional
+  // tuneProject(c, r, 0) would take, which drifts off the straight mesh edges.
+  const floor = (cc, rr) => tuneProject(cc, rr, 0);
+  const foot = blend(floor(c0, r0), floor(c1, r0), floor(c0, r1), floor(c1, r1));
+
+  marker.setAttribute("cx", top.x.toFixed(1));
+  marker.setAttribute("cy", top.y.toFixed(1));
+  marker.setAttribute("visibility", "visible");
+  if (stem) {
+    stem.setAttribute("x1", foot.x.toFixed(1));
+    stem.setAttribute("y1", foot.y.toFixed(1));
+    stem.setAttribute("x2", top.x.toFixed(1));
+    stem.setAttribute("y2", top.y.toFixed(1));
+    stem.setAttribute("visibility", "visible");
+  }
+}
+
+// PAL-friendly explainers for the Calibrate tab. Keyed by the data-info value on
+// each .calib-info button; opened in the shared #calibInfoModal. Kept as plain
+// strings (no HTML) so the copy stays readable and can't inject markup.
+const CALIB_INFO = {
+  gen: {
+    title: "Generation",
+    body:
+      "This tells the controller which type of Haldex is fitted to your car. It sets how the controller reads the Haldex over CAN and how it commands lock.\n\n" +
+      "It MUST match your car. If it is wrong, lock control will not work at all.\n\n" +
+      "MQB cars (e.g. Mk3 TT, 8V S3, MQB Golf R) are Generation 5 (0CQ). The 0AY variant is the older PQ-derived unit. If you are not sure, check what Haldex generation your car uses before changing anything else.",
+  },
+  learn: {
+    title: "Learn Haldex",
+    body:
+      "Every Haldex responds slightly differently. The Learn finds out how YOUR one behaves so that when you ask for a lock amount, you actually get it.\n\n" +
+      "It slowly steps the command from 0% up to 100% and records how much the Haldex actually engages at each step, building a calibration table that replaces the built-in estimate.\n\n" +
+      "How to run it:\n" +
+      "1. Engine running.\n" +
+      "2. Car stationary (it stops itself if you move off).\n" +
+      "3. Haldex CAN connected and healthy.\n" +
+      "4. Press Learn Haldex and wait - it takes a couple of minutes.\n\n" +
+      "Until you have run a Learn, the controller is guessing, and the car usually drives BETTER left in Stock than run uncalibrated.",
+  },
+  ceiling: {
+    title: "Lock calibration",
+    body:
+      "This lines up the lock you ask for with the lock the Haldex actually delivers, so 50% means 50%.\n\n" +
+      "It is NOT a power or strength dial, and it is NOT your engine's torque. There is one correct value: the one where commanded and delivered match 1:1.\n\n" +
+      "How to set it: run a Learn, look at the chart, and adjust this until the Sent vs Returned line sits on the dashed 1:1 diagonal.\n\n" +
+      "Higher is not better. Too high and the coupling grabs early and slams shut; too low and it under-delivers. Once set, it applies whenever you drive.",
+  },
+  floor: {
+    title: "Launch PWM floor (experimental)",
+    body:
+      "Optional, experimental. It holds a minimum clutch PWM (solenoid duty) while lock is commanded, so engagement builds faster off the line - closer to what Stock reaches under launch.\n\n" +
+      "0% = off (default, unchanged behaviour). Leave it there unless you specifically want a firmer launch.\n\n" +
+      "It only applies while lock is actually commanded - off-throttle, FWD, and coasting still open the clutch, so it does not force the car to be always-engaged.\n\n" +
+      "How to tune it: watch the Clutch PWM readout on the Dashboard and raise this until PWM climbs to where you want. If it grabs mid-corner, back it off. It is a floor only - the Haldex still modulates above it.",
+  },
+};
+
+// Whether the current session has dismissed the not-calibrated banner. Resets on
+// reload so an uncalibrated car nags again next time the UI is opened.
+let calibBannerDismissed = false;
+
+// Monotonic revision so a slow in-flight /api/learn/status response can't clobber
+// a newer state. Every call to applyCalibrationState bumps it; async reads capture
+// the value before their fetch and only apply if it's still current (see
+// applyCalibrationStateFromFetch).
+let calibStateRev = 0;
+
+// Apply a calibration state read from an async /api/learn/status fetch, but only
+// if no newer authoritative update landed while the request was in flight. Callers
+// capture calibStateRev before the fetch and pass it here on resolve.
+function applyCalibrationStateFromFetch(tableValid, revAtRequest) {
+  if (revAtRequest !== calibStateRev) return; // a newer update already won
+  applyCalibrationState(tableValid);
+}
+
+// Single source of truth for the calibrated/uncalibrated UI state. Driven by the
+// tableValid flag from /api/learn/status, called from every place that resolves
+// it (page load, learn complete, clear). Updates both the Dashboard banner and
+// the Calibrate-tab status chip so they never disagree.
+function applyCalibrationState(tableValid) {
+  calibStateRev++; // this is now the latest word; invalidate older in-flight reads
+  const banner = document.getElementById("calibBanner");
+  if (banner) {
+    const show = !tableValid && !calibBannerDismissed;
+    banner.hidden = !show;
+  }
+
+  const chip = document.getElementById("calibStatusChip");
+  const chipText = document.getElementById("calibStatusChipText");
+  if (chip && chipText) {
+    if (tableValid) {
+      chip.classList.remove("uncalibrated");
+      chip.classList.add("calibrated");
+      chipText.textContent = "Calibrated - learn table active";
+    } else {
+      chip.classList.remove("calibrated");
+      chip.classList.add("uncalibrated");
+      chipText.textContent = "Not calibrated - run the Learn (results worse than Stock until you do)";
+    }
+  }
+}
+
+// initialise the Calibrate tab: info modals, the not-calibrated banner controls,
+// and an initial calibration-state read.
+function initCalibrate() {
+  const modal   = document.getElementById("calibInfoModal");
+  const title   = document.getElementById("calibInfoTitle");
+  const body    = document.getElementById("calibInfoBody");
+  const btnClose = document.getElementById("calibInfoClose");
+
+  // The (i) button that opened the modal, so focus can be restored on close.
+  let infoTrigger = null;
+
+  function openInfo(key, trigger) {
+    const info = CALIB_INFO[key];
+    if (!info || !modal) return;
+    infoTrigger = trigger || null;
+    title.textContent = info.title;
+    // Preserve paragraph breaks from the copy without injecting HTML.
+    body.textContent = "";
+    info.body.split("\n\n").forEach((para) => {
+      const p = document.createElement("p");
+      p.textContent = para;
+      body.appendChild(p);
+    });
+    modal.classList.add("active");
+    if (btnClose) btnClose.focus(); // move focus into the dialog
+  }
+
+  function closeInfo() {
+    if (modal) modal.classList.remove("active");
+    // Return focus to the (i) button the user came from.
+    if (infoTrigger) infoTrigger.focus();
+    infoTrigger = null;
+  }
+
+  document.querySelectorAll(".calib-info").forEach((btn) => {
+    btn.addEventListener("click", () => openInfo(btn.dataset.info, btn));
+  });
+  if (btnClose) btnClose.addEventListener("click", closeInfo);
+  if (modal) {
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closeInfo(); // tap the backdrop to dismiss
+    });
+    // Keyboard support while the dialog is open: Escape closes it, Tab is
+    // trapped so focus can't wander to the page behind the backdrop.
+    modal.addEventListener("keydown", (e) => {
+      if (!modal.classList.contains("active")) return;
+      if (e.key === "Escape") {
+        closeInfo();
+        return;
+      }
+      if (e.key === "Tab") {
+        const focusable = modal.querySelectorAll(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    });
+  }
+
+  // Not-calibrated Dashboard banner controls.
+  const dismissBtn = document.getElementById("calibBannerDismiss");
+  const openBtn    = document.getElementById("calibBannerOpen");
+  if (dismissBtn) {
+    dismissBtn.addEventListener("click", () => {
+      calibBannerDismissed = true;
+      const banner = document.getElementById("calibBanner");
+      if (banner) banner.hidden = true;
+    });
+  }
+  if (openBtn) {
+    openBtn.addEventListener("click", () => {
+      const tab = document.querySelector('.nav-tab[data-page="calibrate"]');
+      if (tab) tab.click();
+    });
+  }
+
+  // Seed the initial state; initLearn's own status reads keep it current after.
+  // Guarded so a slow response can't overwrite a newer state set by the learn
+  // poll or a clear that resolved first.
+  const seedRev = calibStateRev;
+  fetchJson("/api/learn/status").then((data) => {
+    if (data) applyCalibrationStateFromFetch(!!data.tableValid, seedRev);
+  });
 }
 
 // initialise Learn Haldex UI
 function initLearn() {
   let learnPollInterval = null;
+  let pollInFlight = false;
 
   const statusText    = document.getElementById("learnStatusText");
   const progressWrap  = document.getElementById("learnProgressWrap");
@@ -1415,26 +2901,41 @@ function initLearn() {
   }
 
   async function pollStatus() {
-    const data = await fetchJson("/api/learn/status");
-    if (!data) return;
+    // one poll at a time, and bound a stalled request, so the 100ms interval
+    // can't stack requests and flood the async web server (same as refreshStatus)
+    if (pollInFlight) return;
+    pollInFlight = true;
+    const ctrl = new AbortController();
+    const pollTimeout = setTimeout(() => ctrl.abort(), POLL_TIMEOUT_MS);
+    try {
+      const data = await fetchJson("/api/learn/status", { signal: ctrl.signal });
+      if (!data) return; // fetch failed or timed out - skip this cycle
 
-    const pct = Math.min(100, Math.round(data.progress));
-    setProgress(pct);
-    setTracking(data.currentCF ?? 0, data.currentEng ?? 0);
+      const pct = Math.min(100, Math.round(data.progress));
+      setProgress(pct);
+      setTracking(data.currentCF ?? 0, data.currentEng ?? 0);
 
-    if (!data.active) {
-      stopPolling();
-      if (data.progress === 102) {
-        statusText.textContent = "No Haldex CAN data recorded - check connection";
-        statusText.style.color = "var(--danger)";
-      } else if (data.tableValid) {
-        statusText.textContent = "Learn complete \u2713 - calibration table active";
-        statusText.style.color = "var(--success)";
-        renderLearnChart(data.table);
-      } else {
-        statusText.textContent = "Learn cancelled or failed";
-        statusText.style.color = "var(--warning)";
+      if (!data.active) {
+        stopPolling();
+        if (data.progress === 102) {
+          statusText.textContent = "No Haldex CAN data recorded - check connection";
+          statusText.style.color = "var(--danger)";
+        } else if (data.progress === 103) {
+          statusText.textContent = "Learn aborted - vehicle started moving. Stop the car and retry.";
+          statusText.style.color = "var(--danger)";
+        } else if (data.tableValid) {
+          statusText.textContent = "Learn complete \u2713 - calibration table active";
+          statusText.style.color = "var(--success)";
+          renderLearnChart(data.table); // draw the freshly-learned curve
+        } else {
+          statusText.textContent = "Learn cancelled or failed";
+          statusText.style.color = "var(--warning)";
+        }
+        applyCalibrationState(!!data.tableValid);
       }
+    } finally {
+      clearTimeout(pollTimeout);
+      pollInFlight = false;
     }
   }
 
@@ -1458,9 +2959,24 @@ function initLearn() {
   });
 
   btnClear.addEventListener("click", async () => {
-    await fetchJson("/api/learn/clear", { method: "POST" });
+    // Destroys a calibration that takes a full stationary sweep to rebuild,
+    // and the button sits right under Learn/Cancel - confirm before wiping.
+    if (!confirm("Clear the learned calibration table? The controller reverts to the static factor until you run Learn again.")) {
+      return;
+    }
+    const resp = await fetchJson("/api/learn/clear", { method: "POST" });
+    if (!resp || !resp.ok) {
+      // Clear failed (network error or endpoint rejected) - leave the current
+      // calibration UI untouched rather than pretending the table is gone.
+      statusText.textContent = "Clear failed - try again";
+      statusText.style.color = "var(--warning)";
+      return;
+    }
     statusText.textContent = "Learn data cleared - static factor active";
     statusText.style.color = "var(--text-dim)";
+    renderLearnChart([]); // table gone - hide the chart
+    calibBannerDismissed = false; // fresh uncalibrated state - let it nag again
+    applyCalibrationState(false); // table wiped - nag again
   });
 
   // check initial state on page load
@@ -1473,7 +2989,7 @@ function initLearn() {
     } else if (data.tableValid) {
       statusText.textContent = "Learn complete \u2713 - calibration table active";
       statusText.style.color = "var(--success)";
-      renderLearnChart(data.table);
+      renderLearnChart(data.table); // show the stored curve on page load
     } else {
       statusText.textContent = "No learn data - static factor active";
       statusText.style.color = "var(--text-dim)";
@@ -1481,7 +2997,472 @@ function initLearn() {
   });
 }
 
-// ---- Long Learn (Settings > Long Learn) -----------------------------------
+// initialise WiFi SSID section
+function initWifiSsid() {
+  const input    = document.getElementById("wifiSsidInput");
+  const status   = document.getElementById("wifiSsidStatus");
+  const btnSave  = document.getElementById("wifiSsidSave");
+  const btnReset = document.getElementById("wifiSsidReset");
+  if (!input || !status || !btnSave || !btnReset) return;
+
+  let defaultSsid = "OpenHaldex-C6";
+
+  function renderStatus(ssid) {
+    if (!ssid) {
+      status.textContent = "--";
+      status.style.color = "var(--text-dim)";
+      return;
+    }
+    if (ssid === defaultSsid) {
+      status.textContent = "Default SSID: " + ssid;
+      status.style.color = "var(--text-dim)";
+    } else {
+      status.textContent = "\u2713 Custom SSID: " + ssid;
+      status.style.color = "var(--success)";
+    }
+  }
+
+  // load current SSID
+  fetchJson("/api/wifi/ssid").then((data) => {
+    if (!data) return;
+    if (data.default) defaultSsid = data.default;
+    if (data.ssid) {
+      input.value = data.ssid;
+      input.placeholder = data.ssid;
+      renderStatus(data.ssid);
+    }
+  });
+
+  // save SSID
+  btnSave.addEventListener("click", async () => {
+    const ssid = input.value.trim();
+    if (ssid.length < 1) {
+      showNotification("SSID cannot be empty", "error");
+      return;
+    }
+    if (ssid.length > 32) {
+      showNotification("SSID too long (max 32)", "error");
+      return;
+    }
+    if (!/^[\x20-\x7E]+$/.test(ssid)) {
+      showNotification("SSID must be printable ASCII", "error");
+      return;
+    }
+    const resp = await fetchJson("/api/wifi/ssid", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ssid: ssid }),
+    });
+    if (!resp) { showNotification("Failed to reach device", "error"); return; }
+    if (!resp.ok) {
+      showNotification(resp.error || "Failed to save SSID", "error");
+      return;
+    }
+    status.textContent = "AP restarting as \"" + resp.ssid + "\"\u2026";
+    status.style.color = "var(--success)";
+    showNotification("WiFi SSID saved - reconnect to AP");
+  });
+
+  // reset to factory SSID
+  btnReset.addEventListener("click", async () => {
+    const resp = await fetchJson("/api/wifi/ssid/reset", { method: "POST" });
+    if (!resp || !resp.ok) { showNotification("Reset failed", "error"); return; }
+    input.value = resp.ssid || defaultSsid;
+    status.textContent = "AP restarting as \"" + (resp.ssid || defaultSsid) + "\"\u2026";
+    status.style.color = "var(--text-dim)";
+    showNotification("WiFi SSID reset to default - reconnect to AP");
+  });
+}
+
+// initialise WiFi password section
+function initWifi() {
+  const input   = document.getElementById("wifiPasswordInput");
+  const toggle  = document.getElementById("wifiPasswordToggle");
+  const status  = document.getElementById("wifiPasswordStatus");
+  const btnSave = document.getElementById("wifiPasswordSave");
+  const btnReset= document.getElementById("wifiPasswordReset");
+  if (!input || !toggle || !status || !btnSave || !btnReset) return;
+
+  // show / hide password toggle
+  toggle.addEventListener("click", () => {
+    const isHidden = input.type === "password";
+    input.type = isHidden ? "text" : "password";
+    toggle.textContent = isHidden ? "\uD83D\uDE48" : "\uD83D\uDC41";
+  });
+
+  // load current status (just whether a password is set; never reveal the value)
+  fetchJson("/api/wifi").then((data) => {
+    if (!data) return;
+    if (data.passwordSet) {
+      status.textContent = "\u2713 Password set - AP is secured";
+      status.style.color = "var(--success)";
+    } else {
+      status.textContent = "No password - AP is open";
+      status.style.color = "var(--text-dim)";
+    }
+  });
+
+  // save password
+  btnSave.addEventListener("click", async () => {
+    const pwd = input.value.trim();
+    const resp = await fetchJson("/api/wifi", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pwd }),
+    });
+    if (!resp) { showNotification("Failed to reach device", "error"); return; }
+    if (!resp.ok) {
+      showNotification(resp.error || "Failed to save password", "error");
+      return;
+    }
+    input.value = "";
+    if (resp.passwordSet) {
+      status.textContent = "\u2713 Password set - AP restarting\u2026";
+      status.style.color = "var(--success)";
+      showNotification("WiFi password saved - reconnect to AP");
+    } else {
+      status.textContent = "No password - AP restarting as open\u2026";
+      status.style.color = "var(--text-dim)";
+      showNotification("WiFi password cleared");
+    }
+  });
+
+  // reset to open network
+  btnReset.addEventListener("click", async () => {
+    const resp = await fetchJson("/api/wifi/reset", { method: "POST" });
+    if (!resp || !resp.ok) { showNotification("Reset failed", "error"); return; }
+    input.value = "";
+    status.textContent = "No password - AP restarting as open\u2026";
+    status.style.color = "var(--text-dim)";
+    showNotification("WiFi reset to open network - reconnect to AP");
+  });
+}
+
+function showNotification(message, type = "success") {
+  const notification = document.createElement("div");
+  notification.textContent = message;
+  notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 1rem 2rem;
+        background: ${type === "error" ? "var(--danger)" : "var(--success)"};
+        color: white;
+        border-radius: 8px;
+        z-index: 10000;
+        font-weight: 600;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    `;
+
+  document.body.appendChild(notification);
+
+  setTimeout(() => {
+    notification.style.transition = "opacity 0.3s";
+    notification.style.opacity = "0";
+    setTimeout(() => notification.remove(), 300);
+  }, 3000);
+}
+
+// Software Update (Update tab): live version/safe-state info from /ota/info +
+// /ota/check, then ONE upload slot. The module classifies what it was given
+// (merged firmware+UI image, bare firmware.bin, or bare littlefs.bin) by itself.
+// It reboots after a firmware/merged upload and this page waits for /ota/health
+// and reloads. The same upload core serves the GitHub flow in initUpdateCheck().
+function initOtaUpdate() {
+  const version      = document.getElementById("otaVersion");
+  const build        = document.getElementById("otaBuild");
+  const chip         = document.getElementById("otaChip");
+  const slot         = document.getElementById("otaPartition");
+  const safeState    = document.getElementById("otaSafeState");
+  const safeReason   = document.getElementById("otaSafeReason");
+  const fileInput    = document.getElementById("otaFile");
+  const uploadBtn    = document.getElementById("otaUpload");
+  const progressWrap = document.getElementById("otaProgressWrap");
+  const progressFill = document.getElementById("otaProgressFill");
+  const progressLbl  = document.getElementById("otaProgressLabel");
+  const result       = document.getElementById("otaResult");
+  if (!fileInput || !uploadBtn || !progressWrap || !result) return;
+
+  async function refreshInfo() {
+    const info = await fetchJson("/ota/info");
+    if (info) {
+      const ui = info.fsVersion && info.fsVersion !== "--" && info.fsVersion !== info.version ? " (web UI " + info.fsVersion + ")" : "";
+      version.textContent = (info.version || "--") + ui;
+      build.textContent = info.appDate ? info.appDate + " " + (info.appTime || "") : "--";
+      if (chip) chip.textContent = info.chipModel ? info.chipModel + (info.chipRevision ? " rev " + info.chipRevision : "") : "--";
+      slot.textContent = info.partition || "--";
+      const inst = document.getElementById("updInstalled");
+      if (inst && info.version) inst.textContent = "v" + info.version;
+      if (info.version) window._otaInstalledVersion = info.version;
+    }
+    const check = await fetchJson("/ota/check");
+    if (check) {
+      safeState.textContent = check.allowed ? "Ready" : "Blocked";
+      safeState.style.color = check.allowed ? "var(--success)" : "var(--danger)";
+      if (check.reason) safeReason.textContent = check.reason;
+    }
+  }
+
+  refreshInfo();
+  // The safe-state can change (car starts moving, CAN fault) - refresh whenever
+  // the user lands on the Update tab rather than polling continuously.
+  document.querySelectorAll('.nav-tab[data-page="ota"]').forEach((tab) => {
+    tab.addEventListener("click", refreshInfo);
+  });
+
+  function setProgress(pct) {
+    progressFill.style.width = pct + "%";
+    progressLbl.textContent = pct + "%";
+  }
+
+  // fetch() has no upload progress, so uploads go through XMLHttpRequest.
+  // Resolves {ok, status, text}; never rejects.
+  function uploadBin(url, fieldName, blob, filename, onProgress) {
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", url);
+      xhr.withCredentials = true;
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+      };
+      xhr.onload = () => resolve({ ok: xhr.status === 200, status: xhr.status, text: xhr.responseText || "" });
+      xhr.onerror = () => resolve({ ok: false, status: 0, text: "Connection lost during upload" });
+      const form = new FormData();
+      form.append(fieldName, blob, filename);
+      xhr.send(form);
+    });
+  }
+
+  // Used by the guided GitHub update: the two halves go to their own endpoints
+  // (/ota/update/fs for littlefs.bin, /ota/update for firmware.bin). `size` lets
+  // the module spot a short upload that would leave half an image behind.
+  window.otaUploadBlob = async function (type, blob, filename, opts) {
+    opts = opts || {};
+    const isFs = type === "filesystem";
+    const url = (isFs ? "/ota/update/fs" : "/ota/update") + "?size=" + blob.size;
+    const res = await uploadBin(url, isFs ? "filesystem" : "firmware", blob, filename, opts.onProgress);
+    if (res.ok) return res.text;
+    if (res.status === 403) throw new Error("Blocked: system not safe for update.");
+    if (res.status === 401) throw new Error("Sign-in needed (user admin, password = the access-point WiFi password). Reload the page and sign in.");
+    if (res.status === 400) throw new Error(res.text || "Image rejected by the module.");
+    throw new Error(res.text || (res.status ? "Update failed (" + res.status + ")." : "Upload failed. Check the connection and retry."));
+  };
+
+  async function waitForReboot() {
+    result.textContent = "Update sent - module is rebooting. Waiting for it to come back...";
+    const start = Date.now();
+    while (Date.now() - start < 120000) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const resp = await fetch("/ota/health", { cache: "no-store" });
+        if (resp.ok) {
+          result.textContent = "Module is back - reloading...";
+          location.reload();
+          return;
+        }
+      } catch (e) {
+        // still down - keep waiting
+      }
+    }
+    result.textContent = "Module did not come back within 2 minutes. Check its power and WiFi, then reload this page.";
+    uploadBtn.disabled = false;
+  }
+
+  // Mirror of the firmware's upload classifier, used only for the status label
+  // and to reject an obviously wrong file before wasting an upload. The
+  // firmware re-checks server-side and is authoritative. A littlefs image has
+  // "littlefs" at byte 8; ESP firmware/bootloader images start with 0xE9, and a
+  // merged full-flash image is far larger than one firmware slot.
+  async function classifyFile(file) {
+    try {
+      const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+      if (head.length >= 16 &&
+          String.fromCharCode.apply(null, Array.from(head.slice(8, 16))) === "littlefs") {
+        return "web UI";
+      }
+      if (head[0] === 0xe9) {
+        return file.size > 0x1a0000 ? "full package (firmware + web UI)" : "firmware";
+      }
+      return null;
+    } catch (e) {
+      return "update"; // can't sniff (old browser) - let the module decide
+    }
+  }
+
+  async function runUpload() {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      showNotification("Choose a .bin file first", "error");
+      return;
+    }
+    const kindLabel = await classifyFile(file);
+    if (!kindLabel) {
+      showNotification("That file is not a firmware, web-UI, or merged update image", "error");
+      return;
+    }
+    // Pre-flight the safe-state gate so a blocked update fails with a reason
+    // instead of dying mid-upload.
+    const check = await fetchJson("/ota/check");
+    if (!check) {
+      showNotification("Failed to reach device", "error");
+      return;
+    }
+    if (!check.allowed) {
+      showNotification(check.reason || "Module not in a safe state for updates", "error");
+      refreshInfo();
+      return;
+    }
+
+    uploadBtn.disabled = true;
+    progressWrap.style.display = "";
+    setProgress(0);
+    result.textContent = "Uploading " + kindLabel + ": " + file.name + " (do not close this page or power the module off)";
+
+    const res = await uploadBin("/ota/update?size=" + file.size, "update", file, file.name,
+      (f) => setProgress(Math.round(f * 100)));
+    if (res.ok) {
+      setProgress(100);
+      if (kindLabel === "web UI") {
+        // A bare filesystem image does not reboot the module.
+        result.textContent = "Web UI updated. Reloading...";
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        await waitForReboot();
+      }
+    } else {
+      const msg = res.status === 401 ? "Sign-in needed. Reload the page and sign in (user admin)." : (res.text || "Upload failed");
+      result.textContent = msg;
+      showNotification(msg, "error");
+      uploadBtn.disabled = false;
+      refreshInfo();
+    }
+  }
+
+  uploadBtn.addEventListener("click", runUpload);
+}
+
+
+// Status fields that only exist in the v9 firmware: wheel slip, live-diag
+// TP2.0 block, steering health, Bluetooth link, Bench Mode lock. Kept in one
+// place so the main poll stays readable. Every field is optional.
+function updateV9Status(data, chassisOk, haldexOk) {
+  const text = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  const num = (v, d) => (typeof v === "number" ? v.toFixed(d) : "--");
+
+  // Per-corner slip [FL, FR, RL, RR]; null (no data / stale) shows as "--".
+  // The card stays hidden until real numbers have been seen once.
+  const slip = Array.isArray(data.cornerSlip) ? data.cornerSlip : Array.isArray(data.slip) ? data.slip : null;
+  const slipCard = document.getElementById("wheelSlipCard");
+  if (slip && slip.some((v) => v !== null && v !== undefined)) updateV9Status._slipSeen = true;
+  if (slipCard) slipCard.style.display = updateV9Status._slipSeen ? "" : "none";
+  ["slipFL", "slipFR", "slipRL", "slipRR"].forEach((id, i) => {
+    const v = slip ? slip[i] : null;
+    text(id, v === null || v === undefined ? "--" : v);
+  });
+
+  // Gen2/Gen4 KWP2000-over-TP2.0 live data (replaces UDS on those generations).
+  const kwp = data.kwp;
+  const kwpDetails = document.getElementById("kwpDetails");
+  if (kwpDetails) kwpDetails.style.display = kwp ? "" : "none";
+  if (kwp) {
+    text("kwpOilTemp", num(kwp.oilTemp, 1));
+    text("kwpPlateTemp", num(kwp.plateTemp, 1));
+    text("kwpSupplyVoltage", num(kwp.supplyVoltage, 2));
+    text("kwpOilPressure", num(kwp.oilPressure, 0));
+    text("kwpEstTorque", num(kwp.estTorque, 0));
+    text("kwpClutchDuty", num(kwp.clutchDuty, 0));
+    text("kwpClutchValveCurrent", num(kwp.clutchValveCurrent, 3));
+    text("kwpStatus", data.diagToolActive ? "Paused: an external diagnostic tool was detected."
+      : (kwp.connected ? "Connected" : "Connecting..."));
+  }
+
+  // Steering signal health (diag tab)
+  const sh = document.getElementById("diagSteeringHealth");
+  if (sh) sh.textContent = data.steeringHealthy === undefined || data.steeringHealthy === null ? "--"
+    : (data.steeringHealthy ? "\u2713 Healthy" : "X Unhealthy");
+  text("diagSteeringAngle", data.steeringAngle ?? "--");
+
+  // Bluetooth link
+  if (data.bleCodeRequired !== undefined) renderBlePairing(data.bleCodeRequired);
+  const bleStatus = document.getElementById("bleStatus");
+  if (bleStatus && data.bleConnected !== undefined) {
+    bleStatus.textContent = data.bleConnected ? "\u2713 Phone connected" : "No phone connected";
+    bleStatus.style.color = data.bleConnected ? "var(--success)" : "var(--text-dim)";
+  }
+
+  // Bench Mode can only be switched while genuinely off the car (both buses
+  // silent). The firmware also clears it when CAN appears; this stops it being
+  // flipped on by mistake while harnessed to a live car.
+  const benchModeElem = document.getElementById("benchMode");
+  const benchModeStatus = document.getElementById("benchModeStatus");
+  const canDetected = !!(chassisOk || haldexOk);
+  if (benchModeElem) benchModeElem.disabled = canDetected;
+  if (benchModeStatus) {
+    benchModeStatus.textContent = canDetected
+      ? "Locked: CAN traffic seen, so this unit is harnessed (sleep behaves normally)"
+      : "Available: no CAN on either bus";
+    benchModeStatus.style.color = canDetected ? "var(--text-dim)" : "var(--success)";
+  }
+}
+
+// ---- Frame-edit gating (Calibrate > Frame blocks) ----------------------
+// Render the per-generation editable-frame checkboxes from /api/settings data.
+function renderFrameBlocks(blocks) {
+  const list = document.getElementById("frameEditList");
+  if (!list) return;
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    list.innerHTML = '<p class="hint">Not available for this generation.</p>';
+    return;
+  }
+  list.innerHTML = "";
+  blocks.forEach((b) => {
+    const row = document.createElement("label");
+    row.className = "toggle";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!b.enabled;
+    cb.dataset.bit = b.bit;
+    cb.addEventListener("change", () => saveFrameEdit(b.bit, cb.checked));
+    const slider = document.createElement("span");
+    slider.className = "toggle-slider";
+    const span = document.createElement("span");
+    span.className = "toggle-label";
+    span.textContent = b.name;
+    row.appendChild(cb);
+    row.appendChild(slider);
+    row.appendChild(span);
+    list.appendChild(row);
+  });
+}
+
+// Toggle a single frame-edit block for the current generation.
+async function saveFrameEdit(bit, on) {
+  try {
+    const response = await fetchJson("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ frameEditBit: bit, frameEditOn: on }),
+    });
+    if (!response.ok) showNotification("Failed to save frame setting", "error");
+  } catch (error) {
+    showNotification("Error saving frame setting", "error");
+  }
+}
+
+// Re-fetch settings and re-render the frame checkboxes (e.g. after a generation
+// change or a reset-to-defaults).
+async function refreshFrameBlocks() {
+  try {
+    const data = await fetchJson("/api/settings");
+    renderFrameBlocks(data.frameBlocks);
+  } catch (error) {
+    /* leave existing list in place on error */
+  }
+}
+
+
+// ---- Long Learn (Calibrate > Long Learn) -----------------------------------
 // Drives /api/longlearn/*: polls status while a run is active, renders the
 // tracker + per-block verdicts, keeps the chassis notes on the unit, and
 // exports a plain-text report of the car, calibration, block set and sweeps.
@@ -1582,7 +3563,7 @@ function initLongLearn() {
     const isGen5 = data.generation === 50 || data.generation === 52;
     setText("llFloor", isGen5 ? `${data.floorNow}%` + (data.phase >= 2 ? ` (was ${data.floorStart}%)` : "") : "n/a (Gen5 only)");
     setText("llBpk", isGen5 ? `${data.bpkNow} Nm` + (data.bpkAdjusted ? ` (was ${data.bpkStart} Nm)` : "") +
-      (data.phase >= 3 && !running ? ` — Fix Hunting reverted to ${data.fixHunting ? "on" : "off"}, turn it on to use this` : "") : "n/a (Gen5 only)");
+"" : "n/a (Gen5 only)");
     setText("llBaseline", llScoreText(data.baseline));
     setText("llElapsed", llFmtElapsed(data.elapsedS));
 
@@ -1601,11 +3582,11 @@ function initLongLearn() {
       const kept = (data.blocks || []).filter((b) => b.enabled).length;
       statusText.textContent = `Long Learn complete \u2713 \u2014 ${kept} of ${(data.blocks || []).length} blocks enabled, ` +
         (isGen5 ? `PWM floor ${data.floorResult}%, ` : "") +
-        (isGen5 && data.bpkAdjusted ? `torque ceiling ${data.bpkNow} Nm (turn Fix Hunting on to use it), ` : "") +
+        (isGen5 && data.bpkAdjusted ? `torque ceiling ${data.bpkNow} Nm, ` : "") +
         `final: ${llScoreText(f)}`;
       statusText.style.color = f && f.smooth ? "var(--success)" : "var(--warning)";
     } else if (data.phase === 6) {
-      statusText.textContent = "Long Learn cancelled \u2014 previous blocks, floor, torque ceiling and learn table restored";
+      statusText.textContent = "Long Learn cancelled \u2014 previous blocks, floor, torque ceiling and learn table put back";
       statusText.style.color = "var(--warning)";
     } else if (data.phase === 7) {
       statusText.textContent = "Long Learn failed \u2014 no Haldex data during a sweep. Previous settings restored";
@@ -1630,6 +3611,9 @@ function initLongLearn() {
       const esp14Range = document.getElementById("esp14MinFloorRange");
       const esp14Val = document.getElementById("esp14MinFloorValue");
       if (esp14Range) { esp14Range.value = data.floorNow; if (esp14Val) esp14Val.textContent = data.floorNow; }
+      const bpkRange = document.getElementById("bpkCeilingRange");
+      const bpkVal = document.getElementById("bpkCeilingValue");
+      if (bpkRange && data.bpkNow) { bpkRange.value = data.bpkNow; if (bpkVal) bpkVal.textContent = data.bpkNow; }
       fetchJson("/api/learn/status").then((ls) => { if (ls && ls.tableValid) renderLearnChart(ls.table); });
     }
   }
@@ -1701,7 +3685,7 @@ function buildLongLearnReport(settings, ll, learn, notesText) {
   const isGen5 = settings.haldexGeneration === 50 || settings.haldexGeneration === 52;
   const pad = (v, n) => String(v).padEnd(n);
   const L = [];
-  L.push("OpenHaldex-C6 Long Learn Report");
+  L.push("OpenHaldex Edge Long Learn Report");
   L.push("=".repeat(60));
   L.push(`Firmware:   ${settings.FW_VERSION || "--"}`);
   L.push(`Board:      rev ${settings.boardRev || "?"}`);
@@ -1713,12 +3697,11 @@ function buildLongLearnReport(settings, ll, learn, notesText) {
   L.push("  " + ((notesText || "").trim() || "(none entered)").replace(/\n/g, "\n  "));
   L.push("");
   L.push("Calibration:");
-  L.push(`  Fix Hunting (BPK packing): ${settings.fixHunting ? "on" : "off"}`);
   L.push(`  Lock Calibration (BPK ceiling): ${settings.bpkCeilingNm} Nm`);
   L.push(`  Launch PWM Floor: ${settings.esp14MinFloorPct} %` +
          (ll.phase === 5 && isGen5 ? `  (Long Learn: ${ll.floorStart} % -> ${ll.floorResult} %)` : ""));
   if (ll.phase === 5 && isGen5 && ll.bpkAdjusted) {
-    L.push(`  Torque ceiling raised by Long Learn: ${ll.bpkStart} Nm -> ${ll.bpkNow} Nm (Fix Hunting reverted - turn it on to use this)`);
+    L.push(`  Torque ceiling raised by Long Learn: ${ll.bpkStart} Nm -> ${ll.bpkNow} Nm`);
   }
   L.push("");
   L.push(`Long Learn: ${LL_PHASE_NAMES[ll.phase] || "--"}` +
@@ -1726,7 +3709,7 @@ function buildLongLearnReport(settings, ll, learn, notesText) {
   if (ll.baseline) L.push(`  Reference (all on): ${llScoreText(ll.baseline)}`);
   if (ll.final)    L.push(`  Final (kept set):   ${llScoreText(ll.final)}`);
   L.push("");
-  L.push(`Frame blocks (mask ${ll.mask || "--"}) - [x] = enabled. Edit and re-apply under Diagnostics > Frame Editing:`);
+  L.push(`Frame blocks (mask ${ll.mask || "--"}) - [x] = enabled. Edit and re-apply under Calibrate > Frame blocks:`);
   (ll.blocks || []).forEach((b) => {
     const r = LL_RESULT[b.result] || LL_RESULT[0];
     const verdict = b.result === 0 ? (ll.phase === 0 ? "" : "untested") : r[0];
@@ -1761,82 +3744,6 @@ function buildLongLearnReport(settings, ll, learn, notesText) {
   return L.join("\n");
 }
 
-// initialise WiFi SSID section
-function initWifiSsid() {
-  const input    = document.getElementById("wifiSsidInput");
-  const status   = document.getElementById("wifiSsidStatus");
-  const btnSave  = document.getElementById("wifiSsidSave");
-  const btnReset = document.getElementById("wifiSsidReset");
-  if (!input || !status || !btnSave || !btnReset) return;
-
-  let defaultSsid = "OpenHaldex-C6";
-
-  function renderStatus(ssid) {
-    if (!ssid) {
-      status.textContent = "--";
-      status.style.color = "var(--text-dim)";
-      return;
-    }
-    if (ssid === defaultSsid) {
-      status.textContent = "Default SSID: " + ssid;
-      status.style.color = "var(--text-dim)";
-    } else {
-      status.textContent = "\u2713 Custom SSID: " + ssid;
-      status.style.color = "var(--success)";
-    }
-  }
-
-  // load current SSID
-  fetchJson("/api/wifi/ssid").then((data) => {
-    if (!data) return;
-    if (data.default) defaultSsid = data.default;
-    if (data.ssid) {
-      input.value = data.ssid;
-      input.placeholder = data.ssid;
-      renderStatus(data.ssid);
-    }
-  });
-
-  // save SSID
-  btnSave.addEventListener("click", async () => {
-    const ssid = input.value.trim();
-    if (ssid.length < 1) {
-      showNotification("SSID cannot be empty", "error");
-      return;
-    }
-    if (ssid.length > 32) {
-      showNotification("SSID too long (max 32)", "error");
-      return;
-    }
-    if (!/^[\x20-\x7E]+$/.test(ssid)) {
-      showNotification("SSID must be printable ASCII", "error");
-      return;
-    }
-    const resp = await fetchJson("/api/wifi/ssid", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ssid: ssid }),
-    });
-    if (!resp) { showNotification("Failed to reach device", "error"); return; }
-    if (!resp.ok) {
-      showNotification(resp.error || "Failed to save SSID", "error");
-      return;
-    }
-    status.textContent = "AP restarting as \"" + resp.ssid + "\"\u2026";
-    status.style.color = "var(--success)";
-    showNotification("WiFi SSID saved - reconnect to AP");
-  });
-
-  // reset to factory SSID
-  btnReset.addEventListener("click", async () => {
-    const resp = await fetchJson("/api/wifi/ssid/reset", { method: "POST" });
-    if (!resp || !resp.ok) { showNotification("Reset failed", "error"); return; }
-    input.value = resp.ssid || defaultSsid;
-    status.textContent = "AP restarting as \"" + (resp.ssid || defaultSsid) + "\"\u2026";
-    status.style.color = "var(--text-dim)";
-    showNotification("WiFi SSID reset to default - reconnect to AP");
-  });
-}
 
 // Pairing line on the Bluetooth card: the code is only asked from the second phone on.
 let blePasskeyCache = null;
@@ -1867,68 +3774,7 @@ function initBle() {
   });
 }
 
-// initialise WiFi password section
-function initWifi() {
-  const input   = document.getElementById("wifiPasswordInput");
-  const toggle  = document.getElementById("wifiPasswordToggle");
-  const status  = document.getElementById("wifiPasswordStatus");
-  const btnSave = document.getElementById("wifiPasswordSave");
-  const btnReset= document.getElementById("wifiPasswordReset");
 
-  // show / hide password toggle
-  toggle.addEventListener("click", () => {
-    const isHidden = input.type === "password";
-    input.type = isHidden ? "text" : "password";
-    toggle.textContent = isHidden ? "\uD83D\uDE48" : "\uD83D\uDC41";
-  });
-
-  // load current status (just whether a password is set; never reveal the value)
-  fetchJson("/api/wifi").then((data) => {
-    if (!data) return;
-    if (data.passwordSet) {
-      status.textContent = "\u2713 Password set - AP is secured";
-      status.style.color = "var(--success)";
-    } else {
-      status.textContent = "No password - AP is open";
-      status.style.color = "var(--text-dim)";
-    }
-  });
-
-  // save password
-  btnSave.addEventListener("click", async () => {
-    const pwd = input.value.trim();
-    const resp = await fetchJson("/api/wifi", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: pwd }),
-    });
-    if (!resp) { showNotification("Failed to reach device", "error"); return; }
-    if (!resp.ok) {
-      showNotification(resp.error || "Failed to save password", "error");
-      return;
-    }
-    input.value = "";
-    if (resp.passwordSet) {
-      status.textContent = "\u2713 Password set - AP restarting\u2026";
-      status.style.color = "var(--success)";
-      showNotification("WiFi password saved - reconnect to AP");
-    } else {
-      status.textContent = "No password - AP restarting as open\u2026";
-      status.style.color = "var(--text-dim)";
-      showNotification("WiFi password cleared");
-    }
-  });
-
-  // reset to open network
-  btnReset.addEventListener("click", async () => {
-    const resp = await fetchJson("/api/wifi/reset", { method: "POST" });
-    if (!resp || !resp.ok) { showNotification("Reset failed", "error"); return; }
-    input.value = "";
-    status.textContent = "No password - AP restarting as open\u2026";
-    status.style.color = "var(--text-dim)";
-    showNotification("WiFi reset to open network - reconnect to AP");
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Check for Updates (guided OTA)
@@ -1958,15 +3804,14 @@ function initWifi() {
 // networks that block or mangle raw.githubusercontent. Whichever answers
 // first is used for the .bin downloads too.
 // ---------------------------------------------------------------------------
-const UPD_REPO = "Forbes-Automotive/OpenHaldex-C6";
-const UPD_BRANCH = "main";
+const UPD_REPO = "Kile-Thomson/OpenHaldex-Edge";
+const UPD_BRANCH = "ota";
 const UPD_MIRRORS = [
   { name: "GitHub", base: "https://raw.githubusercontent.com/" + UPD_REPO + "/" + UPD_BRANCH + "/Releases/" },
   { name: "jsDelivr", base: "https://cdn.jsdelivr.net/gh/" + UPD_REPO + "@" + UPD_BRANCH + "/Releases/" },
 ];
 const UPD_DIR_API = "https://api.github.com/repos/" + UPD_REPO + "/contents/Releases?ref=" + UPD_BRANCH;
-// Update channel. Everything is published on one branch - main is the live
-// development branch and Releases/ holds the stable-ish cut - so the channel
+// Update channel. Everything is published on one branch (ota) so the channel
 // changes which builds are *offered*, not where they are fetched from.
 //   stable - only a higher version number than the one installed (as before)
 //   latest - also the newest release itself, because its .bin files get
@@ -2066,9 +3911,9 @@ function initUpdateCheck() {
       // Nothing to offer. Usually that just means every published release is
       // older than what is installed, which is a rollback, not an error.
       if (!all && otaCandidates().length) {
-        setStatus("Nothing newer than the installed version. Tick “Show beta / older versions” to roll back.");
+        setStatus("Nothing newer than the installed version. Tick \u201cShow beta / older versions\u201d to roll back.");
       } else {
-        setStatus("No installable releases listed. Use “Update from Files” below.", "error");
+        setStatus("No installable releases listed. Use \u201cUpdate from a File\u201d below.", "error");
       }
       return;
     }
@@ -2081,7 +3926,7 @@ function initUpdateCheck() {
 
   function renderNotes() {
     const r = selected();
-    notes.textContent = r ? ((r.date ? r.date + " — " : "") + (r.notes || "")) : "";
+    notes.textContent = r ? ((r.date ? r.date + " \u2014 " : "") + (r.notes || "")) : "";
     if (installBtn) installBtn.textContent = r && updCompareVersions(r.version, installed()) < 0 ? "Roll back to v" + r.version : "Install v" + (r ? r.version : "");
   }
 
@@ -2161,17 +4006,17 @@ function initUpdateCheck() {
     try { sta = await fetchJson("/api/wifi/sta"); } catch (e) { /* advice below still stands */ }
     const why = detail ? " (" + detail + ")" : "";
     if (sta && sta.ssid && sta.connected) {
-      return ["This browser has no internet" + why + ". The controller is already on “" + sta.ssid + "” at http://" + sta.ip +
-        "/ - join this phone to “" + sta.ssid + "”, open http://" + sta.ip + "/ (or http://openhaldex.local/), come back to this tab and press Retry.", false];
+      return ["This browser has no internet" + why + ". The controller is already on \u201c" + sta.ssid + "\u201d at http://" + sta.ip +
+        "/ - join this phone to \u201c" + sta.ssid + "\u201d, open http://" + sta.ip + "/ (or http://openhaldex.local/), come back to this tab and press Retry.", false];
     }
     if (sta && sta.ssid) {
-      return ["This browser has no internet" + why + ". The controller is set up for “" + sta.ssid + "” but isn't connected right now - " +
+      return ["This browser has no internet" + why + ". The controller is set up for \u201c" + sta.ssid + "\u201d but isn't connected right now - " +
         "out of range, wrong password, or still trying (it retries every 5 minutes). Check the Home WiFi card below (Save & Apply " +
         "reconnects straight away), then join this phone to the same network, open the address the card shows and press Retry.", true];
     }
     return ["This browser has no internet while on the OpenHaldex WiFi" + why + ". Connect the controller to your home router in the " +
       "Home WiFi (Bridge Mode) card below, join this phone to that same network, open the address the card shows and press Retry. " +
-      "No router available? Use “Update from Files” below - it needs no internet here.", true];
+      "No router available? Use \u201cUpdate from a File\u201d below - it needs no internet here.", true];
   }
 
   async function check() {
@@ -2179,7 +4024,7 @@ function initUpdateCheck() {
     const t0 = Date.now();
     const secs = () => ((Date.now() - t0) / 1000).toFixed(1) + " s";
     checkBtn.disabled = true;
-    checkBtn.textContent = "Checking…";
+    checkBtn.textContent = "Checking\u2026";
     if (bridgeBtn) bridgeBtn.hidden = true;
     picker.hidden = true;
     index = null;
@@ -2192,8 +4037,8 @@ function initUpdateCheck() {
     // 1. The controller must be reachable from here before anything else.
     // Also refreshes "Installed" from the device itself so the comparison is
     // against what is really running, not whatever loadInfo() saw at page load.
-    setStatus("1/2 Contacting the controller…");
-    setState("Checking…");
+    setStatus("1/2 Contacting the controller\u2026");
+    setState("Checking\u2026");
     let info = null;
     try {
       const res = await updFetch("/ota/info", 6000);
@@ -2201,7 +4046,7 @@ function initUpdateCheck() {
     } catch (e) { /* unreachable - handled below */ }
     if (!info || !info.version) {
       setState("Controller unreachable", "upd-bad");
-      setStatus("Can't reach the controller from this browser (gave up after " + secs() + "). Stay on the OpenHaldex‑C6 WiFi - or, if you're using the home router, " +
+      setStatus("Can't reach the controller from this browser (gave up after " + secs() + "). Stay on the OpenHaldex\u2011C6 WiFi - or, if you're using the home router, " +
         "make sure the Home WiFi card shows Connected and that you opened this page at the address it gives. The controller also " +
         "switches WiFi off after 5 minutes with no CAN traffic unless Bench Mode is on. Then press Retry.", "error");
       finish(false);
@@ -2214,7 +4059,7 @@ function initUpdateCheck() {
 
     // 2. Release index + folder listing, in parallel. Each mirror gets 12 s,
     // so a phone with no route can sit here a while - say so.
-    setStatus("2/2 Contacting GitHub for the release list… (controller answered in " + secs() + "; this can take up to 30 s with no internet)");
+    setStatus("2/2 Contacting GitHub for the release list\u2026 (controller answered in " + secs() + "; this can take up to 30 s with no internet)");
     const [ir, fr] = await Promise.all([fetchIndex(), fetchFolders()]);
 
     if (!ir.index && !fr.dirs) {
@@ -2224,7 +4069,7 @@ function initUpdateCheck() {
       if (ir.reached || fr.reached) {
         setState("Release list unavailable", "upd-bad");
         setStatus("The phone is online but the release list could not be read: " + (ir.reached || fr.reached) +
-          ". Nothing is wrong with the controller or the phone - the published releases are missing or broken. Use “Update from Files” below.", "error");
+          ". Nothing is wrong with the controller or the phone - the published releases are missing or broken. Use \u201cUpdate from a File\u201d below.", "error");
         finish(false);
       } else {
         setState("No internet access", "upd-bad");
@@ -2304,7 +4149,7 @@ function initUpdateCheck() {
     const info = rel[part];
     const url =/^https?:\/\//i.test(info.path) ? info.path : UPD_RELEASES_BASE + info.path;
     setStep(stepId, "active");
-    setStatus("Downloading " + part + " (v" + rel.version + ")…");
+    setStatus("Downloading " + part + " (v" + rel.version + ")\u2026");
     const res = await fetch(url, { cache: "no-store", mode: "cors" });
     if (!res.ok) throw new Error("Download failed: HTTP " + res.status + " for " + info.path);
     // Progress against what the server says it is sending; the index's size
@@ -2336,7 +4181,7 @@ function initUpdateCheck() {
 
   async function flash(rel, part, type, stepId) {
     setStep(stepId, "active");
-    setStatus("Flashing " + part + "… do not power off.");
+    setStatus("Flashing " + part + "\u2026 do not power off.");
     setPct(0, "Flash");
     const blob = rel._blobs[part];
     await window.otaUploadBlob(type, blob, part === "filesystem" ? "littlefs.bin" : "firmware.bin", {
@@ -2348,7 +4193,7 @@ function initUpdateCheck() {
 
   async function waitForReboot(rel) {
     setStep("reboot", "active");
-    setStatus("Device rebooting… waiting for it to come back.");
+    setStatus("Device rebooting\u2026 waiting for it to come back.");
     const t0 = Date.now();
     await new Promise((r) => setTimeout(r, 4000));
     while (Date.now() - t0 < 90000) {
@@ -2369,7 +4214,7 @@ function initUpdateCheck() {
             setTimeout(() => location.reload(), 2500);
           } else {
             setState("Rolled back", "upd-bad");
-            setStatus("Device came back on v" + i.version + " instead of v" + rel.version + " - the new image was rejected or rolled back. Try again or use “Update from Files”.", "error");
+            setStatus("Device came back on v" + i.version + " instead of v" + rel.version + " - the new image was rejected or rolled back. Try again or use \u201cUpdate from a File\u201d.", "error");
           }
           return;
         }
@@ -2402,7 +4247,7 @@ function initUpdateCheck() {
       // verify: the device has already remounted; check the web UI version it holds
       stage = "verify";
       setStep("verify", "active");
-      setStatus("Verifying filesystem…");
+      setStatus("Verifying filesystem\u2026");
       const fsi = await fetchJson("/ota/fsinfo");
       if (!fsi || !fsi.ok) throw new Error("Filesystem verification failed (" + ((fsi && fsi.error) || "not mounted") + "). Retry the update.");
       if (fsi.fsVersion && fsi.fsVersion !== "--" && fsi.fsVersion !== rel.version) {
@@ -2423,7 +4268,7 @@ function initUpdateCheck() {
         // The device wipes a rejected filesystem image, so the firmware keeps
         // running but this web UI is gone until littlefs.bin goes on again.
         msg += " The controller is still running v" + installed() + "; the web UI partition was cleared. Press Install again " +
-          "(or upload littlefs.bin under “Update from Files”). If this page won't load, the controller now shows a recovery page at its address.";
+          "(or upload littlefs.bin under \u201cUpdate from a File\u201d). If this page won't load, the controller now shows a recovery page at its address.";
       }
       setStatus(msg, "error");
       if (wrap) wrap.hidden = true;
@@ -2463,10 +4308,9 @@ function initUpdateCheck() {
     if (chanSel) chanSel.value = updChannel;
     if (!chanHint) return;
     if (updChannel === "latest") {
-      chanHint.textContent = "main is the live development branch: when a fix lands before the next version is cut, the newest " +
-        "release folder is rebuilt in place under the same version number. On this channel the newest release stays installable " +
-        "even when its version matches what you already have, and a check reports whether it has been rebuilt since it was " +
-        "indexed. These builds have not been through a release - keep a settings backup (Diagnostics tab).";
+      chanHint.textContent = "A fix sometimes lands before the next version number is cut, and the newest release is then rebuilt in place under the same version. " +
+        "On this channel the newest release stays installable even when its version matches what you already have, and a check reports whether it has been rebuilt since it was indexed. " +
+        "These builds have not been through a release - keep a settings backup (Diagnostics tab).";
       chanHint.hidden = false;
     } else {
       chanHint.hidden = true;
@@ -2505,159 +4349,13 @@ function initUpdateCheck() {
   if (showAll) showAll.addEventListener("change", () => { if (index) renderPicker(); });
 }
 
-// initialise OTA page (safety-gated /ota endpoints; firmware + filesystem)
-function initOtaPage() {
-  const chip = (k, v, cls) => `<div class="chip ${cls || ""}"><div class="k">${k}</div><div class="v">${v}</div></div>`;
-
-  // OTA sequence tracking: filesystem first, then firmware. Completed steps
-  // persist in localStorage so the highlight survives the auto-reboot.
-  const OTA_STEPS_KEY = "oh_ota_steps";
-  function otaLoadDone() {
-    try {
-      const raw = JSON.parse(localStorage.getItem(OTA_STEPS_KEY) || "{}");
-      if (!raw.ts || Date.now() - raw.ts > 15 * 60 * 1000) return [];
-      return Array.isArray(raw.done) ? raw.done : [];
-    } catch (e) { return []; }
-  }
-  function otaSaveDone(done) {
-    localStorage.setItem(OTA_STEPS_KEY, JSON.stringify({ done, ts: Date.now() }));
-  }
-  function renderOtaSteps() {
-    const sel = document.getElementById("otaType");
-    const cur = sel ? sel.value : "filesystem";
-    const done = otaLoadDone();
-    document.querySelectorAll("#otaSteps .ota-step").forEach((el) => {
-      const s = el.dataset.step;
-      el.classList.toggle("done", done.includes(s));
-      el.classList.toggle("active", s === cur && !done.includes(s));
-    });
-  }
-  function otaMarkDone(type) {
-    const done = otaLoadDone();
-    if (!done.includes(type)) done.push(type);
-    otaSaveDone(done);
-    renderOtaSteps();
-  }
-
-  function loadInfo() {
-    fetchJson("/ota/info").then((i) => {
-      if (!i) return;
-      const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v || "--"; };
-      set("otaFwVersion", i.version + (i.fsVersion && i.fsVersion !== "--" && i.fsVersion !== i.version ? " (web UI " + i.fsVersion + ")" : ""));
-      set("otaChip", (i.chipModel || "") + (i.chipRevision ? " rev " + i.chipRevision : ""));
-      set("otaPartition", i.partition);
-      set("updInstalled", "v" + i.version);
-      window._otaInstalledVersion = i.version;
-    });
-  }
-
-  function loadSafety() {
-    const wrap = document.getElementById("otaSafety");
-    if (!wrap) return;
-    fetchJson("/ota/check").then((s) => {
-      if (!s) { wrap.innerHTML = chip("Update", "Offline", "off"); return; }
-      wrap.innerHTML =
-        chip("Update", s.allowed ? "Allowed" : "Blocked", s.allowed ? "on" : "off") +
-        chip("Speed", (s.speed ?? 0) + " km/h", s.speed > 0 ? "off" : "on") +
-        chip("CAN", s.canInitialized ? "Ready" : "Not ready", s.canInitialized ? "on" : "off") +
-        chip("Reason", s.reason || "--", s.allowed ? "" : "warn");
-    });
-  }
-
-  // Upload core: POSTs a Blob to the safety-gated OTA endpoint and resolves on
-  // 200 / rejects with a user-facing message otherwise. `size` lets the device
-  // spot a short upload, which would otherwise leave half an image in the
-  // filesystem partition.
-  function otaUploadBlob(type, blob, filename, opts) {
-    opts = opts || {};
-    const isFs = type === "filesystem";
-    const url = (isFs ? "/ota/update/fs" : "/ota/update") + "?size=" + blob.size;
-    const data = new FormData();
-    data.append(isFs ? "filesystem" : "firmware", blob, filename);
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", url);
-      xhr.withCredentials = true;
-      xhr.upload.addEventListener("progress", (e) => {
-        if (e.lengthComputable && opts.onProgress) opts.onProgress(e.loaded / e.total);
-      });
-      xhr.addEventListener("load", () => {
-        if (xhr.status === 200) resolve(xhr.responseText);
-        else if (xhr.status === 403) reject(new Error("Blocked: system not safe for update."));
-        else if (xhr.status === 401) reject(new Error("Authentication required or failed."));
-        else if (xhr.status === 400) reject(new Error(xhr.responseText || "Image rejected by device."));
-        else reject(new Error("Update failed (" + xhr.status + ")."));
-      });
-      xhr.addEventListener("error", () => reject(new Error("Upload failed. Check connection and retry.")));
-      xhr.send(data);
-    });
-  }
-  window.otaUploadBlob = otaUploadBlob; // shared with the guided update (initUpdateCheck)
-  function upload() {
-    const fileInput = document.getElementById("otaBin");
-    const status = document.getElementById("otaStatus");
-    const btn = document.getElementById("otaUploadBtn");
-    const type = (document.getElementById("otaType") || {}).value || "firmware";
-    if (!fileInput || !fileInput.files.length) { status.textContent = "Pick a .bin file first."; return; }
-    const file = fileInput.files[0];
-    if (!file.name.toLowerCase().endsWith(".bin")) { status.textContent = "Please choose a .bin file."; return; }
-    const wrap = document.getElementById("otaProgressWrap");
-    const bar = document.getElementById("otaProgressBar");
-    const label = document.getElementById("otaProgressLabel");
-    const isFs = type === "filesystem";
-    const setPct = (f) => {
-      const p = Math.round(f * 100);
-      if (bar) bar.style.width = p + "%";
-      if (label) label.textContent = p + "%";
-    };
-    if (btn) btn.disabled = true;
-    if (wrap) wrap.hidden = false;
-    setPct(0);
-    status.textContent = "Uploading " + type + "\u2026";
-    otaUploadBlob(type, file, file.name, { onProgress: setPct }).then(() => {
-      setPct(1);
-      otaMarkDone(type);
-      if (isFs) {
-        // filesystem does not reboot — advance to the firmware step
-        const sel = document.getElementById("otaType");
-        if (sel) sel.value = "firmware";
-        renderOtaSteps();
-        status.textContent = "Filesystem updated. Now upload the firmware.";
-        if (wrap) wrap.hidden = true;
-        if (btn) btn.disabled = false;
-        if (fileInput) fileInput.value = "";
-      } else {
-        status.textContent = "Update complete. Device rebooting\u2026";
-      }
-    }).catch((err) => {
-      status.textContent = err.message;
-      if (wrap) wrap.hidden = true;
-      if (btn) btn.disabled = false;
-    });
-  }
-
-  const btn = document.getElementById("otaUploadBtn");
-  if (btn) btn.addEventListener("click", upload);
-  const typeSel = document.getElementById("otaType");
-  if (typeSel) {
-    // after a filesystem upload + reboot, resume on the firmware step
-    const done = otaLoadDone();
-    if (done.includes("filesystem") && !done.includes("firmware")) typeSel.value = "firmware";
-    typeSel.addEventListener("change", renderOtaSteps);
-  }
-  renderOtaSteps();
-  loadInfo();
-  loadSafety();
-  setInterval(loadSafety, 3000);
-}
-
 // ---------------------------------------------------------------------------
 // Home WiFi (bridge mode) card - PR #39 (louij2), ported. The controller joins
 // a home/garage network as a station alongside its own AP. Status is polled
 // because association takes a few seconds after a save or restart.
 //
-// The card exists twice - Diagnostics ("wifiSta…" ids) and the OTA tab
-// ("otaWifiSta…"), where it's the way to get the phone online for the GitHub
+// The card exists twice - Diagnostics ("wifiSta\u2026" ids) and the OTA tab
+// ("otaWifiSta\u2026"), where it's the way to get the phone online for the GitHub
 // update check - so the element ids are built from a prefix.
 // ---------------------------------------------------------------------------
 function initWifiSta(prefix) {
@@ -2686,10 +4384,10 @@ function initWifiSta(prefix) {
       status.style.color = "var(--text-dim)";
     } else if (d.connected) {
       const sig = typeof d.rssi === "number" ? " (" + signalQuality(d.rssi) + " signal, " + d.rssi + " dBm)" : "";
-      status.textContent = "✓ Connected to “" + d.ssid + "”" + sig + " - reachable at http://" + d.ip + "/ and http://openhaldex.local/";
+      status.textContent = "\u2713 Connected to \u201c" + d.ssid + "\u201d" + sig + " - reachable at http://" + d.ip + "/ and http://openhaldex.local/";
       status.style.color = "var(--success)";
     } else {
-      status.textContent = "Configured for “" + d.ssid + "” - not connected (out of range, or still trying)";
+      status.textContent = "Configured for \u201c" + d.ssid + "\u201d - not connected (out of range, or still trying)";
       status.style.color = "var(--text-dim)";
     }
   }
@@ -2707,7 +4405,7 @@ function initWifiSta(prefix) {
   if (pwToggle) pwToggle.addEventListener("click", () => {
     const hidden = pwInput.type === "password";
     pwInput.type = hidden ? "text" : "password";
-    pwToggle.textContent = hidden ? "🙈" : "👁";
+    pwToggle.textContent = hidden ? "\u1f648" : "\u1f441";
   });
 
   // Network scan: explicit button, never automatic - the single radio leaves
@@ -2716,7 +4414,7 @@ function initWifiSta(prefix) {
   if (scanBtn) scanBtn.addEventListener("click", async () => {
     scanBtn.disabled = true;
     const prev = ssidInput.placeholder;
-    ssidInput.placeholder = "Scanning…";
+    ssidInput.placeholder = "Scanning\u2026";
     let resp = null;
     for (let i = 0; i < 12; i++) {
       resp = await fetchJson("/api/wifi/scan");
@@ -2731,7 +4429,7 @@ function initWifiSta(prefix) {
       resp.networks.forEach((n) => {
         const o = document.createElement("option");
         o.value = n.ssid;
-        o.textContent = n.ssid + (n.secure ? " 🔒" : "") + " (" + n.rssi + " dBm)";
+        o.textContent = n.ssid + (n.secure ? " \u1f512" : "") + " (" + n.rssi + " dBm)";
         ssidList.appendChild(o);
       });
     }
@@ -2753,9 +4451,9 @@ function initWifiSta(prefix) {
     userEditing = false;
     pwInput.value = "";
     if (ssid) {
-      status.textContent = "Connecting to “" + ssid + "”… (the AP restarts - reconnect if you drop off)";
+      status.textContent = "Connecting to \u201c" + ssid + "\u201d\u2026 (the AP restarts - reconnect if you drop off)";
       status.style.color = "var(--text-dim)";
-      showNotification("Home WiFi saved - connecting…");
+      showNotification("Home WiFi saved - connecting\u2026");
     } else {
       status.textContent = "Disabled - AP only";
       showNotification("Bridge mode disabled");
@@ -2785,10 +4483,12 @@ const BACKUP_GENERAL_KEYS = [
   "haldexGeneration", "isStandalone", "useCANifAvailable", "broadcastOpenHaldexOverCAN", "disableController",
   "disengageUnderSpeed", "disengageAboveSpeed", "disableThrottle",
   "tcForceMode", "tcForceModeValue", "hazardForceMode", "hazardForceModeValue",
-  "extButtonForceMode", "extBtnForceModeValue", "disableOnboardButton", "disableExternalButton",
+  "extButtonForceMode", "extBtnForceModeValue", "forceModesPriority", "disableOnboardButton", "disableExternalButton",
   "followBrake", "invertBrake", "followHandbrake", "invertHandbrake",
   "fixHunting", "dangerZoneEnabled", "esp14MinFloorPct", "bpkCeilingNm",
-  "steeringScaleEnabled", "lockReleaseEnabled", "lockReleaseRatePerSec", "liveDiagEnabled", "ledBrightness",
+  "lockReleaseEnabled", "lockReleaseRampMs", "lockEngageRampMs",
+  "steeringGainEnabled", "steeringGainStartDeg", "steeringGainFullDeg", "steeringGainFloor",
+  "liveDiagEnabled", "ledBrightness",
   "canSleepEnabled", "canSleepAggressive", "benchMode", "lpWakeThresholdFps",
   "longLearnNotes", "bleEnabled",
 ];
@@ -2810,17 +4510,30 @@ function initBackupRestore() {
   const post = (url, body) => fetchJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
   btnExport.addEventListener("click", async () => {
-    setStatus("Exporting…", true);
-    const [settings, ssidData, pwData, staData] = await Promise.all([
-      fetchJson("/api/settings"), fetchJson("/api/wifi/ssid"), fetchJson("/api/wifi"), fetchJson("/api/wifi/sta"),
+    setStatus("Exporting\u2026", true);
+    const [settings, ssidData, pwData, staData, slotList] = await Promise.all([
+      fetchJson("/api/settings"), fetchJson("/api/wifi/ssid"), fetchJson("/api/wifi"), fetchJson("/api/wifi/sta"), fetchJson("/api/maps"),
     ]);
     if (!settings) { setStatus("Export failed - couldn't reach the device", false); return; }
     const stamp = new Date().toISOString();
+    // The BLE pairing code is shown on the Bluetooth card but must not travel in a backup file.
+    const exportable = Object.assign({}, settings);
+    delete exportable.blePasskey;
+    // On-device map slots (Expert tab > Maps) so a firmware update cannot lose them.
+    const mapSlots = [];
+    if (slotList && Array.isArray(slotList.slots)) {
+      for (const sl of slotList.slots) {
+        if (!sl.used) continue;
+        const m = await fetchJson("/api/maps/get?index=" + sl.index);
+        if (m && m.ok) mapSlots.push({ index: sl.index, name: m.name, speedArray: m.speedArray, throttleArray: m.throttleArray, lockArray: m.lockArray });
+      }
+    }
     const backup = {
       _product: "OpenHaldex-C6",
       _exportedAt: stamp,
       _fwVersion: settings.FW_VERSION,
-      settings: settings,
+      settings: exportable,
+      mapSlots: mapSlots,
       wifi: { ssid: ssidData ? ssidData.ssid : null, passwordSet: !!(pwData && pwData.passwordSet) },
       wifiSta: { ssid: staData && staData.ssid ? staData.ssid : null, passwordSet: !!(staData && staData.passwordSet) },
     };
@@ -2833,7 +4546,7 @@ function initBackupRestore() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    setStatus("Exported ✓ " + stamp, true);
+    setStatus("Exported \u2713 " + stamp, true);
     showNotification("Config exported");
   });
 
@@ -2844,7 +4557,7 @@ function initBackupRestore() {
     if (!file) return;
     if (pwSection) pwSection.style.display = "none";
     if (staPwSection) staPwSection.style.display = "none";
-    setStatus("Reading " + file.name + "…", true);
+    setStatus("Reading " + file.name + "\u2026", true);
     let backup;
     try { backup = JSON.parse(await file.text()); } catch (e) {
       setStatus("Not a valid backup file (bad JSON)", false); fileInput.value = ""; return;
@@ -2860,7 +4573,7 @@ function initBackupRestore() {
     if (typeof s.haldexGeneration === "number") await post("/api/settings", { haldexGeneration: s.haldexGeneration });
 
     // 2. Tune table (+ steering scale if the backup has it).
-    setStatus("Restoring Expert tune…", true);
+    setStatus("Restoring Expert tune\u2026", true);
     const tune = { throttleArray: s.throttleArray, speedArray: s.speedArray, lockArray: s.lockArray };
     if (Array.isArray(s.steeringArray) && Array.isArray(s.steeringLockScaleArray)) {
       tune.steeringArray = s.steeringArray;
@@ -2870,7 +4583,7 @@ function initBackupRestore() {
     if (!tuneResp || !tuneResp.ok) { setStatus("Failed to restore the tune table - is the device reachable?", false); fileInput.value = ""; return; }
 
     // 3. General settings.
-    setStatus("Restoring settings…", true);
+    setStatus("Restoring settings\u2026", true);
     const general = {};
     BACKUP_GENERAL_KEYS.forEach((k) => { if (k in s) general[k] = s[k]; });
     await post("/api/settings", general);
@@ -2880,6 +4593,16 @@ function initBackupRestore() {
       for (const fb of s.frameBlocks) {
         if (typeof fb.bit === "number" && typeof fb.enabled === "boolean") {
           await post("/api/settings", { frameEditBit: fb.bit, frameEditOn: fb.enabled });
+        }
+      }
+    }
+
+    // 4b. Expert map slots (older backups have none).
+    if (Array.isArray(backup.mapSlots)) {
+      setStatus("Restoring map slots...", true);
+      for (const m of backup.mapSlots) {
+        if (m && typeof m.index === "number" && m.name) {
+          await post("/api/maps/save", { index: m.index, name: m.name, speedArray: m.speedArray, throttleArray: m.throttleArray, lockArray: m.lockArray });
         }
       }
     }
@@ -2895,9 +4618,9 @@ function initBackupRestore() {
     if (needsApPw) pwSection.style.display = "";
     if (needsStaPw) staPwSection.style.display = "";
     if (needsApPw || needsStaPw) {
-      setStatus("Tune + settings restored ✓. Enter the password(s) below to finish.", true);
+      setStatus("Tune + settings restored \u2713. Enter the password(s) below to finish.", true);
     } else {
-      setStatus("Restored ✓ - reload the page to see the new values.", true);
+      setStatus("Restored \u2713 - reload the page to see the new values.", true);
       showNotification("Config imported");
     }
     fileInput.value = "";
@@ -2910,7 +4633,7 @@ function initBackupRestore() {
     if (!resp || !resp.ok) { setStatus("Failed to apply the AP password", false); return; }
     pwInput.value = "";
     pwSection.style.display = "none";
-    setStatus("Restored ✓ - the AP is restarting, reconnect to WiFi…", true);
+    setStatus("Restored \u2713 - the AP is restarting, reconnect to WiFi\u2026", true);
     showNotification("Config imported");
   });
 
@@ -2923,668 +4646,7 @@ function initBackupRestore() {
     if (!resp || !resp.ok) { setStatus("Failed to apply the home WiFi password", false); return; }
     staPwInput.value = "";
     staPwSection.style.display = "none";
-    setStatus("Restored ✓ - connecting to home WiFi…", true);
+    setStatus("Restored \u2713 - connecting to home WiFi\u2026", true);
     showNotification("Config imported");
   });
-}
-
-function showNotification(message, type = "success") {
-  const notification = document.createElement("div");
-  notification.textContent = message;
-  notification.style.cssText = `
-        position: fixed;
-        top: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        padding: 1rem 2rem;
-        background: ${type === "error" ? "var(--danger)" : "var(--success)"};
-        color: white;
-        border-radius: 8px;
-        z-index: 10000;
-        font-weight: 600;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    `;
-
-  document.body.appendChild(notification);
-
-  setTimeout(() => {
-    notification.style.transition = "opacity 0.3s";
-    notification.style.opacity = "0";
-    setTimeout(() => notification.remove(), 300);
-  }, 3000);
-}
-
-/* ============================================================================
-   Gauges & graphs
-   ----------------------------------------------------------------------------
-   Optional dial-gauge and chart views for the dashboard. Per-tile numeric vs.
-   gauge choice, the engagement arc gauge, a rolling lock-response strip chart,
-   the learn calibration chart and the read-only expert-map 3D surface. All
-   drawn as hand-rolled SVG (no libraries) so the UI still ships from flash.
-   ========================================================================= */
-
-// Resolve the theme's CSS custom properties at runtime so string-built SVG
-// (which does not honour var() in presentation attributes) still tracks the
-// active theme instead of hardcoding hex.
-let _themeCache = null;
-function themeColors() {
-  if (_themeCache) return _themeCache;
-  const cs = getComputedStyle(document.documentElement);
-  const v = (name, fb) => (cs.getPropertyValue(name).trim() || fb);
-  _themeCache = {
-    accent:  v("--accent",   "#24d1c4"),
-    accent2: v("--accent-2", "#ffb02e"),
-    danger:  v("--danger",   "#ff4d5e"),
-    ok:      v("--ok",       "#3fd07f"),
-    line:    v("--line",     "#24303b"),
-    muted:   v("--muted",    "#7d8ea0"),
-    text:    v("--text",     "#e6edf3"),
-    panel:   v("--panel",    "#131a22"),
-    panel2:  v("--panel-2",  "#182129"),
-    bg:      v("--bg",       "#0b0f14"),
-  };
-  return _themeCache;
-}
-
-// Catalogue of tiles that can render as a dial gauge: id -> range/unit. The id
-// matches the .gauge-value element the poll already writes, so the gauge reads
-// its value straight from that text and needs no extra plumbing.
-const GAUGE_TILES = [
-  { id: "speed",            label: "Speed",        min: 0, max: 260,  unit: "km/h" },
-  { id: "throttle",         label: "Throttle",     min: 0, max: 100,  unit: "%" },
-  { id: "rpm",              label: "RPM",          min: 0, max: 8000, unit: "rpm" },
-  { id: "boost",            label: "Boost",        min: 0, max: 2500, unit: "mbar" },
-  { id: "haldexEngagement", label: "Engagement",   min: 0, max: 100,  unit: "%" },
-  { id: "clutch1Report",    label: "Clutch 1",     min: 0, max: 255,  unit: "" },
-  { id: "clutch2Report",    label: "Clutch 2",     min: 0, max: 255,  unit: "" },
-  { id: "udsClutchTemp",    label: "Clutch Temp",  min: 0, max: 150,  unit: "\u00b0C" },
-  { id: "udsModuleTemp",    label: "Module Temp",  min: 0, max: 150,  unit: "\u00b0C" },
-  { id: "udsCoolingFinTemp",label: "Fin Temp",     min: 0, max: 150,  unit: "\u00b0C" },
-  { id: "udsClutchCurrent", label: "Clutch Cur.",  min: 0, max: 5,    unit: "A" },
-  { id: "udsClutchPWM",     label: "PWM",          min: 0, max: 100,  unit: "%" },
-  { id: "udsBlockagePct",   label: "Blockage",     min: 0, max: 100,  unit: "%" },
-  { id: "slipFL",           label: "Slip FL",      min: -50, max: 50, unit: "%" },
-  { id: "slipFR",           label: "Slip FR",      min: -50, max: 50, unit: "%" },
-  { id: "slipRL",           label: "Slip RL",      min: -50, max: 50, unit: "%" },
-  { id: "slipRR",           label: "Slip RR",      min: -50, max: 50, unit: "%" },
-];
-
-// 270-degree dial geometry: a circle stroked over three quarters of its
-// circumference, rotated so the gap sits at the bottom.
-const TG_R = 40;
-const TG_CIRC = 2 * Math.PI * TG_R;
-const TG_ARC = TG_CIRC * 0.75;
-const TG_GAP = TG_CIRC - TG_ARC;
-
-const GAUGE_PREFS_KEY = "ohGaugePrefs";
-// Showcase the feature on first load: live-data tiles and the engagement gauge
-// default on, numbers everywhere else. All of it is per-tile revertible.
-const GAUGE_DEFAULTS = {
-  tiles: ["speed", "throttle", "rpm", "boost"],
-  engagement: true,
-  trace: true,
-};
-
-let gaugePrefs = loadGaugePrefs();
-
-function loadGaugePrefs() {
-  try {
-    const raw = localStorage.getItem(GAUGE_PREFS_KEY);
-    if (raw) {
-      const p = JSON.parse(raw);
-      return {
-        tiles: Array.isArray(p.tiles) ? p.tiles : GAUGE_DEFAULTS.tiles.slice(),
-        engagement: p.engagement !== undefined ? !!p.engagement : GAUGE_DEFAULTS.engagement,
-        trace: p.trace !== undefined ? !!p.trace : GAUGE_DEFAULTS.trace,
-      };
-    }
-  } catch (e) {
-    /* fall through to defaults */
-  }
-  return {
-    tiles: GAUGE_DEFAULTS.tiles.slice(),
-    engagement: GAUGE_DEFAULTS.engagement,
-    trace: GAUGE_DEFAULTS.trace,
-  };
-}
-
-function saveGaugePrefs() {
-  try {
-    localStorage.setItem(GAUGE_PREFS_KEY, JSON.stringify(gaugePrefs));
-  } catch (e) {
-    /* storage blocked - prefs just won't persist */
-  }
-}
-
-// Inject the dial SVG (once) into a tile and remember its parts. Colours come
-// from CSS classes so the DOM SVG tracks the theme via var() directly.
-function ensureTileGauge(tile) {
-  if (tile.querySelector(".tile-gauge")) return;
-  const wrap = document.createElement("div");
-  wrap.className = "tile-gauge";
-  wrap.innerHTML =
-    `<svg viewBox="0 0 100 100" aria-hidden="true">` +
-    `<circle class="tg-track" cx="50" cy="50" r="${TG_R}" transform="rotate(135 50 50)" ` +
-    `stroke-dasharray="${TG_ARC.toFixed(2)} ${TG_GAP.toFixed(2)}"/>` +
-    `<circle class="tg-fill" cx="50" cy="50" r="${TG_R}" transform="rotate(135 50 50)" ` +
-    `stroke-dasharray="0 ${TG_CIRC.toFixed(2)}"/>` +
-    `<text class="tg-val" x="50" y="52" text-anchor="middle">--</text>` +
-    `<text class="tg-unit" x="50" y="66" text-anchor="middle"></text>` +
-    `<text class="tg-min" x="24" y="92" text-anchor="middle">0</text>` +
-    `<text class="tg-max" x="76" y="92" text-anchor="middle">0</text>` +
-    `</svg>`;
-  tile.appendChild(wrap);
-}
-
-// Reflect gaugePrefs onto the DOM: toggle the .as-gauge class per tile and the
-// engagement gauge / bar / trace visibility.
-function applyGaugePrefs() {
-  GAUGE_TILES.forEach((t) => {
-    const el = document.getElementById(t.id);
-    if (!el) return;
-    const tile = el.closest(".gauge");
-    if (!tile) return;
-    ensureTileGauge(tile);
-    const on = gaugePrefs.tiles.includes(t.id);
-    tile.classList.toggle("as-gauge", on);
-    if (on) {
-      const unitEl = tile.querySelector(".tg-unit");
-      if (unitEl) unitEl.textContent = t.unit;
-      const minEl = tile.querySelector(".tg-min");
-      const maxEl = tile.querySelector(".tg-max");
-      if (minEl) minEl.textContent = t.min;
-      if (maxEl) maxEl.textContent = t.max;
-    }
-  });
-
-  const gWrap = document.getElementById("engagementGaugeWrap");
-  const bWrap = document.getElementById("engagementBarWrap");
-  if (gWrap) gWrap.style.display = gaugePrefs.engagement ? "" : "none";
-  if (bWrap) bWrap.style.display = gaugePrefs.engagement ? "none" : "";
-
-  const tWrap = document.getElementById("lockTraceWrap");
-  if (tWrap) tWrap.style.display = gaugePrefs.trace ? "" : "none";
-}
-
-// Redraw every tile currently in gauge mode from the value the poll just wrote.
-function updateTileGauges() {
-  GAUGE_TILES.forEach((t) => {
-    const el = document.getElementById(t.id);
-    if (!el) return;
-    const tile = el.closest(".gauge");
-    if (!tile || !tile.classList.contains("as-gauge")) return;
-    const raw = parseFloat(el.textContent);
-    const valEl = tile.querySelector(".tg-val");
-    const fillEl = tile.querySelector(".tg-fill");
-    if (!valEl || !fillEl) return;
-    // Mirror any numeric test/warn highlight onto the gauge.
-    const gaugeWrap = tile.querySelector(".tile-gauge");
-    if (gaugeWrap) gaugeWrap.classList.toggle("warn", el.style.color === "orange");
-    if (Number.isNaN(raw)) {
-      valEl.textContent = "--";
-      fillEl.style.strokeDasharray = `0 ${TG_CIRC.toFixed(2)}`;
-      return;
-    }
-    valEl.textContent = el.textContent;
-    // Grow a single arc from the start up to the value (do NOT animate offset,
-    // which would just rotate the whole 3/4 ring instead of filling it).
-    const frac = Math.max(0, Math.min(1, (raw - t.min) / (t.max - t.min || 1)));
-    fillEl.style.strokeDasharray = `${(TG_ARC * frac).toFixed(2)} ${TG_CIRC.toFixed(2)}`;
-  });
-}
-
-// Semi-circular engagement gauge: the fill sweeps with ACTUAL engagement, the
-// tick marks the TARGET, so the lag between them reads at a glance.
-const EG_ARC_LEN = Math.PI * 80; // 180-degree track length (radius 80)
-function updateEngagementGauge(target, actual, instant) {
-  const fill = document.getElementById("gaugeArcFill");
-  const tick = document.getElementById("gaugeTargetTick");
-  const val = document.getElementById("gaugeCenterValue");
-  if (!fill) return;
-  const a = actual === null || actual === undefined ? 0 : Math.max(0, Math.min(100, Number(actual) || 0));
-  // `instant` writes the arc without the CSS transition - used for the very
-  // first draw, where the path is otherwise fully stroked and animates to
-  // empty before anything has even loaded.
-  if (instant) fill.style.transition = "none";
-  fill.style.strokeDasharray = EG_ARC_LEN.toFixed(2);
-  fill.style.strokeDashoffset = (EG_ARC_LEN * (1 - a / 100)).toFixed(2);
-  if (instant) { void fill.getBoundingClientRect(); fill.style.transition = ""; }
-  if (val) val.textContent = actual === null || actual === undefined ? "--" : Math.round(a);
-  if (tick) {
-    if (target === null || target === undefined || Number.isNaN(Number(target))) {
-      tick.setAttribute("visibility", "hidden");
-    } else {
-      const tgt = Math.max(0, Math.min(100, Number(target)));
-      tick.setAttribute("transform", `rotate(${tgt * 1.8} 100 100)`);
-      tick.setAttribute("visibility", "visible");
-    }
-  }
-}
-
-// ---- Intro needle sweep -------------------------------------------------
-// One slow, deliberate 0 -> 100 -> live sweep of the engagement arc and any
-// tiles in gauge mode, like a cluster on ignition. It is the LAST thing to
-// happen on page load: it waits for the window to finish loading and for the
-// first dashboard poll to land, so it settles on the real value rather than
-// an empty arc. While it runs, live polls are held back (the latest one is
-// kept and applied at the end) so the two never fight over the same stroke.
-const SWEEP_UP_MS = 900;    // 0 -> 100
-const SWEEP_DOWN_MS = 800;  // 100 -> live value
-const SWEEP_WAIT_MS = 4000; // give up waiting for the first poll after this
-const introSweep = { active: false, pending: null };
-let firstStatusResolve = null;
-const firstStatus = new Promise((resolve) => { firstStatusResolve = resolve; });
-
-function startIntroSweep() {
-  introSweep.active = true; // hold the gauges still until we sweep
-  const loaded = new Promise((resolve) => {
-    if (document.readyState === "complete") resolve();
-    else window.addEventListener("load", resolve, { once: true });
-  });
-  const firstOrTimeout = Promise.race([firstStatus, new Promise((r) => setTimeout(() => r(null), SWEEP_WAIT_MS))]);
-  Promise.all([loaded, firstOrTimeout]).then(([, data]) => runIntroSweep(data));
-}
-
-function runIntroSweep(data) {
-  const fill = document.getElementById("gaugeArcFill");
-  const tick = document.getElementById("gaugeTargetTick");
-  const arcOn = !!fill && gaugePrefs.engagement;
-
-  // Tiles currently drawn as gauges, with the fraction each should land on.
-  const tiles = [];
-  GAUGE_TILES.forEach((t) => {
-    const el = document.getElementById(t.id);
-    const tile = el && el.closest(".gauge");
-    if (!tile || !tile.classList.contains("as-gauge")) return;
-    const fillEl = tile.querySelector(".tg-fill");
-    if (!fillEl) return;
-    const raw = parseFloat(el.textContent);
-    const end = Number.isNaN(raw) ? 0 : Math.max(0, Math.min(1, (raw - t.min) / (t.max - t.min || 1)));
-    tiles.push({ fillEl, end });
-  });
-
-  const finish = () => {
-    introSweep.active = false;
-    if (fill) fill.style.transition = "";
-    tiles.forEach((t) => { t.fillEl.style.transition = ""; });
-    const d = introSweep.pending || data || {};
-    introSweep.pending = null;
-    updateEngagementGauge(d.lockTarget ?? null, d.lockActual ?? null);
-    updateTileGauges();
-  };
-  if (!arcOn && !tiles.length) { finish(); return; }
-
-  const live = introSweep.pending || data || {};
-  const a = live.lockActual === null || live.lockActual === undefined ? 0 : Math.max(0, Math.min(100, Number(live.lockActual) || 0));
-  const arcEnd = a / 100;
-
-  // Drive the strokes by hand: the CSS transition would smear every frame.
-  if (arcOn) { fill.style.transition = "none"; fill.style.strokeDasharray = EG_ARC_LEN.toFixed(2); }
-  if (tick) tick.setAttribute("visibility", "hidden");
-  tiles.forEach((t) => { t.fillEl.style.transition = "none"; });
-
-  const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
-  const paint = (frac, tileScale) => {
-    if (arcOn) fill.style.strokeDashoffset = (EG_ARC_LEN * (1 - frac)).toFixed(2);
-    tiles.forEach((t) => {
-      const f = tileScale === null ? frac : t.end + (1 - t.end) * tileScale;
-      t.fillEl.style.strokeDasharray = `${(TG_ARC * f).toFixed(2)} ${TG_CIRC.toFixed(2)}`;
-    });
-  };
-
-  const t0 = performance.now();
-  const frame = (now) => {
-    const t = now - t0;
-    if (t < SWEEP_UP_MS) {
-      paint(easeInOut(t / SWEEP_UP_MS), null);
-    } else if (t < SWEEP_UP_MS + SWEEP_DOWN_MS) {
-      // 1 -> end, each gauge to its own value
-      const k = 1 - easeInOut((t - SWEEP_UP_MS) / SWEEP_DOWN_MS);
-      paint(arcEnd + (1 - arcEnd) * k, k);
-    } else {
-      paint(arcEnd, 0);
-      finish();
-      return;
-    }
-    requestAnimationFrame(frame);
-  };
-  requestAnimationFrame(frame);
-}
-
-// ---- Live lock-response trace ----------------------------------------------
-// Rolling time-history of lock target vs actual engagement; poll-fed so no
-// extra device load. A missing value breaks its line rather than plotting 0.
-const TRACE_WINDOW_MS = 15000;
-const lockTrace = [];
-
-function resetLockTrace() {
-  lockTrace.length = 0;
-  renderLockTrace(Date.now());
-}
-
-function pushLockSample(target, actual, now) {
-  const hasT = target !== undefined && target !== null && Number.isFinite(Number(target));
-  const hasA = actual !== undefined && actual !== null && Number.isFinite(Number(actual));
-  if (!hasT && !hasA) return;
-  const t = hasT ? Math.max(0, Math.min(100, Number(target))) : null;
-  const a = hasA ? Math.max(0, Math.min(100, Number(actual))) : null;
-  lockTrace.push({ t: now, target: t, actual: a });
-  const cutoff = now - TRACE_WINDOW_MS;
-  let firstKept = 0;
-  while (firstKept < lockTrace.length - 1 && lockTrace[firstKept + 1].t < cutoff) firstKept++;
-  if (firstKept > 0) lockTrace.splice(0, firstKept);
-}
-
-function renderLockTrace(now) {
-  const svg = document.getElementById("lockTraceSvg");
-  if (!svg) return;
-  const c = themeColors();
-  const W = 320, H = 150;
-  const padL = 26, padR = 6, padT = 8, padB = 18;
-  const plotW = W - padL - padR;
-  const plotH = H - padT - padB;
-  const baseY = padT + plotH;
-  const windowStart = now - TRACE_WINDOW_MS;
-  const xPix = (t) => Math.max(padL, Math.min(W - padR, padL + ((t - windowStart) / TRACE_WINDOW_MS) * plotW));
-  const yPix = (v) => padT + (1 - Math.max(0, Math.min(100, Number(v) || 0)) / 100) * plotH;
-
-  let out = "";
-  for (let g = 0; g <= 100; g += 25) {
-    const y = yPix(g);
-    out += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="${c.line}" stroke-width="0.5"/>`;
-    out += `<text x="${padL - 4}" y="${(y + 3).toFixed(1)}" fill="${c.muted}" font-size="8" text-anchor="end">${g}</text>`;
-  }
-  out += `<text x="${padL}" y="${H - 5}" fill="${c.muted}" font-size="8" text-anchor="start">-15s</text>`;
-  out += `<text x="${W - padR}" y="${H - 5}" fill="${c.muted}" font-size="8" text-anchor="end">now</text>`;
-
-  const pts = lockTrace;
-  if (pts.length >= 2) {
-    let aSeg = [];
-    const flushActual = () => {
-      if (aSeg.length >= 2) {
-        const line = aSeg.map((p) => `${xPix(p.t).toFixed(1)},${yPix(p.actual).toFixed(1)}`).join(" ");
-        const x0 = xPix(aSeg[0].t).toFixed(1);
-        const xN = xPix(aSeg[aSeg.length - 1].t).toFixed(1);
-        out += `<polygon points="${x0},${baseY.toFixed(1)} ${line} ${xN},${baseY.toFixed(1)}" fill="${c.accent}" fill-opacity="0.15" stroke="none"/>`;
-        out += `<polyline points="${line}" fill="none" stroke="${c.accent}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-      }
-      aSeg = [];
-    };
-    for (const p of pts) {
-      if (p.actual === null) { flushActual(); continue; }
-      aSeg.push(p);
-    }
-    flushActual();
-
-    let seg = "";
-    for (const p of pts) {
-      if (p.target === null) {
-        if (seg.trim()) { out += `<polyline points="${seg.trim()}" fill="none" stroke="${c.accent2}" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`; seg = ""; }
-        continue;
-      }
-      seg += `${xPix(p.t).toFixed(1)},${yPix(p.target).toFixed(1)} `;
-    }
-    if (seg.trim()) out += `<polyline points="${seg.trim()}" fill="none" stroke="${c.accent2}" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`;
-  }
-  svg.innerHTML = out;
-}
-
-// ---- Learn Haldex calibration chart ----------------------------------------
-// X = commanded correction factor (0..100%), Y = measured engagement (0..100%),
-// with a 1:1 reference diagonal. Render-only from the learn table; hidden until
-// the device returns one.
-function renderLearnChart(table) {
-  const wrap = document.getElementById("learnChartWrap");
-  const svg = document.getElementById("learnChartSvg");
-  if (!svg || !wrap) return;
-  if (!Array.isArray(table) || table.length < 2) {
-    wrap.style.display = "none";
-    svg.innerHTML = "";
-    return;
-  }
-  wrap.style.display = "";
-  const c = themeColors();
-  const W = 320, H = 200;
-  const padL = 26, padR = 8, padT = 8, padB = 20;
-  const plotW = W - padL - padR;
-  const plotH = H - padT - padB;
-  const n = table.length;
-  const xOf = (cf) => padL + (Math.max(0, Math.min(100, cf)) / 100) * plotW;
-  const yOf = (eng) => padT + (1 - Math.max(0, Math.min(100, eng)) / 100) * plotH;
-
-  let out = "";
-  for (let g = 0; g <= 100; g += 25) {
-    const y = yOf(g);
-    out += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${(W - padR).toFixed(1)}" y2="${y.toFixed(1)}" stroke="${c.line}" stroke-width="0.5"/>`;
-    out += `<text x="${(padL - 4).toFixed(1)}" y="${(y + 3).toFixed(1)}" fill="${c.muted}" font-size="8" text-anchor="end">${g}</text>`;
-    const x = xOf(g);
-    out += `<text x="${x.toFixed(1)}" y="${H - 6}" fill="${c.muted}" font-size="8" text-anchor="middle">${g}</text>`;
-  }
-  out += `<line x1="${xOf(0).toFixed(1)}" y1="${yOf(0).toFixed(1)}" x2="${xOf(100).toFixed(1)}" y2="${yOf(100).toFixed(1)}" stroke="${c.muted}" stroke-width="1" stroke-dasharray="4 3"/>`;
-
-  let line = "";
-  for (let i = 0; i < n; i++) {
-    const cf = (i / (n - 1)) * 100;
-    const eng = Number(table[i]) || 0;
-    line += `${xOf(cf).toFixed(1)},${yOf(eng).toFixed(1)} `;
-  }
-  out += `<polyline points="${line.trim()}" fill="none" stroke="${c.accent}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-  svg.innerHTML = out;
-}
-
-// ---- Expert map 3D surface (read-only) -------------------------------------
-// Isometric render of currentLock: speed/throttle on the ground, lock % as
-// height, shaded on the editor heat ramp, with a live operating-point dot.
-let tuneProject = null;
-
-function heatRGB(frac) {
-  const stops = [
-    [16, 185, 129],
-    [245, 158, 11],
-    [220, 38, 38],
-  ];
-  const f = Math.min(1, Math.max(0, frac));
-  const pos = f * (stops.length - 1);
-  const i = Math.min(stops.length - 2, Math.floor(pos));
-  const t = pos - i;
-  const mix = stops[i].map((cc, k) => Math.round(cc + (stops[i + 1][k] - cc) * t));
-  return `${mix[0]},${mix[1]},${mix[2]}`;
-}
-
-function fracIndex(value, header) {
-  if (value <= header[0]) return 0;
-  const last = header.length - 1;
-  if (value >= header[last]) return last;
-  for (let i = 0; i < last; i++) {
-    if (value < header[i + 1]) return i + (value - header[i]) / (header[i + 1] - header[i]);
-  }
-  return last;
-}
-
-function drawTuneChart() {
-  const host = document.getElementById("tuneChart");
-  if (!host) return;
-  if (!Array.isArray(currentLock) || !Array.isArray(speedHeader) || !Array.isArray(throttleHeader)) return;
-  const c = themeColors();
-  const cols = speedHeader.length;
-  const rows = throttleHeader.length;
-  const W = 340, H = 250;
-  const yaw = -30 * Math.PI / 180;
-  const pitch = 26 * Math.PI / 180;
-  const sinYaw = Math.sin(yaw), cosYaw = Math.cos(yaw);
-  const sinPit = Math.sin(pitch), cosPit = Math.cos(pitch);
-  const midC = (cols - 1) / 2, midR = (rows - 1) / 2;
-  const heightUnits = (cols - 1) * 0.6;
-  const camDist = (cols - 1) * 2.4;
-
-  const world = (col, row, lock) => {
-    const gx = col - midC;
-    const gy = row - midR;
-    const gz = (lock / 100) * heightUnits;
-    const x = gx * cosYaw + gy * sinYaw;
-    const y = -gx * sinYaw + gy * cosYaw;
-    const up = gz * cosPit + y * sinPit;
-    const depth = y * cosPit - gz * sinPit;
-    const persp = camDist / (camDist + depth);
-    return { x: x * persp, y: -up * persp, depth };
-  };
-
-  const pts = [];
-  for (let r = 0; r < rows; r++) for (let col = 0; col < cols; col++) pts.push(world(col, r, currentLock[r][col]));
-  pts.push(world(0, 0, 0), world(cols - 1, 0, 0), world(0, rows - 1, 0), world(cols - 1, rows - 1, 0));
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  pts.forEach((p) => {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
-  });
-  const mX = 16, mTop = 12, mBot = 30;
-  const scale = Math.min((W - 2 * mX) / (maxX - minX || 1), (H - mTop - mBot) / (maxY - minY || 1));
-  const ox = (W - (maxX - minX) * scale) / 2 - minX * scale;
-  const oy = mTop - minY * scale;
-  tuneProject = (col, r, lock) => {
-    const w = world(col, r, lock);
-    return { x: ox + w.x * scale, y: oy + w.y * scale };
-  };
-
-  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Lock map surface">`;
-  const facets = [];
-  for (let r = 0; r < rows - 1; r++) {
-    for (let col = 0; col < cols - 1; col++) {
-      const depth = (world(col, r, currentLock[r][col]).depth +
-        world(col + 1, r, currentLock[r][col + 1]).depth +
-        world(col, r + 1, currentLock[r + 1][col]).depth +
-        world(col + 1, r + 1, currentLock[r + 1][col + 1]).depth) / 4;
-      facets.push({ r, col, depth });
-    }
-  }
-  facets.sort((a, b) => b.depth - a.depth);
-  facets.forEach(({ r, col }) => {
-    const corners = [[r, col], [r, col + 1], [r + 1, col + 1], [r + 1, col]];
-    const poly = corners.map(([rr, cc]) => {
-      const p = tuneProject(cc, rr, currentLock[rr][cc]);
-      return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
-    }).join(" ");
-    const avg = (currentLock[r][col] + currentLock[r][col + 1] + currentLock[r + 1][col] + currentLock[r + 1][col + 1]) / 4;
-    svg += `<polygon points="${poly}" fill="rgb(${heatRGB(avg / 100)})" fill-opacity="0.55" stroke="rgba(0,0,0,0.7)" stroke-width="0.5" stroke-linejoin="round"/>`;
-  });
-
-  const floorPt = (col, r) => tuneProject(col, r, 0);
-  const fc = {
-    near: floorPt(0, rows - 1),
-    right: floorPt(cols - 1, rows - 1),
-    back: floorPt(cols - 1, 0),
-    left: floorPt(0, 0),
-  };
-  const floorLine = (pa, pb) => `<line x1="${pa.x.toFixed(1)}" y1="${pa.y.toFixed(1)}" x2="${pb.x.toFixed(1)}" y2="${pb.y.toFixed(1)}" stroke="${c.muted}" stroke-width="1"/>`;
-  svg += floorLine(fc.left, fc.back) + floorLine(fc.back, fc.right) + floorLine(fc.right, fc.near) + floorLine(fc.near, fc.left);
-
-  const speedMid = tuneProject((cols - 1) / 2, rows - 1, 0);
-  const throttleMid = tuneProject(cols - 1, (rows - 1) / 2, 0);
-  svg += `<text x="${speedMid.x.toFixed(1)}" y="${(speedMid.y + 16).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="${c.muted}">SPEED (KM/H)</text>`;
-  svg += `<text x="${(throttleMid.x + 6).toFixed(1)}" y="${(throttleMid.y + 14).toFixed(1)}" text-anchor="start" font-size="8" font-weight="700" fill="${c.muted}">THROTTLE (%)</text>`;
-
-  svg += `<line id="chartMarkerStem" stroke="${c.text}" stroke-width="1" stroke-dasharray="2 2" visibility="hidden"/>`;
-  svg += `<circle id="chartMarker" r="4" fill="${c.danger}" stroke="${c.text}" stroke-width="1.5" visibility="hidden"/>`;
-  svg += `</svg>`;
-  host.innerHTML = svg;
-
-  const legend = document.getElementById("tuneChartLegend");
-  if (legend) {
-    legend.innerHTML =
-      `<div class="chart-legend-caption">Lock % (surface height &amp; colour)</div>` +
-      `<div class="chart-legend-bar" style="background:linear-gradient(90deg, rgb(${heatRGB(0)}), rgb(${heatRGB(0.5)}), rgb(${heatRGB(1)}))"></div>` +
-      `<div class="chart-legend-scale"><span>0</span><span>50</span><span>100</span></div>`;
-  }
-  updateChartMarker();
-}
-
-function updateChartMarker() {
-  const marker = document.getElementById("chartMarker");
-  const stem = document.getElementById("chartMarkerStem");
-  if (!marker || !tuneProject || !lastDashData) return;
-  const speed = Number(lastDashData.speed);
-  const throttle = Number(lastDashData.throttle);
-  if (Number.isNaN(speed) || Number.isNaN(throttle)) {
-    marker.setAttribute("visibility", "hidden");
-    if (stem) stem.setAttribute("visibility", "hidden");
-    return;
-  }
-  const col = fracIndex(speed, speedHeader);
-  const r = fracIndex(throttle, throttleHeader);
-  const c0 = Math.floor(col), c1 = Math.min(speedHeader.length - 1, c0 + 1), tc = col - c0;
-  const r0 = Math.floor(r), r1 = Math.min(throttleHeader.length - 1, r0 + 1), tr = r - r0;
-  const lerp = (a, b, t) => a + (b - a) * t;
-  const blend = (q00, q10, q01, q11) => ({
-    x: lerp(lerp(q00.x, q10.x, tc), lerp(q01.x, q11.x, tc), tr),
-    y: lerp(lerp(q00.y, q10.y, tc), lerp(q01.y, q11.y, tc), tr),
-  });
-  const corner = (cc, rr) => tuneProject(cc, rr, currentLock[rr][cc]);
-  const top = blend(corner(c0, r0), corner(c1, r0), corner(c0, r1), corner(c1, r1));
-  const floor = (cc, rr) => tuneProject(cc, rr, 0);
-  const foot = blend(floor(c0, r0), floor(c1, r0), floor(c0, r1), floor(c1, r1));
-  marker.setAttribute("cx", top.x.toFixed(1));
-  marker.setAttribute("cy", top.y.toFixed(1));
-  marker.setAttribute("visibility", "visible");
-  if (stem) {
-    stem.setAttribute("x1", foot.x.toFixed(1));
-    stem.setAttribute("y1", foot.y.toFixed(1));
-    stem.setAttribute("x2", top.x.toFixed(1));
-    stem.setAttribute("y2", top.y.toFixed(1));
-    stem.setAttribute("visibility", "visible");
-  }
-}
-
-// Snapshot of the last poll so the 3D surface dot can move without a full poll.
-let lastDashData = null;
-
-// Build the per-tile gauge customizer and apply the saved preferences.
-function initGaugeUI() {
-  const host = document.getElementById("gaugeCustomizer");
-  if (host) {
-    host.innerHTML = "";
-    GAUGE_TILES.forEach((t) => {
-      const label = document.createElement("label");
-      label.className = "tile-opt";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = gaugePrefs.tiles.includes(t.id);
-      cb.addEventListener("change", () => {
-        const set = new Set(gaugePrefs.tiles);
-        if (cb.checked) set.add(t.id); else set.delete(t.id);
-        gaugePrefs.tiles = [...set];
-        saveGaugePrefs();
-        applyGaugePrefs();
-      });
-      const span = document.createElement("span");
-      span.textContent = t.label;
-      label.appendChild(cb);
-      label.appendChild(span);
-      host.appendChild(label);
-    });
-  }
-
-  const engCb = document.getElementById("optEngagementGauge");
-  if (engCb) {
-    engCb.checked = gaugePrefs.engagement;
-    engCb.addEventListener("change", () => {
-      gaugePrefs.engagement = engCb.checked;
-      saveGaugePrefs();
-      applyGaugePrefs();
-    });
-  }
-  const traceCb = document.getElementById("optLockTrace");
-  if (traceCb) {
-    traceCb.checked = gaugePrefs.trace;
-    traceCb.addEventListener("change", () => {
-      gaugePrefs.trace = traceCb.checked;
-      saveGaugePrefs();
-      applyGaugePrefs();
-    });
-  }
-
-  applyGaugePrefs();
-  renderLockTrace(Date.now());
-  updateEngagementGauge(null, null, true); // empty arc, drawn instantly - the intro sweep starts from here
 }

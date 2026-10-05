@@ -3,170 +3,299 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#1a1a1a">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
 
     <title>OpenHaldex-C6</title>
-    <link rel="stylesheet" href="style.css?v=20260920">
+
+    <!-- PWA: installable, full-screen standalone launch from the home screen. -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="OpenHaldex">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+
+    <link rel="stylesheet" href="style.css?v=9.01.0">
 </head>
 
 <body>
     <div class="container">
-        <header class="topbar">
-            <h1>OpenHaldex-C6</h1>
+        <header>
+            <h1>OpenHaldex <span class="accent">Edge</span></h1>
             <div class="status-bar">
-                <!--<span class="status-badge" id="wsStatus">Connecting...</span>-->
-                <span class="status-badge" id="modeStatus">--</span>
-                <span class="status-badge" id="canStatus">CAN: --</span>
+                <span class="status-badge" id="connStatus" role="status" aria-live="polite">Connecting...</span>
+                <span class="status-badge" id="canStatus">CAN --</span>
+                <span class="status-badge" id="modeStatus">Mode --</span>
             </div>
+            <button class="btn-fullscreen" id="fullscreenToggle" aria-pressed="false"
+                aria-label="Enter full screen" title="Full screen" hidden>
+                <svg class="fs-icon fs-icon-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/>
+                    <path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+                </svg>
+                <svg class="fs-icon fs-icon-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/>
+                    <path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>
+                </svg>
+            </button>
         </header>
 
         <nav class="nav-tabs">
-            <button class="nav-tab active" data-page="dashboard">Dashboard</button>
-            <button class="nav-tab" data-page="basic">Basic</button>
-            <button class="nav-tab" data-page="expert">Expert</button>
-            <button class="nav-tab" data-page="settings">Settings</button>
-            <button class="nav-tab" data-page="diagnostics">Diagnostics</button>
-            <button class="nav-tab" data-page="ota">OTA</button>
+            <button class="nav-tab active" data-page="dashboard" aria-current="page">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+                <span>Dashboard</span>
+            </button>
+            <button class="nav-tab" data-page="calibrate">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><line x1="12" x2="12" y1="2" y2="4"/><line x1="12" x2="12" y1="20" y2="22"/><line x1="2" x2="4" y1="12" y2="12"/><line x1="20" x2="22" y1="12" y2="12"/></svg>
+                <span>Calibrate</span>
+            </button>
+            <button class="nav-tab" data-page="basic">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>
+                <span>Basic</span>
+            </button>
+            <button class="nav-tab" data-page="expert">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>
+                <span>Expert</span>
+            </button>
+            <button class="nav-tab" data-page="settings">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
+                <span>Settings</span>
+            </button>
+            <button class="nav-tab" data-page="diagnostics">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                <span>Diag</span>
+            </button>
+            <button class="nav-tab" data-page="ota">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+                <span>Update</span>
+            </button>
         </nav>
 
         <div class="page active" id="dashboard-page">
-            <section class="card">
-                <h2>Mode Selection</h2>
-                <div class="mode-grid">
-                    <button class="mode-btn" data-mode="0">Stock</button>
-                    <button class="mode-btn" data-mode="1">FWD</button>
-                    <button class="mode-btn" data-mode="2">50:50</button>
-                    <button class="mode-btn" data-mode="3">60:40</button>
-                    <button class="mode-btn" data-mode="4">75:25</button>
-                    <button class="mode-btn" data-mode="5">Expert</button>
+            <div class="calib-banner" id="calibBanner" role="status" hidden>
+                <svg class="calib-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                <div class="calib-banner-body">
+                    <p class="calib-banner-title">Not calibrated</p>
+                    <p class="calib-banner-text">The Haldex has not been learned, so lock is running on an estimated factor - results will be worse than Stock. Open the Calibrate tab and run the Learn first.</p>
+                    <button class="calib-banner-cta" id="calibBannerOpen" type="button">Open Calibrate</button>
                 </div>
-                <!--
-                <div class="current-mode">
-                    Current: <span id="currentMode">--</span>
+                <button class="calib-banner-dismiss" id="calibBannerDismiss" type="button" aria-label="Dismiss">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+            </div>
+            <section class="card hero-card">
+                <div class="hero-top">
+                    <h2>Haldex Engagement</h2>
+                    <button class="mode-pill" id="modePill" aria-haspopup="dialog" aria-expanded="false"
+                        aria-controls="modeDrawer">
+                        <span class="mode-pill-label" id="modePillLabel">--</span>
+                        <svg class="mode-pill-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="m9 18 6-6-6-6" />
+                        </svg>
+                    </button>
                 </div>
-            -->
+                <div class="gauge-hero">
+                    <svg class="gauge-arc" viewBox="0 0 200 118" role="img" aria-label="Haldex engagement gauge">
+                        <defs>
+                            <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="0">
+                                <stop offset="0%" stop-color="#b91c1c" />
+                                <stop offset="60%" stop-color="#dc2626" />
+                                <stop offset="100%" stop-color="#ef4444" />
+                            </linearGradient>
+                        </defs>
+                        <path class="gauge-arc-track" d="M 20 100 A 80 80 0 0 1 180 100" />
+                        <path class="gauge-arc-fill" id="gaugeArcFill" d="M 20 100 A 80 80 0 0 1 180 100" />
+                        <line class="gauge-target-tick" id="gaugeTargetTick" x1="12" y1="100" x2="30" y2="100"
+                            transform="rotate(0 100 100)" visibility="hidden" />
+                    </svg>
+                    <div class="gauge-hero-center">
+                        <div class="gauge-hero-label">Target lock</div>
+                        <div class="gauge-hero-value"><span id="lockTarget">--</span><span
+                                class="gauge-hero-unit">%</span></div>
+                        <div class="gauge-hero-sub">Now <span id="lockActual">--</span>%</div>
+                    </div>
+                </div>
             </section>
 
-            <section class="card">
-                <h2>Haldex Engagement</h2>
-                <div class="engagement-display">
-                    <div class="engagement-label">
-                        <span>Target: <span id="lockTarget">--</span>%</span>
-                        <span>Actual: <span id="lockActual">--</span>%</span>
+            <section class="card glance-card">
+                <details class="tile-customizer" id="dashTileCustomizer">
+                    <summary>Customize tiles</summary>
+                    <p class="hint">Pick which signals show at a glance. Saved in this browser.</p>
+                    <div class="tile-options" id="dashTileOptions"></div>
+                </details>
+                <div class="stat-grid stat-grid-dense">
+                    <div class="stat-tile stat-tile-temp" data-signal="udsClutchTemp">
+                        <div class="stat-label">Clutch Temp</div>
+                        <div class="stat-value"><span id="udsClutchTemp">--</span><span class="stat-unit">C</span></div>
                     </div>
-                    <div class="engagement-gauge-wrap" id="engagementGaugeWrap" style="display:none;">
-                        <svg class="engagement-gauge-svg" viewBox="0 0 200 118" aria-label="Haldex engagement gauge">
-                            <path class="eg-track" d="M 20 100 A 80 80 0 0 1 180 100" fill="none" />
-                            <path class="eg-fill" id="gaugeArcFill" d="M 20 100 A 80 80 0 0 1 180 100" fill="none" />
-                            <line class="eg-tick" id="gaugeTargetTick" x1="6" y1="100" x2="30" y2="100" visibility="hidden" />
-                            <text class="eg-value" id="gaugeCenterValue" x="100" y="90" text-anchor="middle">--</text>
-                            <text class="eg-caption" x="100" y="112" text-anchor="middle">LOCK %</text>
-                        </svg>
+                    <div class="stat-tile stat-tile-temp" data-signal="udsModuleTemp">
+                        <div class="stat-label">Module Temp</div>
+                        <div class="stat-value"><span id="udsModuleTemp">--</span><span class="stat-unit">C</span></div>
                     </div>
-                    <div class="engagement-bar-wrap" id="engagementBarWrap">
-                        <div class="engagement-bar">
-                            <div class="engagement-fill" id="engagementFill"></div>
-                            <div class="engagement-reduction" id="engagementReduction" style="display:none;"></div>
+                    <div class="stat-tile stat-tile-temp" data-signal="udsCoolingFinTemp">
+                        <div class="stat-label">Cooling Fin</div>
+                        <div class="stat-value"><span id="udsCoolingFinTemp">--</span><span class="stat-unit">C</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="speed">
+                        <div class="stat-label">Speed</div>
+                        <div class="stat-value"><span id="speed">--</span><span class="stat-unit">km/h</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="throttle">
+                        <div class="stat-label">Throttle</div>
+                        <div class="stat-value"><span id="throttle">--</span><span class="stat-unit">%</span></div>
+                        <div class="stat-bar">
+                            <div class="stat-bar-fill" id="throttleBar"></div>
                         </div>
                     </div>
-                    <div class="engagement-steering-note" id="steeringReductionNote" style="display:none;"></div>
-                    <div class="chart-wrap" id="lockTraceWrap">
-                        <div class="chart-title">Lock response (last 15s) — <span class="chart-key actual">actual</span> vs <span class="chart-key target">target</span></div>
-                        <svg class="strip-chart" id="lockTraceSvg" viewBox="0 0 320 150" preserveAspectRatio="xMidYMid meet"></svg>
+                    <div class="stat-tile" data-signal="rpm">
+                        <div class="stat-label">RPM</div>
+                        <div class="stat-value"><span id="rpm">--</span></div>
                     </div>
+                    <div class="stat-tile" data-signal="boost">
+                        <div class="stat-label">Boost</div>
+                        <div class="stat-value"><span id="boost">--</span><span class="stat-unit">mbar</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="haldexEngagement">
+                        <div class="stat-label">Reported</div>
+                        <div class="stat-value"><span id="haldexEngagement">--</span><span class="stat-unit">%</span></div>
+                    </div>
+                    <div class="stat-tile stat-tile-uds" data-signal="udsClutchPWM">
+                        <div class="stat-label">Clutch PWM</div>
+                        <div class="stat-value"><span id="udsClutchPWM">--</span><span class="stat-unit">%</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="steeringAngle">
+                        <div class="stat-label">Steering</div>
+                        <div class="stat-value"><span id="steeringAngle">--</span><span class="stat-unit">deg</span></div>
+                    </div>
+                    <div class="stat-tile" data-signal="steeringGainNow">
+                        <div class="stat-label">Steer Gain</div>
+                        <div class="stat-value"><span id="steeringGainNow">--</span><span class="stat-unit">%</span></div>
+                    </div>
+                </div>
+
+                <div class="chip-row">
+                    <div class="status-chip" id="chipTempProtection"><span class="chip-dot"></span>Temp Protection</div>
+                    <div class="status-chip" id="chipCouplingOpen"><span class="chip-dot"></span>Coupling Open</div>
+                    <div class="status-chip" id="chipSpeedLimit"><span class="chip-dot"></span>Speed Limit</div>
+                    <div class="status-chip" id="chipClutch1"><span class="chip-dot"></span>Clutch 1: <span
+                            id="clutch1Report">--</span></div>
+                    <div class="status-chip" id="chipClutch2"><span class="chip-dot"></span>Clutch 2: <span
+                            id="clutch2Report">--</span></div>
+                </div>
+
+                <details class="more-info" id="udsDetails" style="display:none;">
+                    <summary>Full Haldex live data (UDS)</summary>
+                    <p class="hint" id="udsStatus"></p>
+                    <div class="stat-grid stat-grid-dense uds-more-grid">
+                        <div class="stat-tile">
+                            <div class="stat-label">Battery</div>
+                            <div class="stat-value"><span id="udsTerminalVoltage">--</span><span
+                                    class="stat-unit">V</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Pump Current</div>
+                            <div class="stat-value"><span id="udsClutchCurrent">--</span><span
+                                    class="stat-unit">A</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Pump Voltage</div>
+                            <div class="stat-value"><span id="udsClutchVoltage">--</span><span
+                                    class="stat-unit">V</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Blockage</div>
+                            <div class="stat-value"><span id="udsBlockagePct">--</span><span
+                                    class="stat-unit">%</span></div>
+                        </div>
+                    </div>
+                </details>
+
+                <details class="more-info" id="kwpDetails" style="display:none;">
+                    <summary>Haldex live data (TP2.0)</summary>
+                    <div class="stat-grid stat-grid-dense uds-more-grid">
+                        <div class="stat-tile">
+                            <div class="stat-label">Oil Temp</div>
+                            <div class="stat-value"><span id="kwpOilTemp">--</span><span class="stat-unit">C</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Plate Temp</div>
+                            <div class="stat-value"><span id="kwpPlateTemp">--</span><span class="stat-unit">C</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Supply</div>
+                            <div class="stat-value"><span id="kwpSupplyVoltage">--</span><span class="stat-unit">V</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Oil Pressure</div>
+                            <div class="stat-value"><span id="kwpOilPressure">--</span><span class="stat-unit">bar</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Est. Torque</div>
+                            <div class="stat-value"><span id="kwpEstTorque">--</span><span class="stat-unit">Nm</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Clutch Duty</div>
+                            <div class="stat-value"><span id="kwpClutchDuty">--</span><span class="stat-unit">%</span></div>
+                        </div>
+                        <div class="stat-tile">
+                            <div class="stat-label">Valve Current</div>
+                            <div class="stat-value"><span id="kwpClutchValveCurrent">--</span><span class="stat-unit">A</span></div>
+                        </div>
+                    </div>
+                    <p class="hint" id="kwpStatus">Connecting...</p>
+                </details>
+
+                <div class="glance-state-footer">
+                    <div class="gauge glance-state-gauge">
+                        <div class="gauge-label">Haldex State</div>
+                        <div class="gauge-value" id="haldexState">--</div>
+                        <div class="gauge-unit"> bits</div>
+                    </div>
+                    <div id="haldexStateLegend" class="state-legend"></div>
                 </div>
             </section>
 
-            <section class="card">
-                <h2>Live Data</h2>
-                <div class="gauge-grid">
-                    <div class="gauge">
-                        <div class="gauge-label">Speed</div>
-                        <div class="gauge-value" id="speed">--</div>
-                        <div class="gauge-unit">km/h</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Throttle</div>
-                        <div class="gauge-value" id="throttle">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">RPM</div>
-                        <div class="gauge-value" id="rpm">--</div>
-                        <div class="gauge-unit">RPM</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Boost</div>
-                        <div class="gauge-value" id="boost">--</div>
-                        <div class="gauge-unit">mbar</div>
-                    </div>
+            <section class="card lock-trace-card" id="lockTraceCard">
+                <h3 class="subsection-title">Lock Response <span class="trace-window-label">last 15s</span></h3>
+                <div class="lock-trace">
+                    <svg id="lockTraceSvg" viewBox="0 0 320 160" preserveAspectRatio="none" role="img"
+                        aria-label="Lock target versus actual engagement over time"></svg>
+                </div>
+                <div class="trace-legend">
+                    <span class="trace-legend-item"><span class="trace-swatch trace-swatch-actual"></span>Actual</span>
+                    <span class="trace-legend-item"><span class="trace-swatch trace-swatch-target"></span>Target</span>
                 </div>
             </section>
 
-            <section class="card" id="haldexDataCard">
-                <h2>Haldex Data</h2>
-                <div class="gauge-grid">
-                    <div class="gauge">
-                        <div class="gauge-label">Engagement</div>
-                        <div class="gauge-value" id="haldexEngagement">--</div>
-                        <div class="gauge-unit"> %</div>
+            <section class="card" id="wheelSlipCard" style="display:none;">
+                <h2>Wheel Slip</h2>
+                <div class="slip-grid">
+                    <div class="stat-tile">
+                        <div class="stat-label">Front Left</div>
+                        <div class="stat-value"><span id="slipFL">--</span><span class="stat-unit">%</span></div>
                     </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Clutch 1</div>
-                        <div class="gauge-value" id="clutch1Report">--</div>
-                        <div class="gauge-unit"> bit</div>
+                    <div class="stat-tile">
+                        <div class="stat-label">Front Right</div>
+                        <div class="stat-value"><span id="slipFR">--</span><span class="stat-unit">%</span></div>
                     </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Clutch 2</div>
-                        <div class="gauge-value" id="clutch2Report">--</div>
-                        <div class="gauge-unit"> bit</div>
+                    <div class="stat-tile">
+                        <div class="stat-label">Rear Left</div>
+                        <div class="stat-value"><span id="slipRL">--</span><span class="stat-unit">%</span></div>
                     </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Temp Protection</div>
-                        <div class="gauge-value" id="tempProtection">--</div>
-                        <div class="gauge-unit"> bit</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Coupling Open</div>
-                        <div class="gauge-value" id="couplingOpen">--</div>
-                        <div class="gauge-unit"> bit</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Speed Limit</div>
-                        <div class="gauge-value" id="speedLimit">--</div>
-                        <div class="gauge-unit"> bit</div>
+                    <div class="stat-tile">
+                        <div class="stat-label">Rear Right</div>
+                        <div class="stat-value"><span id="slipRR">--</span><span class="stat-unit">%</span></div>
                     </div>
                 </div>
-            </section>
-
-            <section class="card" id="wheelSlipCard">
-                <h2>Wheel Slip (%)</h2>
-                <div class="gauge-grid">
-                    <div class="gauge">
-                        <div class="gauge-label">Front Left</div>
-                        <div class="gauge-value" id="slipFL">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Front Right</div>
-                        <div class="gauge-value" id="slipFR">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Rear Left</div>
-                        <div class="gauge-value" id="slipRL">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Rear Right</div>
-                        <div class="gauge-value" id="slipRR">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                </div>
-                <p class="hint">Geometry-compensated per-corner slip vs. steering-predicted speed. Needs MQB wheel-speed + steering CAN. Geometry defaults are Audi TT Mk3 and want on-car calibration.</p>
+                <p class="hint">Each wheel against the speed the steering angle says it should be doing. Needs wheel-speed and steering CAN. Shows -- until both are live.</p>
             </section>
 
             <section class="card" id="gen41Card" style="display:none;">
@@ -197,126 +326,33 @@
                 </div>
             </section>
 
-            <section class="card">
-                <div class="gauge">
-                    <div class="gauge-label">Haldex State</div>
-                    <div class="gauge-value" id="haldexState">--</div>
-                    <div class="gauge-unit"> bits</div>
-                </div>
-                <div id="haldexStateLegend" class="state-legend"></div>
-            </section>
-
-            <section class="card" id="udsDataCard" style="display:none;">
-                <h2>UDS Data (MQB)</h2>
-                <div class="gauge-grid">
-                    <div class="gauge">
-                        <div class="gauge-label">Terminal Volt.</div>
-                        <div class="gauge-value" id="udsTerminalVoltage">--</div>
-                        <div class="gauge-unit">V</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Module Temp</div>
-                        <div class="gauge-value" id="udsModuleTemp">--</div>
-                        <div class="gauge-unit">°C</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Clutch Temp</div>
-                        <div class="gauge-value" id="udsClutchTemp">--</div>
-                        <div class="gauge-unit">°C</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Fin Temp</div>
-                        <div class="gauge-value" id="udsCoolingFinTemp">--</div>
-                        <div class="gauge-unit">°C</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Clutch Current</div>
-                        <div class="gauge-value" id="udsClutchCurrent">--</div>
-                        <div class="gauge-unit">A</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">PWM Signal</div>
-                        <div class="gauge-value" id="udsClutchPWM">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Voltage (2BE4)</div>
-                        <div class="gauge-value" id="udsClutchVoltage">--</div>
-                        <div class="gauge-unit">V</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Blockage</div>
-                        <div class="gauge-value" id="udsBlockagePct">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                </div>
-                <p class="hint" id="udsStatus"></p>
-            </section>
-
-            <section class="card" id="kwpDataCard" style="display:none;">
-                <h2>Live Data (TP2.0)</h2>
-                <div class="gauge-grid">
-                    <div class="gauge">
-                        <div class="gauge-label">Oil Temp</div>
-                        <div class="gauge-value" id="kwpOilTemp">--</div>
-                        <div class="gauge-unit">°C</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Plate Temp</div>
-                        <div class="gauge-value" id="kwpPlateTemp">--</div>
-                        <div class="gauge-unit">°C</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Supply Volt.</div>
-                        <div class="gauge-value" id="kwpSupplyVoltage">--</div>
-                        <div class="gauge-unit">V</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Oil Pressure</div>
-                        <div class="gauge-value" id="kwpOilPressure">--</div>
-                        <div class="gauge-unit">bar</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Est. Torque</div>
-                        <div class="gauge-value" id="kwpEstTorque">--</div>
-                        <div class="gauge-unit">Nm</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Clutch Duty</div>
-                        <div class="gauge-value" id="kwpClutchDuty">--</div>
-                        <div class="gauge-unit">%</div>
-                    </div>
-                    <div class="gauge">
-                        <div class="gauge-label">Valve Current</div>
-                        <div class="gauge-value" id="kwpClutchValveCurrent">--</div>
-                        <div class="gauge-unit">A</div>
-                    </div>
-                </div>
-                <p class="hint" id="kwpStatus">Connecting…</p>
-            </section>
-
-            <section class="card">
-                <h2>Display Options</h2>
-                <p class="hint">Choose which readouts show as dial gauges instead of numbers. Saved in this browser.</p>
-                <div class="tile-opt-grid" id="gaugeCustomizer"></div>
-                <div class="toggle-group" style="margin-top:12px;">
-                    <label class="toggle">
-                        <input type="checkbox" id="optEngagementGauge">
-                        <span class="toggle-slider"></span>
-                        <span class="toggle-label">Engagement as arc gauge</span>
-                    </label>
-                    <label class="toggle">
-                        <input type="checkbox" id="optLockTrace">
-                        <span class="toggle-slider"></span>
-                        <span class="toggle-label">Show lock-response graph</span>
-                    </label>
-                </div>
-            </section>
         </div>
 
-        <div class="page" id="settings-page">
+        <div class="page" id="calibrate-page">
             <section class="card">
-                <h2>Haldex Generation</h2>
+                <h2>Calibrate</h2>
+                <p class="hint">Set this up once per car <strong>before</strong> you start using the drive modes. Without it the controller only guesses how your Haldex responds, and an uncalibrated guess drives worse than leaving the car in Stock. Work top to bottom.</p>
+
+                <div class="calib-status-chip" id="calibStatusChip">
+                    <span class="calib-status-dot"></span>
+                    <span class="calib-status-text" id="calibStatusChipText">Checking calibration...</span>
+                </div>
+
+                <ol class="calib-steps">
+                    <li>Set your <strong>Generation</strong> to match the car.</li>
+                    <li>Run the <strong>Learn</strong> (engine running, car stationary, Haldex CAN live).</li>
+                    <li>Set <strong>Lock calibration</strong> to 1:1 using the learn chart.</li>
+                    <li>Optional: raise the <strong>Launch PWM floor</strong>.</li>
+                    <li>Still not smooth? Run <strong>Long Learn</strong> below, or edit the <strong>frame blocks</strong> by hand.</li>
+                </ol>
+            </section>
+
+            <section class="card" id="learnSection">
+                <div class="calib-head">
+                    <h3 class="subsection-title">1 &middot; Generation</h3>
+                    <button class="calib-info" type="button" data-info="gen" aria-label="About Generation">i</button>
+                </div>
+                <p class="hint">Which Haldex controller is fitted to your car. This has to be right or nothing else works.</p>
                 <select id="haldexGeneration" class="input-select">
                     <option value="1">Generation 1</option>
                     <option value="2">Generation 2</option>
@@ -327,13 +363,12 @@
                     <option value="51">Generation 5 (0AY)</option>
                     <option value="41">Generation 4 - GM/SAAB</option>
                 </select>
-            </section>
 
-            <section class="card" id="learnSection">
-                <h2>Learn Haldex</h2>
-                <p class="hint">Sweeps correction factors 0–100% and records actual Haldex engagement at each step,
-                    building a calibration table that replaces the formula. Car must be running with Haldex CAN active.
-                </p>
+                <div class="calib-head">
+                    <h3 class="subsection-title">2 &middot; Learn Haldex</h3>
+                    <button class="calib-info" type="button" data-info="learn" aria-label="About Learn Haldex">i</button>
+                </div>
+                <p class="hint">Teaches the controller how your exact Haldex responds so lock commands hit their target. Engine running, car stationary, Haldex CAN connected. Takes a couple of minutes.</p>
                 <p class="hint" id="learnStatusText">--</p>
                 <div class="learn-progress-wrap" id="learnProgressWrap" style="display:none;">
                     <div class="learn-progress-bar">
@@ -361,41 +396,52 @@
                         </div>
                     </div>
                 </div>
-                <div class="chart-wrap" id="learnChartWrap" style="display:none;">
-                    <div class="chart-title">Learned calibration — commanded vs measured (dashed = 1:1)</div>
-                    <svg class="strip-chart" id="learnChartSvg" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid meet"></svg>
+                <div class="learn-chart-wrap" id="learnChartWrap" style="display:none;">
+                    <p class="hint">Learned calibration: commanded correction factor (X) vs measured Haldex engagement (Y). The dashed line is a 1:1 reference - points above it mean the Haldex over-responds, below means it under-responds.</p>
+                    <div class="learn-chart">
+                        <svg id="learnChartSvg" viewBox="0 0 320 200" preserveAspectRatio="none" role="img"
+                            aria-label="Learned Haldex calibration: commanded correction factor versus measured engagement"></svg>
+                    </div>
                 </div>
                 <div class="learn-controls">
                     <button class="btn-secondary" id="learnStart">Learn Haldex</button>
                     <button class="btn-secondary" id="learnCancel" style="display:none;">Cancel</button>
-                    <button class="btn-secondary" id="learnClear">Clear Learn Data</button>
+                    <button class="btn-danger" id="learnClear">Clear Learn Data</button>
                 </div>
+
                 <div class="toggle-group" style="margin-top: 12px;">
-                    <label class="toggle">
-                        <input type="checkbox" id="fixHunting">
-                        <span class="toggle-slider"></span>
-                        <span class="toggle-label">Fix Hunting</span>
-                    </label>
-                    <p class="hint">Enable only if the Haldex hunts at partial lock (e.g. 60/40 or 70/30) on a 554K controller.</p>
+                    <div class="calib-head">
+                        <h3 class="subsection-title" id="bpkCeilingLabel">3 &middot; Lock calibration</h3>
+                        <button class="calib-info" type="button" data-info="ceiling" aria-label="About Lock calibration">i</button>
+                    </div>
+                    <p class="hint">Lines up the lock you command with the lock the Haldex actually delivers. Run a Learn, then adjust this until the Sent vs Returned line sits on the 1:1 diagonal. Not a power dial.</p>
+                    <div class="slider-container" id="bpkCeilingContainer">
+                        <input type="range" id="bpkCeilingRange" min="100" max="500" step="10" value="220" class="slider" aria-labelledby="bpkCeilingLabel">
+                        <div class="slider-value"><span id="bpkCeilingValue">220</span> Nm</div>
+                    </div>
+
+                    <div class="calib-head">
+                        <h3 class="subsection-title" id="esp14MinFloorLabel">4 &middot; Launch PWM floor (experimental)</h3>
+                        <button class="calib-info" type="button" data-info="floor" aria-label="About Launch PWM floor">i</button>
+                    </div>
+                    <p class="hint">Optional. Holds a minimum clutch PWM under launch so engagement builds faster off the line. Leave at 0 unless you know you want it. Only applies while lock is commanded.</p>
+                    <div class="slider-container" id="esp14MinFloorContainer">
+                        <input type="range" id="esp14MinFloorRange" min="0" max="100" step="1" value="0" class="slider" aria-labelledby="esp14MinFloorLabel">
+                        <div class="slider-value"><span id="esp14MinFloorValue">0</span> %</div>
+                    </div>
                 </div>
             </section>
 
             <section class="card" id="longLearnSection">
                 <h2>Long Learn</h2>
-                <p class="hint">Automates the manual add/remove-a-block loop. Turns <strong>every</strong> frame block for this
-                    generation on, then (Gen5 0CQ/VAQ) steps the Launch PWM Floor until the learn is smooth &mdash; it may jump on
-                    first engage (e.g. to 30%) but must then climb cleanly to 100%. It then removes each additional block one at a
-                    time: any block whose removal <em>affects</em> the learn goes back on (flagged if it was actually better without);
-                    one that makes no difference stays off. A final confirmation learn is
-                    stored against the resulting set. Allow 10&ndash;20 minutes with the car running and Haldex CAN active.
-                    Cancelling restores the previous blocks, floor and learn table.</p>
+                <p class="hint">Advanced. Automates the add-a-block, remove-a-block loop for a learn that will not come out clean. It turns <strong>every</strong> frame block for this generation on, then (Gen5 0CQ / VAQ) steps the Launch PWM floor up until the learn is smooth. After that it removes the extra blocks one at a time: a block whose removal changes the learn goes back on (and is flagged if the learn was actually better without it), one that makes no difference stays off. A last confirmation learn is stored against the final set. Allow 10 to 20 minutes with the car running and Haldex CAN live. Cancelling puts back the old blocks, floor and learn table.</p>
                 <div class="toggle-group">
                     <label class="toggle">
                         <input type="checkbox" id="longLearnTestAll">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Also test the default (core) blocks</span>
                     </label>
-                    <p class="hint">Off = the original edited set is kept as-is and only the transferred/additional blocks are bisected. On = every block is tested (longer, and can leave the Haldex with no lock command during a sweep).</p>
+                    <p class="hint">Off: your current set is kept and only the extra blocks are tested. On: every block is tested. That takes longer and can leave the Haldex with no lock command for part of a sweep.</p>
                 </div>
                 <p class="hint" id="longLearnStatusText">--</p>
                 <div class="learn-progress-wrap" id="longLearnProgressWrap" style="display:none;">
@@ -436,45 +482,32 @@
                 </div>
 
                 <h3 class="subsection-title" style="margin-top:18px;">Chassis / car notes</h3>
-                <p class="hint">Free text saved on the unit and written into the exported report &mdash; chassis, Haldex part number, tyres, tune, anything that identifies this car.</p>
+                <p class="hint">Free text kept on the module and written into the exported report: chassis, Haldex part number, tyres, tune, anything that identifies this car.</p>
                 <textarea id="longLearnNotes" class="ll-notes" rows="3" maxlength="200" placeholder="e.g. 2015 Golf R Mk7, 0CQ 554K, 235/35R19, Stage 1"></textarea>
-                <div class="button-row">
+                <div class="wifi-controls">
                     <button class="btn-secondary" id="longLearnExport" type="button">Export report (.txt)</button>
                 </div>
             </section>
 
-            <section class="card" id="gen5CalibrationCard">
-                <h2>Gen 5 Lock Calibration</h2>
-                <p class="hint">Per-car tuning for Gen5 (0CQ/VAQ). Both apply only to Gen5 packing; defaults leave behaviour unchanged.</p>
-
-                <div class="cal-row">
-                    <div class="cal-row-head">
-                        <span class="toggle-label">Lock Calibration (Nm)</span>
-                        <span class="cal-row-value"><span id="bpkCeilingValue">220</span> Nm</span>
+            <section class="card" id="frameEditCard">
+                <details class="frame-edit-details" id="frameEditDetails">
+                    <summary><span class="frame-edit-title">Frame blocks (advanced)</span></summary>
+                    <p class="hint">Turn editing of individual CAN frames on or off in normal (non-standalone) mode. A block that is off leaves the car's own frame untouched. Use it to find which edited frame upsets the learn. Changes apply at once and are saved. Only affects the selected generation.</p>
+                    <div id="frameEditList" class="frame-edit-list">
+                        <p class="hint">Not available for this generation.</p>
                     </div>
-                    <input type="range" id="bpkCeilingRange" min="10" max="500" step="5" value="220" class="slider cal-slider">
-                </div>
-                <p class="hint">BPK ceiling the spoof frame claims at full command. Not a strength dial — run a Learn and nudge until commanded lock matches delivered (Sent vs Returned on the 1:1 line). Only active with Fix Hunting on.</p>
-                <div class="button-row">
-                    <button class="btn" id="bpkCeilingResetBtn" type="button">Reset to default (220 Nm)</button>
-                </div>
-
-                <div class="cal-row">
-                    <div class="cal-row-head">
-                        <span class="toggle-label">Launch PWM Floor (%)</span>
-                        <span class="cal-row-value"><span id="esp14MinFloorValue">0</span> %</span>
+                    <div class="wifi-controls">
+                        <button class="btn-secondary" id="frameEditReset">Reset to Defaults</button>
                     </div>
-                    <input type="range" id="esp14MinFloorRange" min="0" max="100" step="5" value="0" class="slider cal-slider">
-                </div>
-                <p class="hint">Experimental. Raises the ESP_14 minimum clutch PWM while lock is commanded, for a firmer launch. 0% = off. Collapses off-throttle/FWD/coasting and is clamped below the commanded max.</p>
-                <div class="button-row">
-                    <button class="btn" id="esp14MinFloorResetBtn" type="button">Reset to default (0 %)</button>
-                </div>
+                </details>
             </section>
+        </div>
 
+        <div class="page" id="settings-page">
             <section class="card">
-                <h2>Mode Options</h2>
+                <h2>Inputs &amp; Triggers</h2>
                 <div class="toggle-group">
+                    <h3 class="subsection-title">Force-Mode Triggers</h3>
                     <label class="toggle">
                         <input type="checkbox" id="tcForceMode">
                         <span class="toggle-slider"></span>
@@ -536,12 +569,9 @@
                         </select>
                     </div>
                     <p class="hint">When multiple triggers are active simultaneously, the highest-priority one wins.</p>
-                </div>
-            </section>
 
-            <section class="card">
-                <h2>Output Options</h2>
-                <div class="toggle-group">
+                    <h3 class="subsection-title">Brake / Handbrake Outputs</h3>
+                    <p class="hint">Drive the controller's brake/handbrake output pins from the matching input. "Follow" mirrors the input; "Invert" flips it (output active when the input is released). Leave off unless your wiring uses these pins.</p>
                     <label class="toggle">
                         <input type="checkbox" id="followBrake">
                         <span class="toggle-slider"></span>
@@ -568,36 +598,31 @@
             <section class="card">
                 <h2>Controller Options</h2>
                 <div class="toggle-group">
+                    <h3 class="subsection-title">Controller &amp; Connectivity</h3>
                     <label class="toggle">
                         <input type="checkbox" id="disableController">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Controller Disabled</span>
                     </label>
+                    <p class="hint">Hard passthrough. The unit forwards every chassis frame to the Haldex untouched - no mode, no lock map, no overrides. The kill-switch when you want the car fully stock without unplugging.</p>
                     <label class="toggle">
                         <input type="checkbox" id="isStandalone">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Standalone Mode</span>
                     </label>
+                    <p class="hint">For a car with no chassis CAN feeding the controller. It ignores incoming chassis frames and generates its own, so it can drive the Haldex on a bench or a stripped car. Stock mode is unavailable here (nothing to mirror).</p>
                     <label class="toggle">
                         <input type="checkbox" id="useCANifAvailable">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Use CAN if Available</span>
                     </label>
+                    <p class="hint">Standalone only. Still read real chassis CAN (speed, throttle) when it is present, so Expert mode's speed/throttle map works instead of running blind.</p>
                     <label class="toggle">
                         <input type="checkbox" id="broadcastOpenHaldexOverCAN">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Broadcast over CAN</span>
                     </label>
-                    <label class="toggle">
-                        <input type="checkbox" id="dangerZoneEnabled">
-                        <span class="toggle-slider"></span>
-                        <span class="toggle-label">Danger Zone (full-duty 50:50)</span>
-                    </label>
-                    <p class="hint">On a full 50:50 request, demands maximum clutch duty by giving the Haldex no
-                        room to modulate. Maximum clamping force, but the <strong>Returned %</strong> will read
-                        <em>lower</em> (bench: ~99% pump duty and ~10.5 A, reporting in the 80s, versus ~56% duty
-                        reporting ~98% with this off) — the Haldex backs its own estimate off once the pressure
-                        relief valve opens. Increases pump load and current draw considerably. Off by default.</p>
+                    <p class="hint">Emit OpenHaldex status on the bus and accept mode-change commands from another OpenHaldex or external controller over CAN. Leave off if nothing else on the bus talks to it.</p>
                     <label class="toggle">
                         <input type="checkbox" id="analyzerMode">
                         <span class="toggle-slider"></span>
@@ -609,12 +634,20 @@
                         <span class="toggle-label">SavvyCAN via. Serial</span>
                     </label>
                     <label class="toggle">
+                        <input type="checkbox" id="dangerZoneEnabled">
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">Danger Zone (full-duty 50:50)</span>
+                    </label>
+                    <p class="hint">On a full 50:50 request, demands maximum clutch duty by leaving the Haldex no room to modulate. Most clamping force, but the <strong>Returned %</strong> will read <em>lower</em> (bench: about 99% pump duty and 10.5 A reporting in the 80s, against about 56% duty reporting about 98% with this off), because the Haldex backs its own estimate off once the pressure relief valve opens. Pump load and current draw go up a lot. Off by default.</p>
+                    <h3 class="subsection-title">Live Diagnostics</h3>
+                    <label class="toggle">
                         <input type="checkbox" id="liveDiagEnabled">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Enable Live Diagnostics</span>
                     </label>
-                    <p class="hint">Polls the Haldex ECU for live data using whatever generation is set (Gen5 = UDS; Gen2/4 = KWP2000/TP2.0). Requires Haldex CAN healthy.</p>
-                    <p class="hint">Note: Occupies the diagnostic channel — leave OFF when using VCDS or other diagnostic tools.</p>
+                    <p class="hint">Polls the Haldex ECU for live data using whatever generation is set: Gen5 = UDS, Gen2/4 = KWP2000 over TP2.0. Requires Haldex CAN healthy.</p>
+                    <p class="hint">Note: this takes over the diagnostic channel. Leave it OFF when using VCDS or another diagnostic tool.</p>
+                    <h3 class="subsection-title">Buttons</h3>
                     <label class="toggle">
                         <input type="checkbox" id="disableOnboardButton">
                         <span class="toggle-slider"></span>
@@ -625,6 +658,7 @@
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Disable External Button</span>
                     </label>
+                    <h3 class="subsection-title">Low-Power Sleep</h3>
                     <label class="toggle">
                         <input type="checkbox" id="canSleepEnabled">
                         <span class="toggle-slider"></span>
@@ -636,13 +670,13 @@
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Enable CAN Sleep (Aggressive)</span>
                     </label>
-                    <p class="hint">Additionally parks the CAN transceivers in standby while sleeping, drops CPU freq. to 10MHz, and lowers WiFi AP TX power. Bus activity wakes the transceivers via GPIO interrupt within microseconds; a 2s safety-net probe runs as backup.</p>
+                    <p class="hint">Additionally parks the CAN transceivers in standby while sleeping, drops CPU floor to 10MHz, and lowers WiFi AP TX power. Bus activity wakes the transceivers via GPIO interrupt within microseconds; a 2s safety-net probe runs as backup.</p>
                     <label class="toggle">
                         <input type="checkbox" id="benchMode">
                         <span class="toggle-slider"></span>
                         <span class="toggle-label">Bench Mode</span>
                     </label>
-                    <p class="hint">Keeps the WiFi up indefinitely while bench testing over USB with no harness connected, overriding CAN sleep above. Self-clears the moment real CAN traffic is seen on either bus (i.e. once actually harnessed to a car), so it is safe to leave on &mdash; but turn it off once you're done tuning a permanent install.</p>
+                    <p class="hint">Keeps the WiFi up for good while you bench test over USB with no harness connected, overriding CAN sleep above. It clears itself the moment real CAN traffic shows on either bus (once harnessed to a car), so it is safe to leave on - but switch it off when you finish tuning a permanent install.</p>
                     <p class="hint" id="benchModeStatus">--</p>
                     <div class="brightness-row">
                         <span class="toggle-label">LP Wake Threshold</span>
@@ -660,6 +694,7 @@
                             <span>Haldex: <span id="lpHaldexFrameRate">--</span> fps</span>
                         </div>
                     </div>
+                    <h3 class="subsection-title">Display</h3>
                     <div class="brightness-row">
                         <span class="toggle-label">LED Brightness</span>
                         <div class="brightness-controls">
@@ -669,53 +704,98 @@
                     </div>
                 </div>
             </section>
+
         </div>
 
         <div class="page" id="basic-page">
             <section class="card">
-                <h2>Disengage Under Speed (km/h)</h2>
-                <p class="hint">Use this to disable ANY lock BELOW a certain speed (for car parks etc)</p>
+                <h2>Lock Disable Conditions</h2>
+                <p class="hint">Suppress ANY lock when these conditions are met - handy for car parks and cruising. This applies to every lock path: the drive modes, Expert, and the TC / hazard / button force-mode triggers.</p>
 
-                <div class="slider-container">
-                    <input type="range" id="disengageUnderSpeedRange" min="0" max="300" value="120" class="slider">
-                    <div class="slider-value"><span id="disengageUnderSpeed">120</span> km/h</div>
+                <div class="disable-cond-row">
+                    <svg class="disable-cond-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/></svg>
+                    <div class="disable-cond-body">
+                        <p class="disable-cond-label">Disable under speed <span class="hint-inline">(car parks)</span></p>
+                        <div class="slider-container">
+                            <input type="range" id="disengageUnderSpeedRange" min="0" max="300" value="120" class="slider">
+                            <div class="slider-value"><span id="disengageUnderSpeed">120</span> km/h</div>
+                        </div>
+                    </div>
                 </div>
+
+                <div class="disable-cond-row">
+                    <svg class="disable-cond-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 19 22 12 13 5 13 19"/><polygon points="2 19 11 12 2 5 2 19"/></svg>
+                    <div class="disable-cond-body">
+                        <p class="disable-cond-label">Disable above speed <span class="hint-inline">(highways)</span></p>
+                        <div class="slider-container">
+                            <input type="range" id="disengageAboveSpeedRange" min="0" max="300" value="120" class="slider">
+                            <div class="slider-value"><span id="disengageAboveSpeed">120</span> km/h</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="disable-cond-row">
+                    <svg class="disable-cond-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.6 2.7a10 10 0 1 0 5.7 5.7"/><circle cx="12" cy="12" r="2"/><path d="M13.4 10.6 19 5"/></svg>
+                    <div class="disable-cond-body">
+                        <p class="disable-cond-label">Disable under throttle <span class="hint-inline">(coasting)</span></p>
+                        <div class="slider-container">
+                            <input type="range" id="disableThrottleRange" min="0" max="100" value="15" class="slider">
+                            <div class="slider-value"><span id="disableThrottle">15</span> %</div>
+                        </div>
+                    </div>
+                </div>
+
+                <p class="hint" id="disableWindowHint"></p>
             </section>
 
             <section class="card">
-                <h2>Disengage Above Speed (km/h)</h2>
-                <p class="hint">Use this to disable ANY lock ABOVE a certain speed (for highways etc)</p>
-
-                <div class="slider-container">
-                    <input type="range" id="disengageAboveSpeedRange" min="0" max="300" value="120" class="slider">
-                    <div class="slider-value"><span id="disengageAboveSpeed">120</span> km/h</div>
-                </div>
-            </section>
-
-            <section class="card">
-                <h2>Minimum Throttle Before Lock (%)</h2>
-                <p class="hint">Use this to disable ANY lock BELOW a certain throttle (for car parks etc)</p>
-
-                <div class="slider-container">
-                    <input type="range" id="disableThrottleRange" min="0" max="100" value="15" class="slider">
-                    <div class="slider-value"><span id="disableThrottle">15</span> %</div>
-                </div>
-            </section>
-
-            <section class="card">
-                <h2>Lock Release Rate (%/s)</h2>
-                <p class="hint">Controls how quickly the lock target decays when releasing throttle or changing mode. Higher = faster release. Lock-up is always instantaneous. Disable for instant release (legacy behaviour).</p>
+                <h2>Lock Response Times (ms)</h2>
+                <p class="hint">How long the lock target takes to ramp up (attack) and decay (release) on changes - time for a full 0-100% travel. Higher = slower. 0 = instant in that direction. Disable rate limiting for instant transitions both ways (legacy behaviour).</p>
 
                 <div class="toggle-group">
                     <label class="toggle">
                         <input type="checkbox" id="lockReleaseEnabled" checked>
                         <span class="toggle-slider"></span>
-                        <span class="toggle-label">Enable Gradual Release</span>
+                        <span class="toggle-label">Enable Rate Limiting</span>
                     </label>
                 </div>
-                <div class="slider-container" id="lockReleaseRateContainer">
-                    <input type="range" id="lockReleaseRateRange" min="5" max="500" step="5" value="120" class="slider">
-                    <div class="slider-value"><span id="lockReleaseRateValue">120</span> %/s</div>
+                <p class="hint">Attack (lock-up)</p>
+                <div class="slider-container" id="lockEngageRampContainer">
+                    <input type="range" id="lockEngageRampRange" min="0" max="1000" step="10" value="0" class="slider">
+                    <div class="slider-value"><span id="lockEngageRampValue">0</span> ms</div>
+                </div>
+                <p class="hint">Release</p>
+                <div class="slider-container" id="lockReleaseRampContainer">
+                    <input type="range" id="lockReleaseRampRange" min="0" max="1000" step="10" value="500" class="slider">
+                    <div class="slider-value"><span id="lockReleaseRampValue">500</span> ms</div>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Steering Gain Taper</h2>
+                <p class="hint">Reduces lock as steering angle grows so the rear axle is not fighting the front through tight corners (driveline windup). Gain stays 100% below the start angle and ramps down to the minimum at the full angle. Needs MQB steering-angle data; a stale or degraded signal leaves the gain at 100%.</p>
+
+                <div class="toggle-group">
+                    <label class="toggle">
+                        <input type="checkbox" id="steeringGainEnabled">
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">Enable Steering Gain</span>
+                    </label>
+                </div>
+                <p class="hint">Start angle</p>
+                <div class="slider-container" id="steeringGainStartContainer">
+                    <input type="range" id="steeringGainStartRange" min="0" max="360" step="5" value="45" class="slider">
+                    <div class="slider-value"><span id="steeringGainStartValue">45</span> deg</div>
+                </div>
+                <p class="hint">Full angle</p>
+                <div class="slider-container" id="steeringGainFullContainer">
+                    <input type="range" id="steeringGainFullRange" min="10" max="540" step="5" value="180" class="slider">
+                    <div class="slider-value"><span id="steeringGainFullValue">180</span> deg</div>
+                </div>
+                <p class="hint">Minimum gain</p>
+                <div class="slider-container" id="steeringGainFloorContainer">
+                    <input type="range" id="steeringGainFloorRange" min="0" max="100" step="5" value="50" class="slider">
+                    <div class="slider-value"><span id="steeringGainFloorValue">50</span> %</div>
                 </div>
             </section>
         </div>
@@ -723,7 +803,19 @@
         <div class="page" id="expert-page">
             <section class="card">
                 <h2>Expert Editor</h2>
-                <p class="hint">Tap cells to edit lock percentage</p>
+                <p class="hint expert-lead">Tap a cell to edit. <strong>Press and hold</strong> a cell for
+                    multi-select.</p>
+                <details class="more-info expert-help">
+                    <summary>More on multi-select</summary>
+                    <p>Or tap <strong>Select cells</strong> below to start. In multi-select, tap cells or drag a box
+                        across them - selected cells show as dots on the surface. Then Set Value applies one number to
+                        all, or Smooth averages them out.</p>
+                </details>
+
+                <div class="map-select-bar">
+                    <button class="btn-secondary sel-mode-btn" id="selModeToggle" aria-pressed="false">Select
+                        cells</button>
+                </div>
 
                 <div class="map-container">
                     <div class="map-axis-label-y">Throttle %</div>
@@ -731,33 +823,35 @@
                     <div class="map-axis-label-x">Speed (km/h)</div>
                 </div>
 
+                <div class="sel-toolbar" id="selToolbar" style="display:none;">
+                    <span class="sel-count" id="selCount">0 selected</span>
+                    <button class="btn-secondary" id="selSetValue">Set Value</button>
+                    <button class="btn-secondary" id="selSmooth">Smooth</button>
+                    <button class="btn-secondary" id="selClear">Clear</button>
+                </div>
+
+                <!-- Pseudo-3D isometric render of the lock surface: speed and
+                     throttle on the ground, lock% as height, a live dot riding
+                     the surface at the current operating point. Built by
+                     drawTuneChart() as plain SVG (no libraries). -->
+                <div class="tune-chart" id="tuneChart"></div>
+                <div class="chart-legend" id="chartLegend"></div>
+
                 <div class="map-controls">
-                    <button class="btn-secondary" id="saveMap">Save Tune</button>
+                    <button class="btn-primary" id="saveMap">Apply</button>
                     <button class="btn-secondary" id="restoreDefaults">Restore Defaults</button>
                 </div>
-            </section>
 
-            <section class="card">
-                <h2>Lock Map Surface</h2>
-                <p class="hint">Read-only 3D view of the lock table — speed and throttle on the ground, lock % as height. The dot rides the live operating point. Editing the grid above redraws it.</p>
-                <div class="tune-chart" id="tuneChart"></div>
-                <div class="chart-legend" id="tuneChartLegend"></div>
-            </section>
-
-            <section class="card" id="steeringScaleCard">
-                <h2>Steering-Angle Lock Scale</h2>
-                <p class="hint">Reduces overall lock as steering-wheel angle increases (FWD bias). 100% = full lock. Applies to Gen2, Gen4, Gen5 (0CQ) and VAQ.</p>
-                <div class="toggle-group">
-                    <label class="toggle">
-                        <input type="checkbox" id="steeringScaleEnabled" checked>
-                        <span class="toggle-slider"></span>
-                        <span class="toggle-label">Enable Steering-Angle Scaling</span>
-                    </label>
-                </div>
-                <table id="steeringScaleTable" class="steering-scale-table"></table>
-                <div class="map-controls">
-                    <button class="btn-secondary" id="saveSteeringScale">Save Steering Scale</button>
-                    <button class="btn-secondary" id="restoreSteeringScale">Restore Defaults</button>
+                <div class="map-library">
+                    <label class="map-library-label" for="mapPreset">Maps</label>
+                    <select class="input-select" id="mapPreset"></select>
+                    <div class="map-library-actions">
+                        <button class="btn-secondary" id="mapLoad">Load</button>
+                        <button class="btn-secondary" id="mapSaveAs">Save As</button>
+                        <button class="btn-secondary" id="mapDelete">Delete</button>
+                    </div>
+                    <p class="hint">Load a slot into the editor, then <strong>Apply</strong> to write it live.
+                        <strong>Save As</strong> stores the current map to a device slot, shared across phones.</p>
                 </div>
             </section>
 
@@ -775,7 +869,9 @@
 
         <div class="page" id="diagnostics-page">
             <section class="card">
-                <h2>CAN Status</h2>
+                <h2>CAN</h2>
+
+                <h3 class="subsection-title">Bus Health</h3>
                 <div class="diag-grid">
                     <div class="diag-item">
                         <span class="diag-label">Chassis CAN:</span>
@@ -786,10 +882,8 @@
                         <span class="diag-value" id="diagHaldexCAN">--</span>
                     </div>
                 </div>
-            </section>
 
-            <section class="card">
-                <h2>CAN Information</h2>
+                <h3 class="subsection-title">Live Signals</h3>
                 <div class="diag-grid">
                     <div class="diag-item">
                         <span class="diag-label">Throttle:</span>
@@ -805,7 +899,7 @@
                     </div>
                     <div class="diag-item">
                         <span class="diag-label">Steering Angle:</span>
-                        <span class="diag-value"><span id="diagSteeringAngle">--</span> °</span>
+                        <span class="diag-value"><span id="diagSteeringAngle">--</span> deg</span>
                     </div>
                     <div class="diag-item">
                         <span class="diag-label">ASR:</span>
@@ -820,10 +914,8 @@
                         <span class="diag-value" id="diagHazardActive">--</span>
                     </div>
                 </div>
-            </section>
 
-            <section class="card">
-                <h2>Brake / Handbrake Signals</h2>
+                <h3 class="subsection-title">Brake / Handbrake</h3>
                 <div class="diag-grid">
                     <div class="diag-item">
                         <span class="diag-label">Brake In:</span>
@@ -854,18 +946,9 @@
             </section>
 
             <section class="card">
-                <h2>Frame Editing (Advanced)</h2>
-                <p class="hint">Enable or disable editing of individual CAN frames in normal (non-standalone) mode. Unchecking a frame leaves the car's original frame untouched (clean passthrough). Use this to bisect which edited frame upsets the learn procedure. Changes apply immediately and are saved. Only affects the selected Haldex generation.</p>
-                <div id="frameEditList" class="frame-edit-list">
-                    <p class="hint">Not available for this generation.</p>
-                </div>
-                <div class="wifi-controls">
-                    <button class="btn-secondary" id="frameEditReset">Reset to Defaults</button>
-                </div>
-            </section>
+                <h2>WiFi Access Point</h2>
 
-            <section class="card">
-                <h2>WiFi Name (SSID)</h2>
+                <h3 class="subsection-title">Name (SSID)</h3>
                 <p class="hint">Change the access-point name broadcast by the controller. 1&ndash;32 printable ASCII characters. Saving restarts the AP &mdash; you will need to reconnect.</p>
                 <p class="hint" id="wifiSsidStatus">--</p>
                 <div class="wifi-password-row">
@@ -875,10 +958,8 @@
                     <button class="btn-secondary" id="wifiSsidSave">Save &amp; Apply</button>
                     <button class="btn-secondary" id="wifiSsidReset">Reset to Default</button>
                 </div>
-            </section>
 
-            <section class="card">
-                <h2>WiFi Password</h2>
+                <h3 class="subsection-title">Password</h3>
                 <p class="hint">Set a WPA2 password (min. 8 characters) to secure the access point. Leave blank to keep an open network. Long-pressing the mode button always resets back to open.</p>
                 <p class="hint" id="wifiPasswordStatus">--</p>
                 <div class="wifi-password-row">
@@ -893,16 +974,17 @@
 
             <section class="card">
                 <h2>Home WiFi (Bridge Mode)</h2>
-                <p class="hint">Optional: also join a home or garage WiFi network as a client. The controller's own access point keeps running either way &mdash; this just makes it reachable (and lets you run backups) from a phone or laptop already on that network, without switching WiFi. Leave blank to disable. The controller still sleeps after 5 minutes without CAN traffic unless Bench Mode is on, and it only looks for the home network for 20&nbsp;s after starting, then once every 5 minutes, so it can't disturb the AP while you're away from home.</p>
+                <p class="hint">Optional: also join a home or garage WiFi as a client. The controller's own access point keeps running either way. This makes it reachable (and lets you update or back up) from a phone or laptop that is already on that network, with no WiFi switching. Leave it blank to turn it off. The controller still sleeps after 5 minutes without CAN traffic unless Bench Mode is on, and it only looks for the home network for 20 s after starting and then once every 5 minutes, so it cannot disturb the access point while you are away from home.</p>
+                <p class="hint">On the home network the module asks for a sign-in: user <strong>admin</strong>, password = your access-point WiFi password.</p>
                 <p class="hint" id="wifiStaStatus">--</p>
                 <div class="wifi-password-row">
                     <input type="text" id="wifiStaSsidInput" placeholder="Home network name" class="input-wifi-password" maxlength="32" autocomplete="off" spellcheck="false" list="wifiStaSsidList">
                     <datalist id="wifiStaSsidList"></datalist>
-                    <button class="btn-icon-eye" id="wifiStaScan" title="Scan for networks">&#128269;</button>
+                    <button class="btn-icon-eye" id="wifiStaScan" title="Scan for networks" aria-label="Scan for networks">&#128269;</button>
                 </div>
                 <div class="wifi-password-row" style="margin-top:8px;">
-                    <input type="password" id="wifiStaPasswordInput" placeholder="Home network password (blank = open)" class="input-wifi-password" maxlength="64" autocomplete="new-password">
-                    <button class="btn-icon-eye" id="wifiStaPasswordToggle" title="Show / hide password">&#128065;</button>
+                    <input type="password" id="wifiStaPasswordInput" placeholder="Password (blank = open)" class="input-wifi-password" maxlength="64" autocomplete="new-password">
+                    <button class="btn-icon-eye" id="wifiStaPasswordToggle" title="Show / hide password" aria-label="Show or hide password">&#128065;</button>
                 </div>
                 <div class="wifi-controls">
                     <button class="btn-secondary" id="wifiStaSave">Save &amp; Apply</button>
@@ -912,7 +994,7 @@
 
             <section class="card">
                 <h2>Bluetooth (DashCAN App)</h2>
-                <p class="hint">Lets the DashCAN mobile app show live data and change the mode or switch the controller on/off over Bluetooth LE. The first phone pairs without a code (it may just ask you to confirm); after that, other phones need the pairing code below. Bluetooth switches off together with the WiFi when the car is parked (CAN sleep).</p>
+                <p class="hint">Lets the DashCAN phone app show live data and change the mode or switch the controller on and off over Bluetooth LE. The first phone pairs without a code (it may just ask you to confirm); after that, other phones need the pairing code below. Bluetooth switches off with the WiFi when the car is parked (CAN sleep).</p>
                 <label class="toggle">
                     <input type="checkbox" id="bleEnabled">
                     <span class="toggle-slider"></span>
@@ -927,8 +1009,8 @@
 
             <section class="card">
                 <h2>Backup &amp; Restore</h2>
-                <p class="hint">Export the Expert tune, steering scale, frame edits, settings and WiFi name to a JSON file. Do this before a firmware update &mdash; an update can wipe on-device settings. Import brings everything back in one go. WiFi passwords are never written to the file; you'll be asked to re-enter them once after importing if any were set.</p>
-                <p class="hint" id="backupStatus">--</p>
+                <p class="hint">Saves the Expert tune, frame blocks, settings and WiFi names to a JSON file. Do this before a firmware update. Import puts everything back in one go. WiFi passwords are never written to the file: after an import you re-enter them once if any were set.</p>
+                <p class="hint" id="backupStatus">No backup taken this session.</p>
                 <div class="wifi-controls">
                     <button class="btn-secondary" id="backupExport">Export Config</button>
                     <button class="btn-secondary" id="backupImportBtn">Import Config</button>
@@ -972,34 +1054,41 @@
         </div>
 
         <div class="page" id="ota-page">
-            <section class="card">
-                <h2>Device Information</h2>
-                <div class="ota-info">
-                    <div><span>Firmware</span><strong id="otaFwVersion">--</strong></div>
-                    <div><span>Chip</span><strong id="otaChip">--</strong></div>
-                    <div><span>Partition</span><strong id="otaPartition">--</strong></div>
+            <section class="card" id="otaSection">
+                <h2>This Module</h2>
+                <div class="diag-grid">
+                    <div class="diag-item">
+                        <span class="diag-label">Firmware:</span>
+                        <span class="diag-value" id="otaVersion">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Built:</span>
+                        <span class="diag-value" id="otaBuild">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Chip:</span>
+                        <span class="diag-value" id="otaChip">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Running slot:</span>
+                        <span class="diag-value" id="otaPartition">--</span>
+                    </div>
+                    <div class="diag-item">
+                        <span class="diag-label">Update state:</span>
+                        <span class="diag-value" id="otaSafeState">--</span>
+                    </div>
                 </div>
+                <p class="hint" id="otaSafeReason">Updates are blocked while the car is moving or the CAN bus is unhealthy. This is a safety feature and cannot be overridden. On a bench with no CAN connected they are always allowed.</p>
             </section>
-            <section class="card">
-                <h2>Update Safety</h2>
-                <div class="sysgrid" id="otaSafety"></div>
-                <p class="hint">Firmware updates are blocked while the vehicle is moving or the CAN
-                    bus is unhealthy. This is a safety feature and cannot be overridden.</p>
-            </section>
-            <!-- Guided update straight from GitHub. Needs internet in this
-                 browser while it can still reach the controller: controller on
-                 the home router via bridge mode, phone on the same network. -->
-            <section class="card">
+
+            <section class="card" id="updGithubCard">
                 <h2>Update from GitHub</h2>
                 <div class="ota-info">
                     <div><span>Installed</span><strong id="updInstalled">--</strong></div>
                     <div><span>Latest</span><strong id="updLatest">--</strong></div>
                     <div><span>Status</span><strong id="updState">Not checked</strong></div>
                 </div>
-                <p class="hint">This browser needs internet while it can still reach the controller: join the
-                    controller to your router in <a href="#otaWifiStaCard" id="updGoBridge">Home WiFi</a> below, put this
-                    phone on the same network and open the address that card shows. On the OpenHaldex‑C6 access point
-                    alone most phones drop mobile data. Keep this page open until the device has rebooted.</p>
+                <p class="hint">This browser needs internet while it can still reach the module: join the module to your router in <a href="#otaWifiStaCard" id="updGoBridge">Home WiFi</a> below, put this phone on the same network and open the address that card shows. On the module's own access point alone most phones drop mobile data. Keep this page open until the module has rebooted.</p>
                 <div class="input-group">
                     <label for="updChannel">Update channel</label>
                     <select id="updChannel" class="input-select">
@@ -1009,94 +1098,139 @@
                 </div>
                 <p class="hint" id="updChannelHint" hidden></p>
                 <div class="button-row">
-                    <button id="updCheckBtn" class="btn primary">Check for updates</button>
-                    <button id="updBridgeBtn" class="btn" hidden>Set up Home WiFi</button>
-                    <label class="upd-beta"><input type="checkbox" id="updShowAll"> Show beta / older versions</label>
+                    <button id="updCheckBtn" class="btn-secondary upd-primary">Check for updates</button>
+                    <button id="updBridgeBtn" class="btn-secondary" hidden>Set up Home WiFi</button>
                 </div>
+                <label class="upd-beta"><input type="checkbox" id="updShowAll"> Show beta / older versions</label>
                 <div id="updStatus" class="status-line">Idle</div>
                 <div id="updPicker" hidden>
                     <div class="input-group">
-                        <label>Version</label>
+                        <label for="updVersion">Version</label>
                         <select id="updVersion" class="input-select"></select>
                     </div>
                     <div id="updNotes" class="upd-notes"></div>
                     <div class="button-row">
-                        <button id="updInstallBtn" class="btn primary">Install selected</button>
+                        <button id="updInstallBtn" class="btn-secondary upd-primary">Install selected</button>
                     </div>
                 </div>
                 <div class="ota-steps" id="updSteps">
-                    <div class="ota-step" data-step="dlfs"><span class="ota-step-num">1</span> Get FS</div>
-                    <div class="ota-step" data-step="fs"><span class="ota-step-num">2</span> Flash FS</div>
+                    <div class="ota-step" data-step="dlfs"><span class="ota-step-num">1</span> Get UI</div>
+                    <div class="ota-step" data-step="fs"><span class="ota-step-num">2</span> Flash UI</div>
                     <div class="ota-step" data-step="verify"><span class="ota-step-num">3</span> Verify</div>
                     <div class="ota-step" data-step="dlfw"><span class="ota-step-num">4</span> Get FW</div>
                     <div class="ota-step" data-step="fw"><span class="ota-step-num">5</span> Flash FW</div>
                     <div class="ota-step" data-step="reboot"><span class="ota-step-num">6</span> Reboot</div>
                 </div>
-                <div class="ota-progress" id="updProgressWrap" hidden>
-                    <div class="ota-progress-bar" id="updProgressBar"></div>
-                    <span class="ota-progress-label" id="updProgressLabel">0%</span>
+                <div class="learn-progress-wrap" id="updProgressWrap" hidden>
+                    <div class="learn-progress-bar">
+                        <div class="learn-progress-fill" id="updProgressBar"></div>
+                    </div>
+                    <span class="learn-progress-label" id="updProgressLabel">0%</span>
                 </div>
             </section>
-            <!-- Same card as on Diagnostics (shared initWifiSta() with an id prefix)
-                 so the router can be joined from here without leaving the tab. -->
+
+            <!-- Same card as on Diagnostics (shared initWifiSta() with an id
+                 prefix) so the router can be joined without leaving this tab. -->
             <section class="card" id="otaWifiStaCard">
                 <h2>Home WiFi (Bridge Mode)</h2>
-                <p class="hint">Join the controller to your home or garage router; its own access point keeps running.
-                    Once it shows <em>Connected</em>, put this phone on the same network, open the address shown and
-                    press <strong>Check for updates</strong> again.</p>
+                <p class="hint">Join the module to your home or garage router; its own access point keeps running. Once it shows <em>Connected</em>, put this phone on the same network, open the address shown and press <strong>Check for updates</strong> again.</p>
                 <p class="hint" id="otaWifiStaStatus">--</p>
                 <div class="wifi-password-row">
                     <input type="text" id="otaWifiStaSsidInput" placeholder="Home network name" class="input-wifi-password" maxlength="32" autocomplete="off" spellcheck="false" list="otaWifiStaSsidList">
                     <datalist id="otaWifiStaSsidList"></datalist>
-                    <button class="btn-icon-eye" id="otaWifiStaScan" title="Scan for networks">&#128269;</button>
+                    <button class="btn-icon-eye" id="otaWifiStaScan" title="Scan for networks" aria-label="Scan for networks">&#128269;</button>
                 </div>
                 <div class="wifi-password-row" style="margin-top:8px;">
-                    <input type="password" id="otaWifiStaPasswordInput" placeholder="Home network password (blank = open)" class="input-wifi-password" maxlength="64" autocomplete="new-password">
-                    <button class="btn-icon-eye" id="otaWifiStaPasswordToggle" title="Show / hide password">&#128065;</button>
+                    <input type="password" id="otaWifiStaPasswordInput" placeholder="Password (blank = open)" class="input-wifi-password" maxlength="64" autocomplete="new-password">
+                    <button class="btn-icon-eye" id="otaWifiStaPasswordToggle" title="Show / hide password" aria-label="Show or hide password">&#128065;</button>
                 </div>
                 <div class="wifi-controls">
                     <button class="btn-secondary" id="otaWifiStaSave">Save &amp; Apply</button>
                     <button class="btn-secondary" id="otaWifiStaReset">Disable</button>
                 </div>
             </section>
-            <section class="card">
-                <h2>Update from Files</h2>
-                <p class="hint">No internet needed here. Download <code>littlefs.bin</code> and <code>firmware.bin</code>
-                    from the newest <code>V…</code> folder in
-                    <a href="https://github.com/Forbes-Automotive/OpenHaldex-C6/tree/main/Releases" target="_blank"
-                        rel="noopener">Releases on GitHub</a>, then upload them here: <strong>Filesystem</strong>
-                    (littlefs.bin, the web interface) first, then <strong>Firmware</strong> (firmware.bin). The device
-                    reboots once the firmware upload completes.</p>
-                <div class="ota-steps" id="otaSteps">
-                    <div class="ota-step" data-step="filesystem"><span class="ota-step-num">1</span> Filesystem</div>
-                    <div class="ota-step" data-step="firmware"><span class="ota-step-num">2</span> Firmware</div>
+
+            <section class="card" id="otaFilesCard">
+                <h2>Update from a File</h2>
+                <p class="hint">No internet needed. Upload one file from a release: <strong>the merged .bin</strong> updates everything - firmware and web UI - in one go. A bare firmware.bin or littlefs.bin also works if you only need one half; the module works out which it got. Settings and the learn table are kept. Firmware goes to the spare slot and rolls back by itself if the new build fails its safety checks. Releases are at <a href="https://github.com/Kile-Thomson/OpenHaldex-Edge/releases" target="_blank" rel="noopener">github.com/Kile-Thomson/OpenHaldex-Edge</a>.</p>
+                <p class="hint">Stay on this page and keep the module powered during the upload. It reboots when the update finishes and this page reloads itself.</p>
+                <div class="wifi-password-row">
+                    <input type="file" id="otaFile" accept=".bin" class="ota-file" aria-label="Update file">
                 </div>
-                <div class="input-group">
-                    <label>Update Type</label>
-                    <select id="otaType" class="input-select">
-                        <option value="filesystem">Filesystem (web UI)</option>
-                        <option value="firmware">Firmware (application)</option>
-                    </select>
+                <div class="wifi-controls">
+                    <button class="btn-secondary" id="otaUpload">Upload &amp; Install</button>
                 </div>
-                <div class="input-group">
-                    <label>Binary (.bin)</label>
-                    <input id="otaBin" type="file" accept=".bin,application/octet-stream">
+
+                <div class="learn-progress-wrap" id="otaProgressWrap" style="display:none;">
+                    <div class="learn-progress-bar">
+                        <div class="learn-progress-fill" id="otaProgressFill"></div>
+                    </div>
+                    <span class="learn-progress-label" id="otaProgressLabel">0%</span>
                 </div>
-                <div class="ota-progress" id="otaProgressWrap" hidden>
-                    <div class="ota-progress-bar" id="otaProgressBar"></div>
-                    <span class="ota-progress-label" id="otaProgressLabel">0%</span>
-                </div>
-                <div class="button-row">
-                    <button id="otaUploadBtn" class="btn primary">Upload</button>
-                </div>
-                <div id="otaStatus" class="status-line">Idle</div>
+                <p class="hint" id="otaResult" role="status" aria-live="polite"></p>
             </section>
         </div>
 
-        <script src="./app.js?v=20260920" type="text/javascript"></script>
-        <!-- The device now serves app.js/style.css with Cache-Control: no-cache
-             (ETag revalidation), so this ?v= no longer needs bumping. It was
-             changed once to escape the year-long cache older builds handed out. -->
+        <!-- Drive-mode drawer: the dashboard shows only the current mode as a pill;
+             tapping it slides this in so the six modes stay one tap away without
+             eating a whole card on the glance view. -->
+        <div class="drawer-backdrop" id="modeBackdrop"></div>
+        <aside class="mode-drawer" id="modeDrawer" role="dialog" aria-modal="true" aria-label="Drive mode"
+            aria-hidden="true">
+            <div class="mode-drawer-head">
+                <h2>Drive Mode</h2>
+                <button class="drawer-close" id="modeDrawerClose" aria-label="Close drive mode">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+                        stroke-linejoin="round" aria-hidden="true">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="mode-drawer-grid">
+                <button class="mode-btn" data-mode="0">
+                    <span class="mode-btn-name">Stock</span>
+                    <span class="mode-btn-desc">No intervention. Passes the factory Haldex engagement straight through - the car drives as if OpenHaldex was not fitted. Not available in Standalone.</span>
+                </button>
+                <button class="mode-btn" data-mode="1">
+                    <span class="mode-btn-name">FWD</span>
+                    <span class="mode-btn-desc">Holds the rear coupling fully open (zero lock). Front-wheel drive.</span>
+                </button>
+                <button class="mode-btn" data-mode="2">
+                    <span class="mode-btn-name">50:50</span>
+                    <span class="mode-btn-desc">Commands maximum lock whenever locking is allowed - the most aggressive rear engagement.</span>
+                </button>
+                <button class="mode-btn" data-mode="3">
+                    <span class="mode-btn-name">60:40</span>
+                    <span class="mode-btn-desc">Holds a moderate fixed lock target - lighter than 50:50.</span>
+                </button>
+                <button class="mode-btn" data-mode="4">
+                    <span class="mode-btn-name">75:25</span>
+                    <span class="mode-btn-desc">Holds a light fixed lock target - mostly front-biased.</span>
+                </button>
+                <button class="mode-btn" data-mode="5">
+                    <span class="mode-btn-name">Expert</span>
+                    <span class="mode-btn-desc">Follows your custom lock map (throttle vs speed) from the Expert tab instead of a fixed number. Needs CAN data.</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Reusable info modal for the Calibrate tab. Opened by any .calib-info
+             button; title + body are filled from CALIB_INFO in app.js keyed by
+             the button's data-info. -->
+        <div id="calibInfoModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="calibInfoTitle">
+            <div class="modal-content calib-info-content">
+                <h3 id="calibInfoTitle">Info</h3>
+                <div class="calib-info-body" id="calibInfoBody"></div>
+                <div class="modal-buttons calib-info-buttons">
+                    <button class="btn-secondary" id="calibInfoClose">Got it</button>
+                </div>
+            </div>
+        </div>
+
+        <script src="./app.js?v=9.01.0" type="text/javascript"></script>
+        <!-- add version query param to force cache refresh on updates-->
+    </div>
 </body>
 
 </html>
