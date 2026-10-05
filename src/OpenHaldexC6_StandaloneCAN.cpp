@@ -105,6 +105,10 @@ void frames10(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -132,6 +136,7 @@ void frames10(void *arg)
         Gen5_0CQ_VAQ_frames10();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
@@ -149,6 +154,10 @@ void frames20(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -176,6 +185,7 @@ void frames20(void *arg)
         Gen5_0CQ_VAQ_frames20();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(20 / portTICK_PERIOD_MS);
   }
@@ -193,6 +203,10 @@ void frames25(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -217,6 +231,7 @@ void frames25(void *arg)
         Gen5_0CQ_VAQ_frames25();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(25 / portTICK_PERIOD_MS);
   }
@@ -234,6 +249,10 @@ void frames100(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       lock_target = get_lock_target_adjustment();
       switch (haldexGeneration)
       {
@@ -262,6 +281,7 @@ void frames100(void *arg)
         Gen5_0CQ_VAQ_frames100();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(100 / portTICK_PERIOD_MS);
   }
@@ -279,6 +299,10 @@ void frames200(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -306,6 +330,7 @@ void frames200(void *arg)
         Gen5_0CQ_VAQ_frames200();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(200 / portTICK_PERIOD_MS);
   }
@@ -323,6 +348,10 @@ void frames1000(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
       switch (haldexGeneration)
       {
       case 1:
@@ -350,6 +379,7 @@ void frames1000(void *arg)
         Gen5_0CQ_VAQ_frames1000();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
@@ -365,7 +395,7 @@ void Gen1_frames10()
 
 void Gen1_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Motor_1 (0x280, DLC 8) - main engine ECU broadcast (vw_pq.dbc: Motor_1).
   frame.identifier = MOTOR1_ID;
   frame.extd = 0;
@@ -469,7 +499,7 @@ void Gen1_frames1000()
 // All transmitted on the haldex bus (twai_bus_1).
 void Gen2_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Bremse_1 (0x1A0, DLC 8) - ABS/ESP main broadcast (vw_pq.dbc: Bremse_1).
   frame.identifier = BRAKES1_ID;
   frame.data_length_code = 8;
@@ -605,7 +635,7 @@ void Gen2_frames10()
 
 void Gen2_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Motor_1 (0x280, DLC 8) - engine ECU broadcast (vw_pq.dbc: Motor_1).
   // Lock-adjusted bytes bias inneres_Motor_Moment / mechanisches_Verlustmoment so the
   // haldex thinks the engine is producing more torque than it actually is.
@@ -635,8 +665,6 @@ void Gen2_frames20()
   standaloneTx(frame);
 
   // PQ Motor_5 (0x480, DLC 8) - tertiary engine broadcast (vw_pq.dbc: Motor_5, multiplexed).
-  // NOTE: the if(++BRAKES1_counter > 255) below increments BRAKES1_counter (not MOTOR5_counter)
-  // - looks like a copy-paste bug, left as-is per "comment-only" pass.
   frame.identifier = MOTOR5_ID;   // 0x1A0
   frame.data_length_code = 8;     // DLC 8
   frame.data[0] = 0xFE;           // ASR 0x04 sets bit 4.  0x08 removes set.  Coupling open/closed - MO5_Mp_Code mux
@@ -647,10 +675,7 @@ void Gen2_frames20()
   frame.data[5] = 0x00;           // was 0xFE miasrs no effect - reserved
   frame.data[6] = 0x00;           // was 0x00 - reserved
   frame.data[7] = MOTOR5_counter; // checksum / rolling counter
-  if (++BRAKES1_counter > 255)
-  {                      // 0xF (NOTE: increments BRAKES1_counter - copy-paste artefact)
-    BRAKES1_counter = 0; // 0
-  }
+  MOTOR5_counter++; // 8-bit rolling counter, natural wrap at 255
   standaloneTx(frame);
 
   // PQ Bremse_10 (0x3A0, DLC 8) - extended ABS/ESP frame (NOT in vw_pq.dbc).
@@ -675,7 +700,7 @@ void Gen2_frames20()
 
 void Gen2_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_1 (0x320, DLC 8) - instrument-cluster broadcast (vw_pq.dbc: Kombi_1).
   frame.identifier = mKombi_1;
   frame.data_length_code = 8;
@@ -700,7 +725,7 @@ void Gen2_frames1000() {}
 // All frames go out on the haldex bus (twai_bus_1).
 void Gen4_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ LW_1 / mLW_1 (0x0C2, DLC 8) - steering-angle replay (vw_pq.dbc: LW_1).
   frame.identifier = mLW_1;
   frame.extd = 0;
@@ -796,7 +821,7 @@ void Gen4_frames10()
 
 void Gen4_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Bremse_2 (0x5A0, DLC 8) - ESP/ABS sensor broadcast (vw_pq.dbc: Bremse_2).
   frame.identifier = BRAKES2_ID;
   frame.data_length_code = 8;
@@ -816,7 +841,7 @@ void Gen4_frames20()
 
 void Gen4_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_1 (0x320, DLC 8) - instrument-cluster broadcast (vw_pq.dbc: Kombi_1).
   frame.identifier = mKombi_1;
   frame.data_length_code = 8;
@@ -846,7 +871,7 @@ void Gen4_frames25()
 
 void Gen4_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Gate_Komf_1 (0x390, DLC 8) - gateway-comfort broadcast (vw_pq.dbc: Gate_Komf_1).
   frame.identifier = mGate_Komf_1;
   frame.data_length_code = 8;
@@ -877,7 +902,7 @@ void Gen4_frames100()
 
 void Gen4_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_2 (0x420, DLC 8) - cluster temps (vw_pq.dbc: Kombi_2).
   frame.identifier = mKombi_2;
   frame.data_length_code = 8;
@@ -894,7 +919,7 @@ void Gen4_frames200()
 
 void Gen4_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Diagnose_1 (0x7D0, DLC 8) - diagnostic timestamp broadcast (vw_pq.dbc: Diagnose_1).
   frame.identifier = mDiagnose_1;
   frame.data_length_code = 8;
@@ -924,6 +949,10 @@ void frames13(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
 #if detailedDebugStack
       stackframes13 = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -933,6 +962,7 @@ void frames13(void *arg)
         Gen41_frames13();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(13 / portTICK_PERIOD_MS);
   }
@@ -950,6 +980,10 @@ void frames50(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
 #if detailedDebugStack
       stackframes50 = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -959,6 +993,7 @@ void frames50(void *arg)
         Gen41_frames50();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
@@ -976,6 +1011,10 @@ void frames250(void *arg)
     }
     if (isStandalone)
     {
+      // Hold stateMutex across the builder body: the GenN builders read
+      // state.mode and the expert/learn maps, and frames100 writes lock_target.
+      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
+      xSemaphoreTake(stateMutex, portMAX_DELAY);
 #if detailedDebugStack
       stackframes250 = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -985,6 +1024,7 @@ void frames250(void *arg)
         Gen41_frames250();
         break;
       }
+      xSemaphoreGive(stateMutex);
     }
     vTaskDelay(250 / portTICK_PERIOD_MS);
   }
@@ -1013,7 +1053,7 @@ void gen41DualBusRatesTask(void *arg)
       extern twai_message_t gen41_bus0_cache_c1;
       extern bool gen41_bus0_cache_valid_c1;
       extern portMUX_TYPE gen41_bus0_cache_mux;
-      twai_message_t tx;
+      twai_message_t tx = {};
       bool has_frame = false;
       taskENTER_CRITICAL(&gen41_bus0_cache_mux);
       if (gen41_bus0_cache_valid_c1)
@@ -1034,7 +1074,7 @@ void gen41DualBusRatesTask(void *arg)
       extern twai_message_t gen41_bus0_cache_c5;
       extern bool gen41_bus0_cache_valid_c5;
       extern portMUX_TYPE gen41_bus0_cache_mux;
-      twai_message_t tx;
+      twai_message_t tx = {};
       bool has_frame = false;
       taskENTER_CRITICAL(&gen41_bus0_cache_mux);
       if (gen41_bus0_cache_valid_c5)
@@ -1170,8 +1210,8 @@ static volatile uint16_t gen41_last_wheel_speed_2c3 = 0x0A8C;
 
 // Bus0 mirrors these from Bus1 payload generation with dedicated per-ID timing.
 portMUX_TYPE gen41_bus0_cache_mux = portMUX_INITIALIZER_UNLOCKED;
-twai_message_t gen41_bus0_cache_c1;
-twai_message_t gen41_bus0_cache_c5;
+twai_message_t gen41_bus0_cache_c1 = {};
+twai_message_t gen41_bus0_cache_c5 = {};
 bool gen41_bus0_cache_valid_c1 = false;
 bool gen41_bus0_cache_valid_c5 = false;
 
@@ -1295,7 +1335,7 @@ static inline uint8_t gen41_wheel_status_byte(uint8_t roll, uint8_t seq,
 
 void Gen41_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1425,7 +1465,7 @@ void Gen41_frames20()
   uint8_t step = static_cast<uint8_t>(Gen41_1CE234_counter & 0x03);
   uint8_t d4_common = (step == 0) ? 0x00 : static_cast<uint8_t>(0x100 - step);
 
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1501,7 +1541,7 @@ void Gen41_frames20()
 
 void Gen41_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1533,7 +1573,13 @@ void Gen41_frames25()
   frame.data[4] = 0x00;
   frame.data[5] = 0x00;
   frame.data[6] = 0xFE;
-  frame.data[7] = tempCounter;
+  // D7 rolling counter: previously fed from the main-loop tempCounter debug
+  // variable, whose rate depends on WiFi/dashboard housekeeping - a wire byte
+  // must not be clocked by that. Dedicated counter, one step per 25 ms frame.
+  {
+    static uint8_t gen41_1c3_counter = 0;
+    frame.data[7] = gen41_1c3_counter++;
+  }
   twai_transmit_v2(twai_bus_0, &frame, 0);
 
   // 0x191 (Bus0) - EngineData, OEM 23ms cadence
@@ -1590,7 +1636,7 @@ void Gen41_frames25()
 
 void Gen41_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1659,7 +1705,7 @@ void Gen41_frames100()
 
 void Gen41_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1709,7 +1755,7 @@ void Gen41_frames200()
 
 void Gen41_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
   const uint32_t now_ms = millis();
@@ -1751,7 +1797,7 @@ void Gen41_frames1000()
 
 void Gen41_frames13()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1779,7 +1825,7 @@ void Gen41_frames13()
 
 void Gen41_frames50()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1804,7 +1850,7 @@ void Gen41_frames50()
 
 void Gen41_frames250()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -1839,7 +1885,7 @@ void Gen41_frames250()
 // only established at steady 30% on a bench - not during transitions or at speed.
 void Gen5_0CQ_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB ESP_18 (0x135, DLC 8) - ESP minor broadcast. Fixed response, no changes.
   frame.identifier = ESP_18; // 0x135.  Fixed response, no changes
   frame.extd = 0;
@@ -1987,29 +2033,25 @@ void Gen5_0CQ_frames10()
 
   appliedTorque = get_lock_target_adjusted_value(0xFE, false);
 
-  // Launch PWM floor: raise BR_Vorg_*_Min while lock is commanded, clamped
-  // strictly below Max so the Haldex keeps room to modulate. 0% = unchanged,
-  // and it collapses to 0 whenever Max does (off-throttle, FWD, coasting).
-  // Adopted from OpenHaldex-Edge by Rekt (Kile Thomson) - see THIRD_PARTY_NOTICES.md.
+  // BR_Vorg_*_Max is the operating-RANGE ceiling (a permission envelope), not
+  // a torque request. Decoupled from the CF attenuation so full command declares
+  // full range (see esp14_range_max); gated by the same lock-active signal
+  // appliedTorque encodes. Byte-identical to the CAN-passthrough edit.
   {
-    uint8_t esp14Floor = 0;
-    if (esp14MinFloorPct > 0 && appliedTorque > 1)
-    {
-      uint16_t f = ((uint16_t)appliedTorque * esp14MinFloorPct) / 100;
-      if (f > (uint16_t)(appliedTorque - 1))
-        f = (uint16_t)(appliedTorque - 1);
-      esp14Floor = (uint8_t)f;
-    }
-    // Danger Zone: at a full 50:50 request only, pin Min to Max so the Haldex
-    // has no modulation room and goes to full pump duty.
-    if (dangerZoneEnabled && lock_target >= 100 && appliedTorque > 1)
-      esp14Floor = (uint8_t)(appliedTorque - 1);
+    const uint8_t rangeMax = esp14_range_max((uint8_t)lock_target, appliedTorque > 0);
+    frame.data[5] = rangeMax; // BR_Vorg_Quer_Max   - full range at full command
+    frame.data[7] = rangeMax; // BR_Vorg_Allrad_Max - full range at full command
+
+    // BR_Vorg_*_Min launch-PWM floor (esp14MinFloorPct, 0 = unchanged), clamped
+    // strictly below Max so the Haldex keeps room to modulate.
+    uint8_t esp14Floor = esp14_min_floor(esp14MinFloorPct, rangeMax);
+    // Danger Zone: at a full 50:50 request only, pin Min to Max so the Haldex has
+    // no modulation room and goes to full pump duty.
+    if (dangerZoneEnabled && lock_target >= 100 && rangeMax > 1)
+      esp14Floor = (uint8_t)(rangeMax - 1);
     frame.data[4] = esp14Floor; // BR_Vorg_Quer_Min
     frame.data[6] = esp14Floor; // BR_Vorg_Allrad_Min
   }
-
-  frame.data[5] = appliedTorque; // BR_Vorg_Quer_Max (Maximum predefined limit of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.)
-  frame.data[7] = appliedTorque; // BR_Vorg_Allrad_Max (Maximum specified limit of the clutch's operating range by the ESP MQB Haldex: 100% torque corresponds to 2000 Nm.)
   // massive effects (4>7)
 
   frame.data[0] = calcChecksum(frame.data, ID_SEQ_08A); // for 0x08A
@@ -2057,7 +2099,7 @@ void Gen5_0CQ_frames10()
 
 void Gen5_0CQ_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB Motor_20 (0x121, DLC 8) - accelerator pedal raw/filtered + status.
   // MO_Accelerator_Raw_Value_01 (raw pedal), MO_Fahrpedal_Roh, MO_Pedal_Filt.
   frame.identifier = MOTOR_20;      // MOTOR_20 0x121
@@ -2210,7 +2252,7 @@ void Gen5_0CQ_frames20()
 
 void Gen5_0CQ_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB Kombi_01 (0x30B, DLC 8) - instrument cluster broadcast.
   // KBI_Kilometerstand (odometer), KBI_Geschw_Anzeige (displayed speed), warning lamps.
   frame.identifier = KOMBI_01; // kombi 1 0x30b
@@ -2228,7 +2270,7 @@ void Gen5_0CQ_frames25()
 
 void Gen5_0CQ_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB ESP_23 (0x5BE, DLC 8) - longitudinal/lateral acceleration, tyre data.
   // BR_Laengsbeschleunigung (longitudinal G), BR_Querbeschleunigung (lateral G), BR_Tire_Circumference.
   frame.identifier = ESP_23;                            // ESP_23 0x5be - this is fixed in Savvy but CHKS in Kmatrix?
@@ -2357,7 +2399,7 @@ void Gen5_0CQ_frames100()
 
 void Gen5_0CQ_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ mKombi_2 (0x0C2, DLC 8) - electronic power steering / instrument-cluster slow.
   // Transmit currently disabled (commented out below).
   frame.identifier = mKombi_2; // electronic power steering 0x0C2
@@ -2375,7 +2417,7 @@ void Gen5_0CQ_frames200()
 
 void Gen5_0CQ_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB Motor_07 (0x640, DLC 8) - engine slow-rate diagnostics broadcast.
   frame.identifier = MOTOR_07; // motor 07, 1000ms
   frame.data_length_code = 8;  // DLC 8
@@ -2504,7 +2546,7 @@ void Gen5_0CQ_frames1000()
 // =============================================================================
 void Gen5_0CQ_VAQ_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB ESP_18 (0x135, DLC 8) - ESP minor broadcast. Fixed response, no changes.
   // VAQ K-matrix: NOT in the VAQ receive list (no VAQ signal on ESP_18). Kept
   // like-for-like; block 10 can drop it to prove it is dead weight on this unit.
@@ -2761,7 +2803,7 @@ void Gen5_0CQ_VAQ_frames10()
 
 void Gen5_0CQ_VAQ_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB Motor_20 (0x121, DLC 8) - accelerator pedal raw/filtered + status.
   // MO_Accelerator_Raw_Value_01 (raw pedal), MO_Fahrpedal_Roh, MO_Pedal_Filt.
   // VAQ K-matrix: reads MO_Fahrpedalrohwert_01 (b1[4-7]+b2[0-3], 0.4 %/bit)
@@ -2938,7 +2980,7 @@ void Gen5_0CQ_VAQ_frames20()
 
 void Gen5_0CQ_VAQ_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB Kombi_01 (0x30B, DLC 8) - instrument cluster broadcast.
   // KBI_Kilometerstand (odometer), KBI_Geschw_Anzeige (displayed speed), warning lamps.
   // VAQ K-matrix: reads only KBI_Handbremse (b2 bit 7). 0CQ b2 = 0x02 -> off.
@@ -2963,7 +3005,7 @@ void Gen5_0CQ_VAQ_frames25()
 
 void Gen5_0CQ_VAQ_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB ESP_23 (0x5BE, DLC 8) - longitudinal/lateral acceleration, tyre data.
   // BR_Laengsbeschleunigung (longitudinal G), BR_Querbeschleunigung (lateral G), BR_Tire_Circumference.
   // VAQ K-matrix: NOT in the VAQ receive list. Kept like-for-like.
@@ -3102,7 +3144,7 @@ void Gen5_0CQ_VAQ_frames100()
 
 void Gen5_0CQ_VAQ_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ mKombi_2 (0x0C2, DLC 8) - electronic power steering / instrument-cluster slow.
   // Transmit currently disabled (commented out below).
   // VAQ K-matrix: PQ-era ID, not an MQB FCAN message at all. Transmit stays
@@ -3122,7 +3164,7 @@ void Gen5_0CQ_VAQ_frames200()
 
 void Gen5_0CQ_VAQ_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // MQB Motor_07 (0x640, DLC 8) - engine slow-rate diagnostics broadcast.
   // VAQ K-matrix: NOT in the VAQ receive list. Kept like-for-like.
   frame.identifier = MOTOR_07; // motor 07, 1000ms
@@ -3265,7 +3307,7 @@ void Gen5_0CQ_VAQ_frames1000()
 // =============================================================================
 void Gen5_0AY_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ LW_1 / mLW_1 (0x0C2, DLC 8) - steering-angle replay (vw_pq.dbc: LW_1).
   frame.identifier = mLW_1;
   frame.extd = 0;
@@ -3426,7 +3468,7 @@ void Gen5_0AY_frames10()
 
 void Gen5_0AY_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Bremse_2 (0x5A0, DLC 8) - ESP/ABS sensor broadcast (vw_pq.dbc: Bremse_2).
   frame.identifier = BRAKES2_ID;
   frame.data_length_code = 8;
@@ -3459,8 +3501,6 @@ void Gen5_0AY_frames20()
   standaloneTx(frame);
 
   // PQ Motor_5 (0x480, DLC 8) - tertiary engine broadcast (vw_pq.dbc: Motor_5, multiplexed).
-  // NOTE: the if(++BRAKES1_counter > 255) below increments BRAKES1_counter (not MOTOR5_counter)
-  // - looks like a copy-paste bug, left as-is per "comment-only" pass.
   frame.identifier = MOTOR5_ID;   // 0x1A0
   frame.data_length_code = 8;     // DLC 8
   frame.data[0] = 0xFE;           // ASR 0x04 sets bit 4.  0x08 removes set.  Coupling open/closed - MO5_Mp_Code mux
@@ -3471,16 +3511,13 @@ void Gen5_0AY_frames20()
   frame.data[5] = 0x00;           // was 0xFE miasrs no effect - reserved
   frame.data[6] = 0x00;           // was 0x00 - reserved
   frame.data[7] = MOTOR5_counter; // checksum / rolling counter
-  if (++BRAKES1_counter > 255)
-  {                      // 0xF (NOTE: increments BRAKES1_counter - copy-paste artefact)
-    BRAKES1_counter = 0; // 0
-  }
+  MOTOR5_counter++; // 8-bit rolling counter, natural wrap at 255
   standaloneTx(frame);
 }
 
 void Gen5_0AY_frames25()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_1 (0x320, DLC 8) - instrument-cluster broadcast (vw_pq.dbc: Kombi_1).
   frame.identifier = mKombi_1;
   frame.data_length_code = 8;
@@ -3510,7 +3547,7 @@ void Gen5_0AY_frames25()
 
 void Gen5_0AY_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Gate_Komf_1 (0x390, DLC 8) - gateway-comfort broadcast (vw_pq.dbc: Gate_Komf_1).
   frame.identifier = mGate_Komf_1;
   frame.data_length_code = 8;
@@ -3568,7 +3605,7 @@ void Gen5_0AY_frames100()
 
 void Gen5_0AY_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Kombi_2 (0x420, DLC 8) - cluster temps (vw_pq.dbc: Kombi_2).
   frame.identifier = mKombi_2;
   frame.data_length_code = 8;
@@ -3585,7 +3622,7 @@ void Gen5_0AY_frames200()
 
 void Gen5_0AY_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   // PQ Diagnose_1 (0x7D0, DLC 8) - diagnostic timestamp broadcast (vw_pq.dbc: Diagnose_1).
   frame.identifier = mDiagnose_1;
   frame.data_length_code = 8;
@@ -3630,7 +3667,7 @@ void Gen5_0AY_frames1000()
 
 void Gen42_frames10()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -3739,7 +3776,7 @@ void Gen42_frames10()
 
 void Gen42_frames20()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -3847,7 +3884,7 @@ void Gen42_frames20()
 
 void Gen42_frames100()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -3881,7 +3918,7 @@ void Gen42_frames100()
 
 void Gen42_frames200()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 
@@ -3934,7 +3971,7 @@ void Gen42_frames200()
 
 void Gen42_frames1000()
 {
-  twai_message_t frame;
+  twai_message_t frame = {};
   frame.extd = 0;
   frame.rtr = 0;
 

@@ -2,6 +2,7 @@
 #include <OpenHaldexC6_Calculations.h>
 #include <OpenHaldexC6_Analyzer.h>
 #include <OpenHaldexC6_UDS.h>
+#include "esp_system.h" // esp_restart() - last-resort drive recovery
 
 // Every bridge / diagnostic transmit goes through this wrapper so a failed send
 // (TX queue still full after the 10 ms wait, driver stopped / bus-off) is
@@ -53,8 +54,15 @@ void broadcastOpenHaldex(void *arg)
       continue;
     }
 
+    // Snapshot the control state under the lock so the broadcast is coherent.
+    xSemaphoreTake(stateMutex, portMAX_DELAY);
+    const float snapshot_lock_target = lock_target;
+    const bool snapshot_mode_override = state.mode_override;
+    const openhaldex_mode_t snapshot_mode = state.mode;
+    xSemaphoreGive(stateMutex);
+
     // build up the 'OpenHaldex' frame for broadcasting back over CAN
-    twai_message_t broadcast_frame;
+    twai_message_t broadcast_frame = {};
     broadcast_frame.identifier = OPENHALDEX_BROADCAST_ID;
     broadcast_frame.extd = 0;
     broadcast_frame.rtr = 0;
@@ -62,10 +70,10 @@ void broadcastOpenHaldex(void *arg)
     broadcast_frame.data[0] = 0;
     broadcast_frame.data[1] = isStandalone;
     broadcast_frame.data[2] = (uint8_t)received_haldex_engagement_raw;
-    broadcast_frame.data[3] = (uint8_t)lock_target;
-    broadcast_frame.data[4] = received_vehicle_speed;
-    broadcast_frame.data[5] = state.mode_override;
-    broadcast_frame.data[6] = (uint8_t)state.mode;
+    broadcast_frame.data[3] = (uint8_t)snapshot_lock_target;
+    broadcast_frame.data[4] = (uint8_t)((received_vehicle_speed > 255) ? 255 : received_vehicle_speed); // clamp: a plain cast wraps above 255 km/h
+    broadcast_frame.data[5] = snapshot_mode_override;
+    broadcast_frame.data[6] = (uint8_t)snapshot_mode;
     broadcast_frame.data[7] = (uint8_t)received_pedal_value;
 
     canTransmit(twai_bus_0, &broadcast_frame);
@@ -155,14 +163,18 @@ void setupCAN()
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();                                                          // accept all messages
 
   // g_config.intr_flags = ESP_INTR_FLAG_LOWMED;  //Optional - move canbus irq to free up the default level 1 IRQ it will take up.  Todo
-  g_config.tx_queue_len = 1024; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5, use this to increase if needed
-  g_config.rx_queue_len = 2048; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5, use this to increase if needed // 4096
+  // Sized for the real peak (~2 ms of 1 Mbit/s traffic per 128-frame burst): the
+  // old 1024/2048 held ~1.5 s of backlog that is stale by the time it drains.
+  g_config.tx_queue_len = 64;  //<TWAI_GENERAL_CONFIG_DEFAULT default is 5
+  g_config.rx_queue_len = 128; //<TWAI_GENERAL_CONFIG_DEFAULT default is 5
   // g_config.intr_flags = ESP_INTR_FLAG_IRAM;
 
   // Allow the TWAI power domain to be powered down during light sleep; the
   // driver auto-saves/restores its registers + RX queue across sleep cycles.
   // Sleep entry itself is gated at runtime by `canSleepEnabled`.
-  g_config.general_flags.sleep_allow_pd = 1;
+  // Never power-gate the TWAI domain: a restore that fails would leave the
+  // controller stopped mid-drive (see main.cpp, light sleep is also off).
+  g_config.general_flags.sleep_allow_pd = 0;
 
   // setup CAN Controller (0) - Chassis
   g_config.controller_id = 0;
@@ -182,10 +194,8 @@ void setupCAN()
 
   // Reconfigure alerts to detect frame receive, error states and the full
   // bus-off / recovery lifecycle so canBusRecovery() can drive a clean restart.
-  uint32_t alerts_to_enable = TWAI_ALERT_RX_DATA | TWAI_ALERT_ERR_PASS |
-                              TWAI_ALERT_BUS_ERROR | TWAI_ALERT_RX_QUEUE_FULL |
-                              TWAI_ALERT_TX_FAILED | TWAI_ALERT_BUS_OFF |
-                              TWAI_ALERT_BUS_RECOVERED | TWAI_ALERT_RX_FIFO_OVERRUN;
+  // CAN_ALERTS_ENABLE covers the full bus-off / recovery lifecycle (defs.h).
+  const uint32_t alerts_to_enable = CAN_ALERTS_ENABLE;
   // Apply to both controllers explicitly (v2 driver -> per-handle alerts).
   bool alertsOk = (twai_reconfigure_alerts_v2(twai_bus_0, alerts_to_enable, NULL) == ESP_OK) &&
                   (twai_reconfigure_alerts_v2(twai_bus_1, alerts_to_enable, NULL) == ESP_OK);
@@ -229,9 +239,7 @@ void canBusRecovery()
     uint32_t alerts = 0;
     if (twai_read_alerts_v2(bus, &alerts, 0) == ESP_OK)
     {
-      if (alerts & (TWAI_ALERT_BUS_ERROR | TWAI_ALERT_ERR_PASS |
-                    TWAI_ALERT_TX_FAILED | TWAI_ALERT_RX_QUEUE_FULL |
-                    TWAI_ALERT_RX_FIFO_OVERRUN))
+      if (can_alerts_indicate_failure(alerts, CAN_ALERTS_FAILURE_MASK))
       {
         anyFault = true;
       }
@@ -286,8 +294,67 @@ void canBusRecovery()
 // scanner tool goes quiet for EXTERNAL_DIAG_TIMEOUT_MS.
 bool externalDiagActive()
 {
-  const uint32_t t = externalDiagLastMs;
-  return t != 0 && (millis() - t) < EXTERNAL_DIAG_TIMEOUT_MS;
+  return external_diag_active(externalDiagLastMs, millis(), EXTERNAL_DIAG_TIMEOUT_MS);
+}
+
+// Recover a TWAI controller that has stopped delivering frames while the module
+// is meant to be live. The prime trigger is automatic light sleep powering down
+// the TWAI domain (setupCAN sets sleep_allow_pd) and the driver failing to
+// restart on wake - the RX task then spins on a dead controller, the Haldex
+// loses its frame feed and drive is lost with no recovery. A STOPPED controller
+// is restarted; a BUS_OFF one is sent into recovery (showHaldexState's alert
+// handler finishes it with twai_start_v2). Only called while awake - a
+// deliberate low-power sleep owns its own wake path and must not be fought.
+//
+// allowReboot: on the drive-critical chassis path, if the bus was previously
+// alive and stays unrecoverable for ~3s, a clean esp_restart() re-runs setupCAN
+// and restores drive in a second or two - far better than sitting dead. It
+// never fires on a bench unit that has never seen a frame (everAliveTick == 0),
+// so a disconnected box does not boot-loop.
+static void canServiceRxFault(twai_handle_t bus, uint32_t &stalledSinceMs, uint32_t everAliveTick, bool allowReboot)
+{
+  twai_status_info_t st;
+  bool running = false;
+  if (twai_get_status_info_v2(bus, &st) == ESP_OK)
+  {
+    if (st.state == TWAI_STATE_STOPPED)
+    {
+      twai_start_v2(bus); // stopped (e.g. light-sleep restore) - bring it back live
+    }
+    else if (st.state == TWAI_STATE_BUS_OFF)
+    {
+      twai_initiate_recovery_v2(bus);
+    }
+    else if (st.state == TWAI_STATE_RUNNING)
+    {
+      running = true; // controller is fine, the bus is just momentarily quiet
+    }
+    // RECOVERING: recovery already in flight; let the stall clock keep running.
+  }
+
+  // A RUNNING controller with no traffic is a benign quiet bus, not a fault:
+  // clear the stall clock and never escalate. This is what makes a bounded
+  // receive timeout safe - ordinary gaps between frames don't count as a stall.
+  if (running)
+  {
+    stalledSinceMs = 0;
+    return;
+  }
+
+  // Controller is not delivering (stopped/bus-off/recovering). Stamp the first
+  // bad sample; if it stays unrecoverable for ~3s and the bus was previously
+  // alive, a clean restart re-runs setupCAN and restores drive in a second or
+  // two - far better than a task parked forever on a dead controller.
+  const uint32_t nowMs = (uint32_t)millis();
+  if (stalledSinceMs == 0)
+  {
+    stalledSinceMs = nowMs ? nowMs : 1; // never 0 - that is the "not stalled" sentinel
+  }
+  if (allowReboot && everAliveTick > 0 && (nowMs - stalledSinceMs) >= 3000UL)
+  {
+    DEBUG("CAN - chassis controller unrecoverable ~3s while awake, restarting to restore drive");
+    esp_restart();
+  }
 }
 
 void parseCAN_chs(void *arg)
@@ -297,6 +364,7 @@ void parseCAN_chs(void *arg)
   // unblocked the moment a frame is queued by the ISR, so latency is the queue
   // wakeup time (microseconds) rather than the previous ~1 ms polling tick.
   // CPU usage on an idle bus drops to effectively zero.
+  static uint32_t chsRxStalledSince = 0; // millis() of first stalled sample, 0 = not stalled
   while (1)
   {
 #if detailedDebugStack
@@ -305,16 +373,21 @@ void parseCAN_chs(void *arg)
 
     // Block until at least one frame is available, then read any further
     // frames already queued by the ISR before blocking again.
-    if (twai_receive_v2(twai_bus_0, &rx_message_chs, portMAX_DELAY) != ESP_OK)
+    if (twai_receive_v2(twai_bus_0, &rx_message_chs, pdMS_TO_TICKS(250)) != ESP_OK)
     {
-      // Driver was stopped/uninstalled (e.g. light-sleep entry); back off and retry.
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
+      // Timeout or driver error: not a frame. While awake, check whether the
+      // controller itself has stopped delivering (stopped / bus-off) and revive it.
+      if (!lowPowerMode)
+      {
+        canServiceRxFault(twai_bus_0, chsRxStalledSince, lastCANChassisTick, true);
+      }
+      continue; // the 250 ms receive timeout is the back-off; no extra delay needed
     }
+    chsRxStalledSince = 0; // a frame arrived - the controller is delivering again
     do
     {
       lastCANChassisTick = millis();
-      ++lpChassisFrameCount;
+      lpChassisFrameCount = lpChassisFrameCount + 1; // C++20: no ++ on volatile
 
       // External diagnostic-tool detection (auto-pause of live polling).
       // A scanner addresses the Haldex from the chassis side; these request IDs
@@ -323,11 +396,11 @@ void parseCAN_chs(void *arg)
       // UDS/TP2.0 tasks off until it goes quiet - so liveDiagEnabled restores on disconnection.
       {
         const uint32_t _did = rx_message_chs.identifier;
-        if (_did == KWP_TP20_SETUP_TX_ID ||         // 0x200 TP2.0 channel setup
-            _did == 0x7DFu ||                       // OBD functional request (scan/clear)
-            (_did >= 0x700u && _did <= 0x71Fu))     // VAG UDS/KWP physical tester requests
+        // is_external_diag_request_id: 0x7DF OBD functional + 0x700-0x71F physical
+        // testers. 0x200 (TP2.0 channel setup) is added here because this build runs TP2.0.
+        if (is_external_diag_request_id(_did) || _did == KWP_TP20_SETUP_TX_ID)
         {
-          externalDiagLastMs = millis();
+          externalDiagLastMs = external_diag_stamp(millis()); // never stores 0 ("never seen" sentinel)
         }
       }
 
@@ -351,13 +424,19 @@ void parseCAN_chs(void *arg)
       {
         if (rx_message_chs.identifier == HALDEX_GEN41_SEC_AXLE_GENINFO_ID)
         {
+          // Flag + timestamp published together under stateMutex so the expiry
+          // check in updateTriggers never sees a fresh flag with a stale stamp.
+          xSemaphoreTake(stateMutex, portMAX_DELAY);
           received_haldex_alive_bus0 = true;
           received_haldex_alive_bus0_ms = millis();
+          xSemaphoreGive(stateMutex);
         }
         else if (rx_message_chs.identifier == HALDEX_GEN41_DRIVETRAIN_STATE_ID)
         {
+          xSemaphoreTake(stateMutex, portMAX_DELAY);
           received_drivetrain_state_ok = true;
           received_drivetrain_state_ms = millis();
+          xSemaphoreGive(stateMutex);
         }
       }
 
@@ -382,7 +461,10 @@ void parseCAN_chs(void *arg)
           rx_message_chs.data[2] == (uint8_t)(OPENHALDEX_LOCK_DID >> 8) &&
           rx_message_chs.data[3] == (uint8_t)(OPENHALDEX_LOCK_DID & 0xFF))
       {
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
         const float lt = lock_target;
+        const uint8_t snapshot_mode = (uint8_t)state.mode;
+        xSemaphoreGive(stateMutex);
         const uint8_t cmd = (uint8_t)(lt < 0.0f ? 0.0f : (lt > 100.0f ? 100.0f : lt + 0.5f));
         twai_message_t resp{};
         resp.identifier = OPENHALDEX_UDS_RESPONSE_ID;
@@ -395,7 +477,7 @@ void parseCAN_chs(void *arg)
         resp.data[3] = (uint8_t)(OPENHALDEX_LOCK_DID & 0xFF);
         resp.data[4] = cmd;                                        // commanded lock %, 0-100
         resp.data[5] = (uint8_t)received_haldex_engagement_raw;    // applied engagement, raw
-        resp.data[6] = (uint8_t)state.mode;                        // live mode, so a write reads back
+        resp.data[6] = snapshot_mode;                                // live mode, so a write reads back
         resp.data[7] = 0xAA;                                       // ISO-TP padding
         canTransmit(twai_bus_0, &resp);
         continue; // consume - do NOT forward to Bus 1
@@ -456,7 +538,9 @@ void parseCAN_chs(void *arg)
         resp.data_length_code = 8;
         if (requested_mode < (uint8_t)openhaldex_mode_t_MAX)
         {
+          xSemaphoreTake(stateMutex, portMAX_DELAY);
           state.mode = (openhaldex_mode_t)requested_mode;
+          xSemaphoreGive(stateMutex);
           resp.data[0] = 0x03; // ISO-TP single frame, 3 payload bytes
           resp.data[1] = 0x6E; // positive WDBI response
           resp.data[2] = (uint8_t)(OPENHALDEX_MODE_DID >> 8);
@@ -808,7 +892,9 @@ void parseCAN_chs(void *arg)
           if (broadcastOpenHaldexOverCAN &&
               rx_message_chs.data[0] < (uint8_t)openhaldex_mode_t_MAX)
           {
+            xSemaphoreTake(stateMutex, portMAX_DELAY);
             state.mode = (openhaldex_mode_t)rx_message_chs.data[0];
+            xSemaphoreGive(stateMutex);
           }
           break;
         }
@@ -854,9 +940,15 @@ void parseCAN_chs(void *arg)
           // behaviour is untouched passthrough. Editing frames in Stock used to
           // mirror received_haldex_engagement back as the command, closing a
           // feedback loop that latched the clutch at 100% until FWD/power cycle.
+          // Snapshot the mode under the lock so the Stock / non-Stock decision is
+          // coherent with concurrent writers (API, buttons, external control).
+          // getLockData() takes stateMutex itself, so it MUST run outside this hold.
+          xSemaphoreTake(stateMutex, portMAX_DELAY);
+          const openhaldex_mode_t modeSnapshot = state.mode;
+          xSemaphoreGive(stateMutex);
           const int forcedMode = get_forced_mode_value();
-          const bool stockEffective = (forcedMode >= 0) ? (forcedMode == 0)
-                                                        : (state.mode == MODE_STOCK);
+          const bool stockEffective = (forcedMode >= 0) ? (forcedMode == MODE_STOCK)
+                                                        : (modeSnapshot == MODE_STOCK);
 
           // Edit the CAN frame unless effective-Stock (learn must run regardless of mode)
           if (!stockEffective || haldexLearnActive)
@@ -871,20 +963,29 @@ void parseCAN_chs(void *arg)
           {
             // Stock passthrough: mirror the Haldex's reported engagement for
             // telemetry only; the frame itself is forwarded untouched below.
+            xSemaphoreTake(stateMutex, portMAX_DELAY);
             lock_target = received_haldex_engagement;
+            xSemaphoreGive(stateMutex);
           }
 
           // Optional brake/handbrake override (followBrake/followHandbrake +
           // invertBrake/invertHandbrake). Changes rx_message_chs in place
           // before the copy so the Haldex sees the rewritten bit + valid CRC.
-          applyBrakeHandbrakeCANOverride(rx_message_chs);
+          // Skipped in effective Stock: that mode is untouched passthrough, so
+          // the car's own brake/handbrake bits must reach the Haldex unmodified.
+          if (!stockEffective || haldexLearnActive)
+          {
+            applyBrakeHandbrakeCANOverride(rx_message_chs);
+          }
           }
           else
           {
             // Controller disabled: read-only. Mirror the Haldex's reported
             // engagement for telemetry only; rx_message_chs is left untouched
             // and forwarded below - purely so that 'Requested' doesn't show 0 (looks unclean IMO)
+            xSemaphoreTake(stateMutex, portMAX_DELAY);
             lock_target = received_haldex_engagement;
+            xSemaphoreGive(stateMutex);
           }
 
           tx_message_hdx = rx_message_chs;
@@ -954,21 +1055,28 @@ static inline void hdxFbCapture(const twai_message_t &m)
 void parseCAN_hdx(void *arg)
 {
   // for all haldex frames received
+  static uint32_t hdxRxStalledSince = 0; // millis() of first stalled sample, 0 = not stalled
   while (1)
   {
 #if detailedDebugStack
     stackHDX = uxTaskGetStackHighWaterMark(NULL);
 #endif
 
-    if (twai_receive_v2(twai_bus_1, &rx_message_hdx, portMAX_DELAY) != ESP_OK)
+    if (twai_receive_v2(twai_bus_1, &rx_message_hdx, pdMS_TO_TICKS(250)) != ESP_OK)
     {
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
+      // Timeout or driver error: not a frame. While awake, check whether the
+      // controller itself has stopped delivering (stopped / bus-off) and revive it.
+      if (!lowPowerMode)
+      {
+        canServiceRxFault(twai_bus_1, hdxRxStalledSince, lastCANHaldexTick, false);
+      }
+      continue; // the 250 ms receive timeout is the back-off; no extra delay needed
     }
+    hdxRxStalledSince = 0; // a frame arrived - the controller is delivering again
     do
     {
       lastCANHaldexTick = millis();
-      ++lpHaldexFrameCount;
+      lpHaldexFrameCount = lpHaldexFrameCount + 1; // C++20: no ++ on volatile
       hdxRxCensus(rx_message_hdx);
 
       // Analyzer mode: queue for GVRET/SLCAN and forward untouched, skipping control logic.
@@ -987,7 +1095,7 @@ void parseCAN_hdx(void *arg)
       case 1:
         // Gen1 Haldex (early pre-PQ): engagement on byte 1, raw range ~128..198.
         received_haldex_engagement_raw = rx_message_hdx.data[1];
-        received_haldex_engagement = map(received_haldex_engagement_raw, 128, 198, 0, 100);
+        received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 128, 198);
         received_haldex_state = rx_message_hdx.data[0];
         break;
 
@@ -1000,7 +1108,7 @@ void parseCAN_hdx(void *arg)
         if (rx_message_hdx.identifier == HALDEX_ID)
         {
           received_haldex_engagement_raw = rx_message_hdx.data[4];
-          received_haldex_engagement = map(received_haldex_engagement_raw, 0, 127, 0, 100);
+          received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 0, 127);
           received_haldex_state = rx_message_hdx.data[0];
         }
         break;
@@ -1014,7 +1122,7 @@ void parseCAN_hdx(void *arg)
         if (rx_message_hdx.identifier == HALDEX_ID)
         {
           received_haldex_engagement_raw = rx_message_hdx.data[1];
-          received_haldex_engagement = map(received_haldex_engagement_raw, 128, 255, 0, 100);
+          received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 128, 255);
           received_haldex_state = rx_message_hdx.data[0];
         }
         break;
@@ -1066,7 +1174,7 @@ void parseCAN_hdx(void *arg)
         if (rx_message_hdx.identifier == HALDEX_ID_GEN5)
         {
           received_haldex_engagement_raw = rx_message_hdx.data[2];
-          received_haldex_engagement = map(received_haldex_engagement_raw, 0, 250, 0, 100);
+          received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 0, 250);
           received_haldex_state = rx_message_hdx.data[3]; // Charisma byte (mode/status)
           hdxFbCapture(rx_message_hdx);
         }
@@ -1086,7 +1194,7 @@ void parseCAN_hdx(void *arg)
           if (received_haldex_engagement_raw >= 252)
             received_haldex_engagement = 0;
           else
-            received_haldex_engagement = (uint8_t)map(received_haldex_engagement_raw > 250 ? 250 : received_haldex_engagement_raw, 0, 250, 0, 100);
+            received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 0, 250);
           received_haldex_state = rx_message_hdx.data[3];
           received_quer_state = (rx_message_hdx.data[1] >> 4) & 0x07;
           received_quer_sync = (rx_message_hdx.data[1] >> 7) & 0x01;
@@ -1103,7 +1211,7 @@ void parseCAN_hdx(void *arg)
         if (rx_message_hdx.identifier == HALDEX_ID)
         {
           received_haldex_engagement_raw = rx_message_hdx.data[1];
-          received_haldex_engagement = map(received_haldex_engagement_raw, 128, 255, 0, 100);
+          received_haldex_engagement = scale_haldex_engagement(received_haldex_engagement_raw, 128, 255);
           // Snap the top of the curve: the pump audibly keeps ramping after the
           // decoded percentage stalls at 99, so treat >=99% as fully engaged.
           if (received_haldex_engagement >= 99)

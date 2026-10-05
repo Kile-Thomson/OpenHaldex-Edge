@@ -190,7 +190,7 @@ static int labUdsTransact(const uint8_t *req, size_t reqLen, uint8_t *rsp, size_
 
   int rc = -6; // timeout unless something lands
   uint32_t deadline = millis() + timeoutMs;
-  twai_message_t f;
+  twai_message_t f = {};
   uint16_t total = 0;
   size_t got = 0;
   bool multi = false;

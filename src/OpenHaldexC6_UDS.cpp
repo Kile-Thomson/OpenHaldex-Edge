@@ -1,4 +1,5 @@
 #include <OpenHaldexC6_UDS.h>
+#include <OpenHaldexC6_Calculations.h> // uds_parse_sf_rdbi / uds_scale_mqb_did
 #include <OpenHaldexC6_can.h> // canTransmit
 
 using namespace OpenHaldexC6;
@@ -24,69 +25,47 @@ static bool udsSendFrame(uint32_t canId, const uint8_t *payload, uint8_t payload
     return canTransmit(twai_bus_1, &msg);
 }
 
+static void udsStoreValue(uint16_t did, float value)
+{
+    switch (did)
+    {
+    case 0x0286: udsTerminalVoltage = value; break; // Terminal Voltage, V
+    case 0x028D: udsModuleTemp = value; break;       // Control Module Temperature, degC
+    case 0x2BE6: udsClutchCurrent = value; break;    // Haldex Clutch Current, A
+    case 0x2BE7:                                     // Haldex Clutch PWM, %
+        udsClutchPWM = (uint8_t)(value < 0.0f ? 0.0f : (value > 255.0f ? 255.0f : value + 0.5f));
+        break;
+    case 0x2BF1: udsClutchTemp = value; break;       // Clutch Temperature, degC
+    case 0x2BE4: udsCoolingFinTemp = value; break;   // Cooling Fin Temperature, degC
+    case 0x2BE9: udsClutchVoltage = value; break;    // Haldex Clutch Voltage, V
+    }
+}
+
+// Decode one RDBI response. Frame validation (single frame, 0x62, DID echo) and
+// the per-DID scaling live in Calculations.cpp (uds_parse_sf_rdbi /
+// uds_scale_mqb_did) so they are covered by the host tests. Scaling notes (heat
+// sweeps against VCDS on 0CQ 554C/D): temperatures are LE16, (raw - 22767) / 100
+// degC, module temp is a byte minus 55, clutch current/voltage are BE16 x 0.001.
 static void udsDecodeDID(uint16_t did, const twai_message_t &frame)
 {
-    // Validate: single-frame (PCI high nibble 0), positive RDBI response (0x62), DID echo matches.
-    if ((frame.data[0] & 0xF0) != 0x00) return;
-    const uint8_t payloadLen = frame.data[0] & 0x0F;
-    if (payloadLen < 4) return;                                      // need SID(1) + DID(2) + data(1+)
-    if (frame.data[1] != 0x62) return;
-    const uint16_t respDID = ((uint16_t)frame.data[2] << 8) | frame.data[3];
-    if (respDID != did) return;
+    uint8_t payload[4]; // max SF payload after the 62 <DID_hi> <DID_lo> header
+    const int n = uds_parse_sf_rdbi(frame.data, frame.data_length_code, did, payload, sizeof(payload));
+    if (n < 0) return;
 
     udsLastDecodeMs = millis(); // freshness for the BLE Diag characteristic (values persist after polling stops)
 
-    // Actual measurement data starts at frame.data[4]
-    switch (did)
+    // Keep the raw LE16 of the two temperature DIDs: the fin/clutch scale is an
+    // unvalidated guess, so the raw bytes let it be re-derived without a reflash.
+    if (n >= 2)
     {
-    case 0x0286: // Terminal Voltage: 1 byte, × 0.1 V  (0x8F=143 → 14.3 V confirmed)
-        if (payloadLen >= 4)
-            udsTerminalVoltage = frame.data[4] * 0.1f;
-        break;
-
-    case 0x028D: // Control Module Temperature: 1 byte, temp = raw − 55 °C
-                 // Heat-sweep confirmed (VCDS, both modules):
-                 //   0CQ 554C: 0x4F=79 → 24 °C … 0x76=118 → 63 °C (probe ~25→68)
-                 //   0CQ 554D: 0x52=82 → 27 °C … 0x7F=127 → 72 °C (probe ~27→73)
-                 // Offset 55 cross-checked against clutch temp at all 4 anchors → mean 55.0.
-        if (payloadLen >= 4)
-            udsModuleTemp = (float)frame.data[4] - 55.0f;
-        break;
-
-    case 0x2BE6: // Haldex Clutch Current: 2 bytes BE, × 0.001 A  (0x000F=15 → 0.015 A confirmed)
-        if (payloadLen >= 5)
-            udsClutchCurrent = (((uint16_t)frame.data[4] << 8) | frame.data[5]) * 0.001f;
-        break;
-
-    case 0x2BE7: // Haldex Clutch PWM: 1 byte, raw %  (0x00=0 → 0 % confirmed)
-        if (payloadLen >= 4)
-            udsClutchPWM = frame.data[4];
-        break;
-
-    case 0x2BF1: // Clutch Temperature: 2 bytes LE16, (D6×256+D5 − 22767)/100 °C
-                 // Heat-sweep confirmed (VCDS, both modules); tracks 0x028D within ~1 °C:
-                 //   0CQ 554C: 25227 → 24.6 °C … 28987 → 62.2 °C
-                 //   0CQ 554D: 25477 → 27.1 °C … 29967 → 72.0 °C
-        if (payloadLen >= 5)
-            udsClutchTemp = ((int32_t)((uint16_t)frame.data[5] * 256 + frame.data[4]) - 22767) / 100.0f;
-        break;
-
-    case 0x2BE4: // Cooling Fin Temperature: 2 bytes LE16, (D6×256+D5 − 22767)/100 °C
-                 // Same scaling as clutch (0x2BF1); fins shed heat so they stay cooler:
-                 //   0CQ 554C: 25057 → 22.9 °C … 26957 → 41.9 °C
-                 //   0CQ 554D: 25357 → 25.9 °C … 25657 → 28.9 °C (barely moved, as observed)
-        if (payloadLen >= 5)
-            udsCoolingFinTemp = ((int32_t)((uint16_t)frame.data[5] * 256 + frame.data[4]) - 22767) / 100.0f;
-        break;
-
-    case 0x2BE9: // Haldex Clutch Voltage: 2 bytes BE, × 0.001 V  (0x001F=31 → 0.031 V ≈ 0 V at rest confirmed)
-        if (payloadLen >= 5)
-            udsClutchVoltage = (((uint16_t)frame.data[4] << 8) | frame.data[5]) * 0.001f;
-        break;
-
-    default:
-        break;
+        const uint16_t rawLE = (uint16_t)(((uint16_t)payload[1] << 8) | payload[0]);
+        if (did == 0x2BF1)      { udsClutchTempRaw = rawLE; udsClutchTempValid = true; }
+        else if (did == 0x2BE4) { udsCoolingFinTempRaw = rawLE; udsCoolingFinTempValid = true; }
     }
+
+    float value;
+    if (!uds_scale_mqb_did(did, payload, (uint8_t)n, value)) return;
+    udsStoreValue(did, value);
 }
 
 // Outcome of one ReadDataByIdentifier exchange (see udsPollDid).
@@ -109,7 +88,7 @@ static UdsPollResult udsPollDid(uint32_t reqId, uint16_t did, uint32_t windowMs)
     if (!udsSendFrame(reqId, rdbiReq, sizeof(rdbiReq))) return UDS_POLL_TIMEOUT;
 
     const uint32_t deadline = millis() + windowMs;
-    twai_message_t rsp;
+    twai_message_t rsp = {};
     for (;;)
     {
         const uint32_t now = millis();
@@ -151,7 +130,7 @@ static bool udsSessionControl(uint32_t reqId, uint8_t session, uint32_t windowMs
     if (!udsSendFrame(reqId, sessReq, sizeof(sessReq))) return false;
 
     const uint32_t deadline = millis() + windowMs;
-    twai_message_t rsp;
+    twai_message_t rsp = {};
     for (;;)
     {
         const uint32_t now = millis();
@@ -184,6 +163,10 @@ static void udsClearValues()
 {
     udsTerminalVoltage = 0.0f;
     udsModuleTemp      = 0.0f;
+    udsClutchTempRaw   = 0;
+    udsCoolingFinTempRaw = 0;
+    udsClutchTempValid = false;
+    udsCoolingFinTempValid = false;
     udsClutchTemp      = 0.0f;
     udsCoolingFinTemp  = 0.0f;
     udsClutchCurrent   = 0.0f;
@@ -805,7 +788,7 @@ bool UDS::sendRequest(uint32_t requestId,
             return false;
 
         // Wait for Flow Control frame from ECU (on responseId) before sending Consecutive frames
-        twai_message_t fc;
+        twai_message_t fc = {};
         if (!receiveFrame(fc, timeoutMs))
             return false;
 
@@ -850,7 +833,7 @@ bool UDS::sendRequest(uint32_t requestId,
 
     // Collect response from ECU
     responseLen = 0;
-    twai_message_t frame;
+    twai_message_t frame = {};
 
     if (!receiveFrame(frame, timeoutMs))
         return false;

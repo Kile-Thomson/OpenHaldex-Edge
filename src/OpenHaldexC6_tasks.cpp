@@ -99,6 +99,14 @@ static uint8_t quickHoldEngagement(uint8_t cf, uint32_t settleMs)
   for (uint32_t held = 0; held < settleMs && !longLearnCancel; held += 100)
   {
     vTaskDelay(100 / portTICK_PERIOD_MS);
+    if (!learn_speed_ok(received_vehicle_speed))
+    {
+      // Car moved off mid-hold: stop commanding lock. The cancel path restores
+      // every setting and the previous table; longLearnSpeedAborted marks it a failure.
+      longLearnSpeedAborted = true;
+      longLearnCancel = true;
+      break;
+    }
     const uint8_t eng = received_haldex_engagement;
     if (held >= settleMs - observeMs)
     {
@@ -494,9 +502,13 @@ restore:
   esp14MinFloorPct = longLearnFloorStart;
   bpkCeilingNm = longLearnBpkStart;
   fixHunting = fixHuntingStart;
+  xSemaphoreTake(stateMutex, portMAX_DELAY);
   memcpy(haldexLearnTable, savedTable, sizeof(savedTable));
   haldexLearnTableValid = savedTableValid;
-  haldexLearnStep = savedTableValid ? 101 : 0;
+  xSemaphoreGive(stateMutex);
+  haldexLearnStep = longLearnSpeedAborted ? 103 : (savedTableValid ? 101 : 0);
+  if (longLearnSpeedAborted && outcome == LL_CANCELLED)
+    outcome = LL_FAILED; // moved off mid-run: report as failed, not user-cancelled
   haldexLearnActive = false;
   longLearnCurrentBit = -1;
   longLearnPhase = outcome;
@@ -507,6 +519,20 @@ restore:
 
 void setupTasks()
 {
+  // Create the shared-state mutex BEFORE any task is spawned, so the CAN hot
+  // path (parseCAN_chs -> getLockData) never sees a null handle
+  stateMutex = xSemaphoreCreateMutex();
+  if (stateMutex == NULL)
+  {
+    // Without the lock every guarded write site would run unsynchronized -
+    // refuse to spawn any task rather than edit Haldex frames unsafely
+    DEBUG("FATAL: stateMutex creation failed - halting before task startup");
+    while (true)
+    {
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+  }
+
   // max task priority = 24
   xTaskCreate(showHaldexState, "showHaldexState", 5000, NULL, 1, &handle_showHaldexState);
   xTaskCreate(writeEEP, "writeEEP", 2000, NULL, 3, NULL);
@@ -545,8 +571,8 @@ void setupTasks()
   }
 
   xTaskCreate(broadcastOpenHaldex, "broadcastOpenHaldex", 1000, NULL, 10, &handle_broadcastOpenHaldex); // create a task for FreeRTOS for broadcasting the haldex state
-  xTaskCreate(parseCAN_hdx, "parseHaldex", 2048, NULL, 11, NULL);                // create a task for FreeRTOS for incoming haldex CAN - in '_can.ino'
-  xTaskCreate(parseCAN_chs, "parseChassis", 2048, NULL, 12, NULL);               // create a task for FreeRTOS for incoming chassis CAN - in '_can.ino'
+  xTaskCreate(parseCAN_hdx, "parseHaldex", 2048, NULL, 11, NULL);                // create a task for FreeRTOS for incoming haldex CAN - in OpenHaldexC6_can.cpp
+  xTaskCreate(parseCAN_chs, "parseChassis", 2048, NULL, 12, NULL);               // create a task for FreeRTOS for incoming chassis CAN - in OpenHaldexC6_can.cpp
   xTaskCreate(udsMQBTask, "udsMQBTask", 2048, NULL, 5, NULL);                    // UDS MQB diagnostic polling task (Gen 5 only)
   xTaskCreate(kwpTp20Task, "kwpTp20Task", 3072, NULL, 5, NULL);                  // KWP2000/TP2.0 diagnostic task (Gen2/4 PQ Haldex)
 }
@@ -614,18 +640,11 @@ void showHaldexState(void *arg)
       DEBUG("    stackCHS: %d", stackCHS); // incrememting value for checking the response to vars...
       DEBUG("    stackHDX: %d", stackHDX); // incrememting value for checking the response to vars...
 
-      DEBUG("    stackframes10: %d", stackframes10);     // incrememting value for checking the response to vars...
-      DEBUG("    stackframes20: %d", stackframes20);     // incrememting value for checking the response to vars...
-      DEBUG("    stackframes25: %d", stackframes25);     // incrememting value for checking the response to vars...
-      DEBUG("    stackframes100: %d", stackframes100);   // incrememting value for checking the response to vars...
-      DEBUG("    stackframes200: %d", stackframes200);   // incrememting value for checking the response to vars...
-      DEBUG("    stackframes1000: %d", stackframes1000); // incrememting value for checking the response to vars...
-      DEBUG("    stackframes13: %d", stackframes13);     // incrememting value for checking the response to vars...
-      DEBUG("    stackframes50: %d", stackframes50);     // incrememting value for checking the response to vars...
-      DEBUG("    stackframes250: %d", stackframes250);   // incrememting value for checking the response to vars...
+      DEBUG("    stackframes13: %d", stackframes13);   // incrememting value for checking the response to vars...
+      DEBUG("    stackframes50: %d", stackframes50);   // incrememting value for checking the response to vars...
+      DEBUG("    stackframes250: %d", stackframes250); // incrememting value for checking the response to vars...
 
       DEBUG("    stackbroadcastOpenHaldex: %d", stackbroadcastOpenHaldex); // incrememting value for checking the response to vars...
-      DEBUG("    stackupdateLabels: %d", stackupdateLabels);               // incrememting value for checking the response to vars...
       DEBUG("    stackshowHaldexState: %d", stackshowHaldexState);         // incrememting value for checking the response to vars...
       DEBUG("    stackwriteEEP: %d", stackwriteEEP);                       // incrememting value for checking the response to vars...
     }
