@@ -399,18 +399,16 @@ void test_adjval_default_lt0_returns_floor(void)
 
 void test_adjval_default_lt40(void)
 {
-  // v9 default VAG formula (kept from upstream 8.00.3): cf = lock/2 + 20 = 40.
-  // corrected = value*40/100. (Edge v8 used (lock + 20) / 2 = 30; upstream's
-  // slightly higher factor is the shipped 0CQ behaviour, so it is the one pinned.)
+  // cf = (40 + 20) / 2 = 30. corrected = value*30/100.
   lock_target = 40.0f;
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x00, get_lock_target_adjusted_value(0x00, false), "adjval lt=40 val=0x00 inv=0");
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xFE, get_lock_target_adjusted_value(0x00, true),  "adjval lt=40 val=0x00 inv=1");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x1F, get_lock_target_adjusted_value(0x4E, false), "adjval lt=40 val=0x4E inv=0");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xDF, get_lock_target_adjusted_value(0x4E, true),  "adjval lt=40 val=0x4E inv=1");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x32, get_lock_target_adjusted_value(0x7F, false), "adjval lt=40 val=0x7F inv=0");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xCC, get_lock_target_adjusted_value(0x7F, true),  "adjval lt=40 val=0x7F inv=1");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x65, get_lock_target_adjusted_value(0xFE, false), "adjval lt=40 val=0xFE inv=0");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x99, get_lock_target_adjusted_value(0xFE, true),  "adjval lt=40 val=0xFE inv=1");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x17, get_lock_target_adjusted_value(0x4E, false), "adjval lt=40 val=0x4E inv=0");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xE7, get_lock_target_adjusted_value(0x4E, true),  "adjval lt=40 val=0x4E inv=1");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x26, get_lock_target_adjusted_value(0x7F, false), "adjval lt=40 val=0x7F inv=0");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xD8, get_lock_target_adjusted_value(0x7F, true),  "adjval lt=40 val=0x7F inv=1");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x4C, get_lock_target_adjusted_value(0xFE, false), "adjval lt=40 val=0xFE inv=0");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0xB2, get_lock_target_adjusted_value(0xFE, true),  "adjval lt=40 val=0xFE inv=1");
 }
 
 void test_adjval_lt100_full_passthrough(void)
