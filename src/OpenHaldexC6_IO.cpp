@@ -332,7 +332,7 @@ void setupButtons()
 
   // InterruptButton::m_RTOSservicerStackDepth = 4096; // Use larger values for more memory intensive functions if using Asynchronous mode.
   btnMode.bind(Event_KeyPress, 0, &modeChange);            // short press: cycle mode
-  btnMode.bind(Event_LongKeyPress, 0, &resetWifi); // long press: clear WiFi password + restore default SSID, restart AP open
+  btnMode.bind(Event_LongKeyPress, 0, &resetWifi); // long press: clear WiFi password + restore default SSID, restart AP in first-run setup mode
 
   btnMode_ext.bind(Event_KeyPress, 0, &modeChangeExt);         // short press: cycle mode (external button)
   btnMode_ext.bind(Event_LongKeyPress, 0, &modeChangeExtLong); // long press: force mode (external button)

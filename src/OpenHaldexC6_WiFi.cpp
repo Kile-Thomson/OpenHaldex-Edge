@@ -129,8 +129,10 @@ void startSoftAP()
   }
   else
   {
-    WiFi.softAP(wifiHostName); // open network
-    DEBUG("WiFi AP started (open): %s", wifiHostName);
+    // First-run setup mode only: no password exists yet, so the web gate serves the
+    // setup page and nothing else until one is set (see OpenHaldexC6_Access.h).
+    WiFi.softAP(wifiHostName);
+    DEBUG("WiFi AP started in setup mode (no password yet): %s", wifiHostName);
   }
   softAPLocalOnly();
   WiFi.setSleep(false);
@@ -160,20 +162,17 @@ void disconnectWifi()
   rebootWiFi = true;
 }
 
-void resetWifiPassword()
-{
-  memset(wifiPassword, 0, sizeof(wifiPassword)); // clear password -> open network
-  rebootWiFi = true;                             // trigger AP restart
-  DEBUG("WiFi password cleared - restarting as open AP");
-}
-
 void resetWifi()
 {
-  memset(wifiPassword, 0, sizeof(wifiPassword));                 // clear password -> open network
+  // Physical recovery path (long press on the mode button): the unit is in the
+  // owner's hands, so a forgotten password can be cleared. The device is then
+  // unprovisioned: the AP is open only for the first-run setup page, which asks
+  // for a new password before anything else is reachable.
+  memset(wifiPassword, 0, sizeof(wifiPassword));
   memset(wifiSsid, 0, sizeof(wifiSsid));                         // clear SSID
   strncpy(wifiSsid, wifiHostNameDefault, sizeof(wifiSsid) - 1); // restore factory default SSID
   rebootWiFi = true;                                             // trigger AP restart
-  DEBUG("WiFi reset to defaults - SSID: %s, open network", wifiSsid);
+  DEBUG("WiFi reset to defaults - SSID: %s, setup mode (new password required)", wifiSsid);
 }
 
 void resetWifiSsid()

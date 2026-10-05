@@ -3080,8 +3080,7 @@ function initWifi() {
   const toggle  = document.getElementById("wifiPasswordToggle");
   const status  = document.getElementById("wifiPasswordStatus");
   const btnSave = document.getElementById("wifiPasswordSave");
-  const btnReset= document.getElementById("wifiPasswordReset");
-  if (!input || !toggle || !status || !btnSave || !btnReset) return;
+  if (!input || !toggle || !status || !btnSave) return;
 
   // show / hide password toggle
   toggle.addEventListener("click", () => {
@@ -3097,14 +3096,15 @@ function initWifi() {
       status.textContent = "\u2713 Password set - AP is secured";
       status.style.color = "var(--success)";
     } else {
-      status.textContent = "No password - AP is open";
-      status.style.color = "var(--text-dim)";
+      status.textContent = "No password set yet - set one now";
+      status.style.color = "var(--danger)";
     }
   });
 
   // save password
   btnSave.addEventListener("click", async () => {
     const pwd = input.value.trim();
+    if (pwd.length < 8) { showNotification("Password must be at least 8 characters", "error"); return; }
     const resp = await fetchJson("/api/wifi", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3116,25 +3116,9 @@ function initWifi() {
       return;
     }
     input.value = "";
-    if (resp.passwordSet) {
-      status.textContent = "\u2713 Password set - AP restarting\u2026";
-      status.style.color = "var(--success)";
-      showNotification("WiFi password saved - reconnect to AP");
-    } else {
-      status.textContent = "No password - AP restarting as open\u2026";
-      status.style.color = "var(--text-dim)";
-      showNotification("WiFi password cleared");
-    }
-  });
-
-  // reset to open network
-  btnReset.addEventListener("click", async () => {
-    const resp = await fetchJson("/api/wifi/reset", { method: "POST" });
-    if (!resp || !resp.ok) { showNotification("Reset failed", "error"); return; }
-    input.value = "";
-    status.textContent = "No password - AP restarting as open\u2026";
-    status.style.color = "var(--text-dim)";
-    showNotification("WiFi reset to open network - reconnect to AP");
+    status.textContent = "\u2713 Password set - AP restarting\u2026";
+    status.style.color = "var(--success)";
+    showNotification("WiFi password saved - reconnect to AP");
   });
 }
 
@@ -4628,7 +4612,7 @@ function initBackupRestore() {
 
   if (pwApply) pwApply.addEventListener("click", async () => {
     const pwd = pwInput.value;
-    if (pwd.length > 0 && pwd.length < 8) { setStatus("Password must be at least 8 characters (or blank for an open network)", false); return; }
+    if (pwd.length < 8) { setStatus("Password must be at least 8 characters", false); return; }
     const resp = await post("/api/wifi", { password: pwd });
     if (!resp || !resp.ok) { setStatus("Failed to apply the AP password", false); return; }
     pwInput.value = "";

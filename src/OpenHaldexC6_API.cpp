@@ -4,6 +4,8 @@
 #include <OpenHaldexC6_WiFi.h>
 #include <OpenHaldexC6_OTA.h> // otaNoteWebActivity()
 #include <OpenHaldexC6_BLE.h> // bleIsConnected(), bleForgetBonds()
+#include <OpenHaldexC6_WebAccess.h> // setupWebAccess(), isDeviceProvisioned()
+#include <OpenHaldexC6_Access.h>    // access_ap_password_valid()
 #include <OpenHaldexC6_Settings.h> // applyDrivingSetting()
 
 #include <cstring>
@@ -1037,6 +1039,10 @@ document.getElementById('fwb').onclick=function(){up('fw','/ota/update','firmwar
 // setup webserver function
 void setupWebServer()
 {
+    // The access gate must be the first handler on the server (WiFi AP trusted,
+    // home-network requests need Basic auth, nothing but setup before a password).
+    setupWebAccess();
+
     // The firmware never depends on the filesystem - it only holds the web UI.
     // Mount it if it looks sane (fsMountSafe: a LittleFS superblock that fits
     // the partition, so a half-written image can't trip an lfs assert and
@@ -1576,13 +1582,16 @@ void setupAPI()
                 sendJSON(req, 200, resp); });
         });
 
-    // POST /api/wifi/reset - clear password and restart AP as open network
+    // POST /api/wifi/reset - kept so old pages get a clear answer. The AP always
+    // needs a password, so there is no reset-to-open: set a new password instead
+    // (POST /api/wifi). Forgotten password: long-press the mode button on the
+    // unit, which clears it and sends the next browser to the setup page.
     webServer.on("/api/wifi/reset", HTTP_POST, [](AsyncWebServerRequest *request)
                  {
-                     resetWifiPassword();
                      JsonDocument resp;
-                     resp["ok"] = true;
-                     sendJSON(request, 200, resp); });
+                     resp["ok"] = false;
+                     resp["error"] = "The AP always needs a password - set a new one instead";
+                     sendJSON(request, 409, resp); });
 
     // GET /api/wifi - return whether a WiFi password is currently set
     webServer.on("/api/wifi", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -1612,22 +1621,32 @@ void setupAPI()
                 }
                 const char *newPwd = d["password"];
                 const size_t pwdLen = strlen(newPwd);
-                if (pwdLen > 0 && pwdLen < 8)
+                if (!access_ap_password_valid(newPwd))
                 {
-                    JsonDocument resp; resp["ok"] = false; resp["error"] = "Password must be at least 8 characters or empty";
-                    sendJSON(req, 400, resp); return;
-                }
-                if (pwdLen >= 65)
-                {
-                    JsonDocument resp; resp["ok"] = false; resp["error"] = "Password too long (max 64)";
+                    // An empty password would leave an open AP - never accepted.
+                    JsonDocument resp; resp["ok"] = false; resp["error"] = "Password must be 8 to 64 characters (the AP always needs one)";
                     sendJSON(req, 400, resp); return;
                 }
                 memset(wifiPassword, 0, sizeof(wifiPassword));
-                if (pwdLen > 0) strncpy(wifiPassword, newPwd, sizeof(wifiPassword) - 1);
+                strncpy(wifiPassword, newPwd, sizeof(wifiPassword) - 1);
                 rebootWiFi = true; // restart AP with new credentials
                 JsonDocument resp;
                 resp["ok"] = true;
                 resp["passwordSet"] = (pwdLen >= 8);
                 sendJSON(req, 200, resp); });
         });
+
+    // Unmatched URLs. Phone OS "is there internet here?" probes land here. This is
+    // an offline car AP with no uplink, so the probe must get an answer that is
+    // neither "internet works" (a 204 would pull the phone's traffic onto us) nor a
+    // captive portal (a redirect or a page makes the phone show "sign in to WiFi"):
+    // a bare 404 with no body and no redirect. The phone then keeps cellular for
+    // calls, messages and downloads.
+    webServer.onNotFound([](AsyncWebServerRequest *request)
+                         {
+        if (is_captive_probe(request->url().c_str())) {
+            request->send(404, "text/plain", ""); // no body, no redirect
+            return;
+        }
+        request->send(404, "text/plain", "Not found"); });
 }

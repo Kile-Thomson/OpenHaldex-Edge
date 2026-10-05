@@ -1,5 +1,6 @@
 #include <OpenHaldexC6_Analyzer.h>
 #include <OpenHaldexC6_defs.h>
+#include <OpenHaldexC6_WebAccess.h> // analyzerInjectionPermitted() - fail-closed injection gate
 
 // to Meatro / Chris: thank you for this (and other) contributions!
 
@@ -54,6 +55,13 @@ static uint8_t analyzerActiveProtocol = ANALYZER_PROTOCOL_GVRET;
 static bool analyzerServerStarted = false;
 
 // Allow a little more time after TCP connect so control replies aren't dropped.
+// SAFETY-CRITICAL: host->device CAN injection is refused unless the AP has a
+// password and the client came in on our own AP (not through the home network).
+// Evaluated once per client connection, never per frame. Passive sniffing and
+// streaming are never gated by this.
+static bool analyzerClientInjectionAllowed = false;
+static uint32_t analyzerInjectionRefused = 0;
+
 static const uint32_t kGvretControlWriteTimeoutMs = 250;
 
 // -------------------------------
@@ -207,6 +215,17 @@ static void gvretSendFrame(const AnalyzerFrame &entry) {
 
 static void gvretTransmitFrameFromHost() {
   if (gvretIndex < 7) {
+    return;
+  }
+
+  // Fail-closed injection gate: refuse host->device CAN unless this session was
+  // permitted at connect time. Count the dropped frame so it is visible;
+  // passive streaming continues regardless.
+  if (!analyzerClientInjectionAllowed) {
+    analyzerInjectionRefused++;
+    if ((analyzerInjectionRefused % 100) == 0) {
+      DEBUG("[Analyzer] Injection refused: %lu", analyzerInjectionRefused);
+    }
     return;
   }
 
@@ -451,6 +470,17 @@ static void slcanHandleLine() {
     }
   }
 
+  // Fail-closed injection gate (see above). Still ACK so the host tool completes
+  // its line handshake; the frame is dropped and counted.
+  if (!analyzerClientInjectionAllowed) {
+    analyzerInjectionRefused++;
+    if ((analyzerInjectionRefused % 100) == 0) {
+      DEBUG("[Analyzer] Injection refused: %lu", analyzerInjectionRefused);
+    }
+    slcanSendAck();
+    return;
+  }
+
   twai_transmit_v2(twai_bus_0, &msg, (5 / portTICK_PERIOD_MS));
   slcanSendAck();
 }
@@ -529,6 +559,7 @@ static void analyzerTask(void *arg) {
       // Neither mode active: close WiFi client if any, reset Serial-started flag.
       analyzerCloseClient();
       analyzerServerStarted = false;
+      analyzerClientInjectionAllowed = false; // fail closed until a session re-evaluates the gate
       if (serialStarted) {
         serialStarted = false;
         resetGvretParser();
@@ -549,7 +580,12 @@ static void analyzerTask(void *arg) {
         Serial.setTxTimeoutMs(10);
         serialStarted = true;
         resetGvretParser();
-        DEBUG("[Analyzer] Serial GVRET started at 1 Mbaud");
+        // Serial is a wired session on the unit itself: no network client, so only
+        // the protected-AP condition applies. Evaluated afresh so a flag left by an
+        // earlier WiFi client can not carry over.
+        analyzerClientInjectionAllowed = analyzerInjectionPermitted(false, 0);
+        DEBUG("[Analyzer] Serial GVRET started at 1 Mbaud (injection %s)",
+              analyzerClientInjectionAllowed ? "permitted" : "refused");
       }
       // Always GVRET for serial
       while (Serial.available()) {
@@ -595,7 +631,10 @@ static void analyzerTask(void *arg) {
         // Give TCP a moment to finish setup so control replies can flush.
         vTaskDelay(10 / portTICK_PERIOD_MS);
         resetAnalyzerClientState();
-        DEBUG("[Analyzer] Client connected");
+        // Evaluate the injection gate once, at connect time (never per frame).
+        analyzerClientInjectionAllowed = analyzerInjectionPermitted(true, (uint32_t)analyzerClient.localIP());
+        DEBUG("[Analyzer] Client connected (injection %s)",
+              analyzerClientInjectionAllowed ? "permitted" : "refused");
       } else {
         vTaskDelay(kAnalyzerPollDelayMs / portTICK_PERIOD_MS);
         continue;

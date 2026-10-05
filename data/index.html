@@ -960,15 +960,14 @@
                 </div>
 
                 <h3 class="subsection-title">Password</h3>
-                <p class="hint">Set a WPA2 password (min. 8 characters) to secure the access point. Leave blank to keep an open network. Long-pressing the mode button always resets back to open.</p>
+                <p class="hint">Set a WPA2 password (min. 8 characters) to secure the access point. The access point always needs a password: saving restarts it and you reconnect with the new one. Forgotten it? Long-press the mode button on the unit - that clears the password and the setup page asks for a new one.</p>
                 <p class="hint" id="wifiPasswordStatus">--</p>
                 <div class="wifi-password-row">
-                    <input type="password" id="wifiPasswordInput" placeholder="No password (open network)" class="input-wifi-password" maxlength="64" autocomplete="new-password">
+                    <input type="password" id="wifiPasswordInput" placeholder="New password (min. 8 characters)" class="input-wifi-password" maxlength="64" autocomplete="new-password">
                     <button class="btn-icon-eye" id="wifiPasswordToggle" title="Show / hide password">&#128065;</button>
                 </div>
                 <div class="wifi-controls">
                     <button class="btn-secondary" id="wifiPasswordSave">Save &amp; Apply</button>
-                    <button class="btn-secondary" id="wifiPasswordReset">Reset to Open</button>
                 </div>
             </section>
 
