@@ -20,3 +20,7 @@ typedef uint32_t TickType_t;
 // Queue handle type only — the UDS RX queue is declared in defs.h; the queue
 // API itself lives in firmware TUs excluded from the native build.
 typedef void *QueueHandle_t;
+
+#ifndef portTICK_PERIOD_MS
+#define portTICK_PERIOD_MS 1
+#endif
