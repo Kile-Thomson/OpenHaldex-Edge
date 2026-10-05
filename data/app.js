@@ -539,7 +539,7 @@ function setConnStatus(state) {
     el.textContent = window._authNeeded ? "Sign in" : "Offline";
     el.classList.add("error");
   } else if (state === "stale") {
-    el.textContent = "Reconnecting…";
+    el.textContent = "Reconnecting...";
     el.classList.add("stale");
   } else {
     el.textContent = "Live";
@@ -695,8 +695,8 @@ async function refreshStatus() {
         : hex2bin(data.haldexState);
 
     updateBannerSubtitle(data);
-    // Gen50 (0CQ/MQB): state byte is Allrad_03 byte 3 (Charisma) — use gen=50 legend.
-    // Gen51 (0AY) and all PQ gens (1/2/4): state byte is Allrad_1 byte 0 (PQ fault flags) — use gen-specific PQ legend.
+    // Gen50 (0CQ/MQB): state byte is Allrad_03 byte 3 (Charisma) - use gen=50 legend.
+    // Gen51 (0AY) and all PQ gens (1/2/4): state byte is Allrad_1 byte 0 (PQ fault flags) - use gen-specific PQ legend.
     const legendGen = _haldexGeneration;
     renderHaldexStateLegend(data.haldexState, legendGen);
 
@@ -801,7 +801,7 @@ function renderHaldexStateLegend(rawHex, gen) {
   const val = parseInt(rawHex, 16);
 
   if (gen === 1 || gen === 2 || gen === 4 || gen === 51) {
-    // PQ (Gen 1/2/4): Allrad_1 byte 0 — fault/status flags
+    // PQ (Gen 1/2/4): Allrad_1 byte 0 - fault/status flags
     const bits = [
       { bit: 0, label: "Clutch Fault",           desc: "Fehler_Allrad_Kupplung" },
       { bit: 1, label: "Over-Temp Protection",    desc: "Übertemperaturschutz" },
@@ -825,11 +825,11 @@ function renderHaldexStateLegend(rawHex, gen) {
     const flags = (val >> 4) & 0x0F;
     el.innerHTML =
       `<table><tr><th>Field</th><th>Value</th></tr>` +
-      `<tr><td>Driving Programme (bits 0–3)</td><td>${prog}</td></tr>` +
-      `<tr><td>Status Flags (bits 4–7)</td><td>0x${flags.toString(16).toUpperCase()}</td></tr>` +
-      `</table><p style="margin:4px 0 0;">Note: bit 4–5 of byte 1 = longitudinal lock state (0=open, 1=partial, 2=closed) — separate from this byte.</p>`;
+      `<tr><td>Driving Programme (bits 0-3)</td><td>${prog}</td></tr>` +
+      `<tr><td>Status Flags (bits 4-7)</td><td>0x${flags.toString(16).toUpperCase()}</td></tr>` +
+      `</table><p style="margin:4px 0 0;">Note: bit 4-5 of byte 1 = longitudinal lock state (0=open, 1=partial, 2=closed) - separate from this byte.</p>`;
   } else if (gen === 41) {
-    el.innerHTML = `<em>Gen 4.1: dedicated status variables used — see Gen41 card above.</em>`;
+    el.innerHTML = `<em>Gen 4.1: dedicated status variables used - see Gen41 card above.</em>`;
   } else {
     el.innerHTML = "";
   }
@@ -1206,7 +1206,7 @@ function initNavigation() {
     });
   }
 
-  // Lock response ramp sliders (display update only — save handled in initSettings)
+  // Lock response ramp sliders (display update only - save handled in initSettings)
   const lockReleaseRange = document.getElementById("lockReleaseRampRange");
   const lockReleaseVal   = document.getElementById("lockReleaseRampValue");
   if (lockReleaseRange) {
@@ -1222,7 +1222,7 @@ function initNavigation() {
     });
   }
 
-  // Steering gain sliders (display update only — save handled in initSettings)
+  // Steering gain sliders (display update only - save handled in initSettings)
   [
     ["steeringGainStartRange", "steeringGainStartValue"],
     ["steeringGainFullRange",  "steeringGainFullValue"],
@@ -1330,13 +1330,13 @@ function initModeButtons() {
 
       // Guard: controller disabled
       if (_disableController) {
-        showNotification("Controller is disabled — enable it in Controller Options before changing mode", "error");
+        showNotification("Controller is disabled - enable it in Controller Options before changing mode", "error");
         return;
       }
 
       // Guard: Stock unavailable in standalone (no chassis CAN to read from)
       if (mode === 0 && _isStandalone) {
-        showNotification("Stock mode is unavailable in Standalone — no chassis CAN to read from", "error");
+        showNotification("Stock mode is unavailable in Standalone - no chassis CAN to read from", "error");
         return;
       }
 
@@ -1423,7 +1423,7 @@ function initSettings() {
     });
   }
 
-  // Checkboxes — keep cached state in sync for mode-button guards
+  // Checkboxes - keep cached state in sync for mode-button guards
   const checkboxCacheMap = {
     disableController: (v) => { _disableController = v; },
     isStandalone:      (v) => { _isStandalone = v; },
@@ -3030,7 +3030,7 @@ function initLearn() {
   }
 
   btnStart.addEventListener("click", async () => {
-    statusText.textContent = "Learning\u2026";
+    statusText.textContent = "Learning...";
     statusText.style.color = "var(--text-dim)";
     const resp = await fetchJson("/api/learn/start", { method: "POST" });
     if (!resp || !resp.ok) {
@@ -3073,7 +3073,7 @@ function initLearn() {
   fetchJson("/api/learn/status").then((data) => {
     if (!data) return;
     if (data.active) {
-      statusText.textContent = "Learning\u2026";
+      statusText.textContent = "Learning...";
       statusText.style.color = "var(--text-dim)";
       startPolling();
     } else if (data.tableValid) {
@@ -3148,7 +3148,7 @@ function initWifiSsid() {
       showNotification(resp.error || "Failed to save SSID", "error");
       return;
     }
-    status.textContent = "AP restarting as \"" + resp.ssid + "\"\u2026";
+    status.textContent = "AP restarting as \"" + resp.ssid + "\"...";
     status.style.color = "var(--success)";
     showNotification("WiFi SSID saved - reconnect to AP");
   });
@@ -3158,7 +3158,7 @@ function initWifiSsid() {
     const resp = await fetchJson("/api/wifi/ssid/reset", { method: "POST" });
     if (!resp || !resp.ok) { showNotification("Reset failed", "error"); return; }
     input.value = resp.ssid || defaultSsid;
-    status.textContent = "AP restarting as \"" + (resp.ssid || defaultSsid) + "\"\u2026";
+    status.textContent = "AP restarting as \"" + (resp.ssid || defaultSsid) + "\"...";
     status.style.color = "var(--text-dim)";
     showNotification("WiFi SSID reset to default - reconnect to AP");
   });
@@ -3206,7 +3206,7 @@ function initWifi() {
       return;
     }
     input.value = "";
-    status.textContent = "\u2713 Password set - AP restarting\u2026";
+    status.textContent = "\u2713 Password set - AP restarting...";
     status.style.color = "var(--success)";
     showNotification("WiFi password saved - reconnect to AP");
   });
@@ -3590,7 +3590,7 @@ function initLongLearn() {
       name.textContent = b.name;
       const tag = document.createElement("span");
       let cls = "", txt = "";
-      if (data.active && data.currentBit === b.bit) { cls = "testing"; txt = "testing\u2026"; }
+      if (data.active && data.currentBit === b.bit) { cls = "testing"; txt = "testing..."; }
       else {
         const r = LL_RESULT[b.result] || LL_RESULT[0];
         txt = r[0]; cls = r[1];
@@ -3618,7 +3618,7 @@ function initLongLearn() {
     const total = data.sweepTotal || 0, idx = data.sweepIdx || 0;
     const pct = total ? Math.min(100, Math.round((idx / total) * 100)) : 0;
     progressFill.style.width = pct + "%";
-    progressLbl.textContent = `${idx}/${total}`;
+    progressLbl.textContent = `${idx}/${total} done`;
 
     setText("llPhase", LL_PHASE_NAMES[data.phase] || "--");
     setText("llSweep", total ? `${Math.min(idx + (running ? 1 : 0), total)} of ${total}` : "--");
@@ -3649,21 +3649,21 @@ function initLongLearn() {
     setText("llEngValue", running ? eng + "%" : "--");
 
     if (running) {
-      statusText.textContent = `Long Learn running \u2014 ${LL_PHASE_NAMES[data.phase] || ""}`;
+      statusText.textContent = `Long Learn running - ${LL_PHASE_NAMES[data.phase] || ""}`;
       statusText.style.color = "var(--text-dim)";
     } else if (data.phase === 5) {
       const f = data.final;
       const kept = (data.blocks || []).filter((b) => b.enabled).length;
-      statusText.textContent = `Long Learn complete \u2713 \u2014 ${kept} of ${(data.blocks || []).length} blocks enabled, ` +
+      statusText.textContent = `Long Learn complete \u2713 - ${kept} of ${(data.blocks || []).length} blocks enabled, ` +
         (isGen5 ? `PWM floor ${data.floorResult}%, ` : "") +
         (isGen5 && data.bpkAdjusted ? `torque ceiling ${data.bpkNow} Nm, ` : "") +
         `final: ${llScoreText(f)}`;
       statusText.style.color = f && f.smooth ? "var(--success)" : "var(--warning)";
     } else if (data.phase === 6) {
-      statusText.textContent = "Long Learn cancelled \u2014 previous blocks, floor, torque ceiling and learn table put back";
+      statusText.textContent = "Long Learn cancelled - previous blocks, floor, torque ceiling and learn table put back";
       statusText.style.color = "var(--warning)";
     } else if (data.phase === 7) {
-      statusText.textContent = "Long Learn failed \u2014 no Haldex data during a sweep. Previous settings restored";
+      statusText.textContent = "Long Learn failed - no Haldex data during a sweep. Previous settings restored";
       statusText.style.color = "var(--danger)";
     } else {
       statusText.textContent = "Not run yet";
@@ -3699,7 +3699,7 @@ function initLongLearn() {
   }
 
   btnStart.addEventListener("click", async () => {
-    statusText.textContent = "Starting Long Learn\u2026";
+    statusText.textContent = "Starting Long Learn...";
     statusText.style.color = "var(--text-dim)";
     const resp = await fetchJson("/api/longlearn/start", {
       method: "POST",
@@ -3716,7 +3716,7 @@ function initLongLearn() {
 
   btnCancel.addEventListener("click", async () => {
     await fetchJson("/api/longlearn/cancel", { method: "POST" });
-    statusText.textContent = "Cancelling\u2026";
+    statusText.textContent = "Cancelling...";
     statusText.style.color = "var(--warning)";
   });
 
@@ -3985,9 +3985,9 @@ function initUpdateCheck() {
       // Nothing to offer. Usually that just means every published release is
       // older than what is installed, which is a rollback, not an error.
       if (!all && otaCandidates().length) {
-        setStatus("Nothing newer than the installed version. Tick \u201cShow beta / older versions\u201d to roll back.");
+        setStatus("Nothing newer than the installed version. Tick \"Show beta / older versions\" to roll back.");
       } else {
-        setStatus("No installable releases listed. Use \u201cUpdate from a File\u201d below.", "error");
+        setStatus("No installable releases listed. Use \"Update from a File\" below.", "error");
       }
       return;
     }
@@ -4000,7 +4000,7 @@ function initUpdateCheck() {
 
   function renderNotes() {
     const r = selected();
-    notes.textContent = r ? ((r.date ? r.date + " \u2014 " : "") + (r.notes || "")) : "";
+    notes.textContent = r ? ((r.date ? r.date + " - " : "") + (r.notes || "")) : "";
     if (installBtn) installBtn.textContent = r && updCompareVersions(r.version, installed()) < 0 ? "Roll back to v" + r.version : "Install v" + (r ? r.version : "");
   }
 
@@ -4080,17 +4080,17 @@ function initUpdateCheck() {
     try { sta = await fetchJson("/api/wifi/sta"); } catch (e) { /* advice below still stands */ }
     const why = detail ? " (" + detail + ")" : "";
     if (sta && sta.ssid && sta.connected) {
-      return ["This browser has no internet" + why + ". The controller is already on \u201c" + sta.ssid + "\u201d at http://" + sta.ip +
-        "/ - join this phone to \u201c" + sta.ssid + "\u201d, open http://" + sta.ip + "/ (or http://openhaldex.local/), come back to this tab and press Retry.", false];
+      return ["This browser has no internet" + why + ". The controller is already on \"" + sta.ssid + "\" at http://" + sta.ip +
+        "/ - join this phone to \"" + sta.ssid + "\", open http://" + sta.ip + "/ (or http://openhaldex.local/), come back to this tab and press Retry.", false];
     }
     if (sta && sta.ssid) {
-      return ["This browser has no internet" + why + ". The controller is set up for \u201c" + sta.ssid + "\u201d but isn't connected right now - " +
+      return ["This browser has no internet" + why + ". The controller is set up for \"" + sta.ssid + "\" but isn't connected right now - " +
         "out of range, wrong password, or still trying (it retries every 5 minutes). Check the Home WiFi card below (Save & Apply " +
         "reconnects straight away), then join this phone to the same network, open the address the card shows and press Retry.", true];
     }
     return ["This browser has no internet while on the OpenHaldex WiFi" + why + ". Connect the controller to your home router in the " +
       "Home WiFi (Bridge Mode) card below, join this phone to that same network, open the address the card shows and press Retry. " +
-      "No router available? Use \u201cUpdate from a File\u201d below - it needs no internet here.", true];
+      "No router available? Use \"Update from a File\" below - it needs no internet here.", true];
   }
 
   async function check() {
@@ -4098,7 +4098,7 @@ function initUpdateCheck() {
     const t0 = Date.now();
     const secs = () => ((Date.now() - t0) / 1000).toFixed(1) + " s";
     checkBtn.disabled = true;
-    checkBtn.textContent = "Checking\u2026";
+    checkBtn.textContent = "Checking...";
     if (bridgeBtn) bridgeBtn.hidden = true;
     picker.hidden = true;
     index = null;
@@ -4111,8 +4111,8 @@ function initUpdateCheck() {
     // 1. The controller must be reachable from here before anything else.
     // Also refreshes "Installed" from the device itself so the comparison is
     // against what is really running, not whatever loadInfo() saw at page load.
-    setStatus("1/2 Contacting the controller\u2026");
-    setState("Checking\u2026");
+    setStatus("1/2 Contacting the controller...");
+    setState("Checking...");
     let info = null;
     try {
       const res = await updFetch("/ota/info", 6000);
@@ -4133,7 +4133,7 @@ function initUpdateCheck() {
 
     // 2. Release index + folder listing, in parallel. Each mirror gets 12 s,
     // so a phone with no route can sit here a while - say so.
-    setStatus("2/2 Contacting GitHub for the release list\u2026 (controller answered in " + secs() + "; this can take up to 30 s with no internet)");
+    setStatus("2/2 Contacting GitHub for the release list... (controller answered in " + secs() + "; this can take up to 30 s with no internet)");
     const [ir, fr] = await Promise.all([fetchIndex(), fetchFolders()]);
 
     if (!ir.index && !fr.dirs) {
@@ -4143,7 +4143,7 @@ function initUpdateCheck() {
       if (ir.reached || fr.reached) {
         setState("Release list unavailable", "upd-bad");
         setStatus("The phone is online but the release list could not be read: " + (ir.reached || fr.reached) +
-          ". Nothing is wrong with the controller or the phone - the published releases are missing or broken. Use \u201cUpdate from a File\u201d below.", "error");
+          ". Nothing is wrong with the controller or the phone - the published releases are missing or broken. Use \"Update from a File\" below.", "error");
         finish(false);
       } else {
         setState("No internet access", "upd-bad");
@@ -4223,7 +4223,7 @@ function initUpdateCheck() {
     const info = rel[part];
     const url =/^https?:\/\//i.test(info.path) ? info.path : UPD_RELEASES_BASE + info.path;
     setStep(stepId, "active");
-    setStatus("Downloading " + part + " (v" + rel.version + ")\u2026");
+    setStatus("Downloading " + part + " (v" + rel.version + ")...");
     const res = await fetch(url, { cache: "no-store", mode: "cors" });
     if (!res.ok) throw new Error("Download failed: HTTP " + res.status + " for " + info.path);
     // Progress against what the server says it is sending; the index's size
@@ -4255,7 +4255,7 @@ function initUpdateCheck() {
 
   async function flash(rel, part, type, stepId) {
     setStep(stepId, "active");
-    setStatus("Flashing " + part + "\u2026 do not power off.");
+    setStatus("Flashing " + part + "... do not power off.");
     setPct(0, "Flash");
     const blob = rel._blobs[part];
     await window.otaUploadBlob(type, blob, part === "filesystem" ? "littlefs.bin" : "firmware.bin", {
@@ -4267,7 +4267,7 @@ function initUpdateCheck() {
 
   async function waitForReboot(rel) {
     setStep("reboot", "active");
-    setStatus("Device rebooting\u2026 waiting for it to come back.");
+    setStatus("Device rebooting... waiting for it to come back.");
     const t0 = Date.now();
     await new Promise((r) => setTimeout(r, 4000));
     while (Date.now() - t0 < 90000) {
@@ -4288,7 +4288,7 @@ function initUpdateCheck() {
             setTimeout(() => location.reload(), 2500);
           } else {
             setState("Rolled back", "upd-bad");
-            setStatus("Device came back on v" + i.version + " instead of v" + rel.version + " - the new image was rejected or rolled back. Try again or use \u201cUpdate from a File\u201d.", "error");
+            setStatus("Device came back on v" + i.version + " instead of v" + rel.version + " - the new image was rejected or rolled back. Try again or use \"Update from a File\".", "error");
           }
           return;
         }
@@ -4321,7 +4321,7 @@ function initUpdateCheck() {
       // verify: the device has already remounted; check the web UI version it holds
       stage = "verify";
       setStep("verify", "active");
-      setStatus("Verifying filesystem\u2026");
+      setStatus("Verifying filesystem...");
       const fsi = await fetchJson("/ota/fsinfo");
       if (!fsi || !fsi.ok) throw new Error("Filesystem verification failed (" + ((fsi && fsi.error) || "not mounted") + "). Retry the update.");
       if (fsi.fsVersion && fsi.fsVersion !== "--" && fsi.fsVersion !== rel.version) {
@@ -4342,7 +4342,7 @@ function initUpdateCheck() {
         // The device wipes a rejected filesystem image, so the firmware keeps
         // running but this web UI is gone until littlefs.bin goes on again.
         msg += " The controller is still running v" + installed() + "; the web UI partition was cleared. Press Install again " +
-          "(or upload littlefs.bin under \u201cUpdate from a File\u201d). If this page won't load, the controller now shows a recovery page at its address.";
+          "(or upload littlefs.bin under \"Update from a File\"). If this page won't load, the controller now shows a recovery page at its address.";
       }
       setStatus(msg, "error");
       if (wrap) wrap.hidden = true;
@@ -4428,8 +4428,8 @@ function initUpdateCheck() {
 // a home/garage network as a station alongside its own AP. Status is polled
 // because association takes a few seconds after a save or restart.
 //
-// The card exists twice - Diagnostics ("wifiSta\u2026" ids) and the OTA tab
-// ("otaWifiSta\u2026"), where it's the way to get the phone online for the GitHub
+// The card exists twice - Diagnostics ("wifiSta..." ids) and the OTA tab
+// ("otaWifiSta..."), where it's the way to get the phone online for the GitHub
 // update check - so the element ids are built from a prefix.
 // ---------------------------------------------------------------------------
 function initWifiSta(prefix) {
@@ -4458,10 +4458,10 @@ function initWifiSta(prefix) {
       status.style.color = "var(--text-dim)";
     } else if (d.connected) {
       const sig = typeof d.rssi === "number" ? " (" + signalQuality(d.rssi) + " signal, " + d.rssi + " dBm)" : "";
-      status.textContent = "\u2713 Connected to \u201c" + d.ssid + "\u201d" + sig + " - reachable at http://" + d.ip + "/ and http://openhaldex.local/";
+      status.textContent = "\u2713 Connected to \"" + d.ssid + "\"" + sig + " - reachable at http://" + d.ip + "/ and http://openhaldex.local/";
       status.style.color = "var(--success)";
     } else {
-      status.textContent = "Configured for \u201c" + d.ssid + "\u201d - not connected (out of range, or still trying)";
+      status.textContent = "Configured for \"" + d.ssid + "\" - not connected (out of range, or still trying)";
       status.style.color = "var(--text-dim)";
     }
   }
@@ -4488,7 +4488,7 @@ function initWifiSta(prefix) {
   if (scanBtn) scanBtn.addEventListener("click", async () => {
     scanBtn.disabled = true;
     const prev = ssidInput.placeholder;
-    ssidInput.placeholder = "Scanning\u2026";
+    ssidInput.placeholder = "Scanning...";
     let resp = null;
     for (let i = 0; i < 12; i++) {
       resp = await fetchJson("/api/wifi/scan");
@@ -4525,9 +4525,9 @@ function initWifiSta(prefix) {
     userEditing = false;
     pwInput.value = "";
     if (ssid) {
-      status.textContent = "Connecting to \u201c" + ssid + "\u201d\u2026 (the AP restarts - reconnect if you drop off)";
+      status.textContent = "Connecting to \"" + ssid + "\"... (the AP restarts - reconnect if you drop off)";
       status.style.color = "var(--text-dim)";
-      showNotification("Home WiFi saved - connecting\u2026");
+      showNotification("Home WiFi saved - connecting...");
     } else {
       status.textContent = "Disabled - AP only";
       showNotification("Bridge mode disabled");
@@ -4585,7 +4585,7 @@ function initBackupRestore() {
   const post = (url, body) => fetchJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
   btnExport.addEventListener("click", async () => {
-    setStatus("Exporting\u2026", true);
+    setStatus("Exporting...", true);
     const [settings, ssidData, pwData, staData, slotList] = await Promise.all([
       fetchJson("/api/settings"), fetchJson("/api/wifi/ssid"), fetchJson("/api/wifi"), fetchJson("/api/wifi/sta"), fetchJson("/api/maps"),
     ]);
@@ -4632,7 +4632,7 @@ function initBackupRestore() {
     if (!file) return;
     if (pwSection) pwSection.style.display = "none";
     if (staPwSection) staPwSection.style.display = "none";
-    setStatus("Reading " + file.name + "\u2026", true);
+    setStatus("Reading " + file.name + "...", true);
     let backup;
     try { backup = JSON.parse(await file.text()); } catch (e) {
       setStatus("Not a valid backup file (bad JSON)", false); fileInput.value = ""; return;
@@ -4648,7 +4648,7 @@ function initBackupRestore() {
     if (typeof s.haldexGeneration === "number") await post("/api/settings", { haldexGeneration: s.haldexGeneration });
 
     // 2. Tune table (+ steering scale if the backup has it).
-    setStatus("Restoring Expert tune\u2026", true);
+    setStatus("Restoring Expert tune...", true);
     const tune = { throttleArray: s.throttleArray, speedArray: s.speedArray, lockArray: s.lockArray };
     if (Array.isArray(s.steeringArray) && Array.isArray(s.steeringLockScaleArray)) {
       tune.steeringArray = s.steeringArray;
@@ -4658,7 +4658,7 @@ function initBackupRestore() {
     if (!tuneResp || !tuneResp.ok) { setStatus("Failed to restore the tune table - is the device reachable?", false); fileInput.value = ""; return; }
 
     // 3. General settings.
-    setStatus("Restoring settings\u2026", true);
+    setStatus("Restoring settings...", true);
     const general = {};
     BACKUP_GENERAL_KEYS.forEach((k) => { if (k in s) general[k] = s[k]; });
     await post("/api/settings", general);
@@ -4708,7 +4708,7 @@ function initBackupRestore() {
     if (!resp || !resp.ok) { setStatus("Failed to apply the AP password", false); return; }
     pwInput.value = "";
     pwSection.style.display = "none";
-    setStatus("Restored \u2713 - the AP is restarting, reconnect to WiFi\u2026", true);
+    setStatus("Restored \u2713 - the AP is restarting, reconnect to WiFi...", true);
     showNotification("Config imported");
   });
 
@@ -4721,7 +4721,7 @@ function initBackupRestore() {
     if (!resp || !resp.ok) { setStatus("Failed to apply the home WiFi password", false); return; }
     staPwInput.value = "";
     staPwSection.style.display = "none";
-    setStatus("Restored \u2713 - connecting to home WiFi\u2026", true);
+    setStatus("Restored \u2713 - connecting to home WiFi...", true);
     showNotification("Config imported");
   });
 }
