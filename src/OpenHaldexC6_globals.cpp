@@ -1,4 +1,5 @@
 #include <OpenHaldexC6_defs.h>
+#include <OpenHaldexC6_Calculations.h> // LearnScore / LongLearnSweep types for the Long Learn globals
 
 // TWAI handles
 twai_handle_t twai_bus_0; // for ESP32 C6 CANBUS 0
@@ -26,10 +27,6 @@ TaskHandle_t handle_updateTriggers      = nullptr; // notified by CAN_RX wake IS
 
 // for EEP
 Preferences pref; // for EEPROM / storing settings
-
-SemaphoreHandle_t stateMutex = nullptr; // created in setupTasks() before any task starts
-
-void *pmNoLightSleepLock = nullptr; // ESP-PM no-light-sleep lock; held while awake (see setup())
 
 // for LED - will be initialized in setupIO()
 Freenove_ESP32_WS2812 strip = Freenove_ESP32_WS2812(1, gpio_led, led_channel, TYPE_RGB); // 1 led, gpio pin, channel, type of LED
@@ -78,6 +75,20 @@ bool received_kickdown = false;
 // values received from Chassis CAN
 float received_pedal_value = 0;
 uint16_t received_vehicle_speed = 0;
+float received_steering_angle = 0; // steering-wheel angle magnitude (deg, abs)
+uint32_t received_steering_ms = 0; // millis() of last decoded steering frame (0 = never)
+bool received_steering_negative = false; // steering direction sign for slip geometry
+
+// Per-corner slip (Phase F): raw wheel speeds, computed slip, and per-car geometry.
+uint16_t wheelSpeedRaw[4] = {0, 0, 0, 0}; // [FL, FR, RL, RR], ESP_19 units (0.0075 km/h/bit)
+uint32_t lastWheelSpeedResponse = 0;       // millis() of last ESP_19 frame (0 = never)
+int8_t cornerSlip[4] = {-128, -128, -128, -128}; // [FL, FR, RL, RR] signed %, -128 = no data
+uint32_t lastCornerSlipMs = 0;             // millis() of last slip computation (0 = never)
+float slipSteeringRatio = 15.0f;           // steering-wheel:road-wheel ratio (Audi TT Mk3)
+uint16_t slipWheelbaseMm = 2505;           // wheelbase
+uint16_t slipTrackFrontMm = 1572;          // front track
+uint16_t slipTrackRearMm = 1543;           // rear track
+uint16_t slipMinSpeedRaw = 667;            // ~5 km/h floor below which slip is untrustworthy
 uint16_t received_vehicle_rpm;
 uint16_t received_vehicle_boost;
 uint8_t haldexGeneration;
@@ -109,6 +120,11 @@ volatile uint32_t lpHaldexFrameCount = 0;  // incremented by haldex CAN task; us
 char wifiPassword[65] = ""; // WiFi AP password - empty string = open network
 char wifiSsid[33] = wifiHostNameDefault; // runtime AP SSID (factory default, overridden from EEPROM)
 
+char wifiStaSsid[33] = "";     // bridge mode: home-network SSID - empty = disabled, AP only
+char wifiStaPassword[65] = ""; // bridge mode: home-network password - empty = open network
+bool wifiStaConnected = false; // runtime: associated to the home network with an IP
+char wifiStaIP[16] = "";       // runtime: dotted quad once connected, "" otherwise
+
 bool hazardForceMode = false;     // setting: use hazard lights to activate force mode
 bool hazardForceModeFlag = false; // runtime: hazard lights are currently on
 
@@ -137,11 +153,202 @@ bool disableOnboardButton = false;
 bool disableExternalButton = false;
 
 bool fixHunting = false; // when true, Motor_11 uses BPK packing instead of V3
-uint16_t bpkCeilingNm = 220; // BPK per-car lock calibration (Nm claimed at 100% command); default preserves inherited behaviour
-uint8_t esp14MinFloorPct = 0; // ESP_14 BR_Vorg_*_Min floor as % of full command; 0 = inherited behaviour (Min pinned at 0). Live-tunable launch-PWM lever.
+
+uint16_t bpkCeilingNm = 220; // per-car Gen5 BPK ceiling (Nm at 100% command); default preserves prior fixed value
+uint8_t esp14MinFloorPct = 0; // ESP_14 launch PWM floor (%); 0 = unchanged
+
+// BPK packing tunables - defaults are the previously hardcoded values.
+uint16_t bpkFloorNm = 10;
+uint16_t bpkSlewIst = 8;
+uint16_t bpkSlewSolf = 32;
+uint16_t bpkTraegRaw = 509; // = 0 Nm
+uint16_t bpkSchubRaw = 487; // = -22 Nm
+uint8_t bpkStatusFl = 0x20; // Normalbetrieb only; 0x80 would add MO_QBit_Motormomente
+int32_t bpkForceIstNm = -1;
+int32_t bpkForceSolfNm = -1;
+volatile uint8_t bpkLastFrame[8] = {0};
+
+bool dangerZoneEnabled = false; // full-duty 50:50 (see defs.h) - off by default
+
+LabOverride labOverrides[LAB_OVR_MAX] = {};
+
+// ESP_19 wheel-speed tunables - defaults reproduce the legacy counter exactly.
+bool wsFreeze = false;
+uint16_t wsBaseRaw = 0;
+uint16_t wsDitherRaw = 0;
+int32_t wsFrontDeltaRaw = 0;
+int32_t wsLeftRightDeltaRaw = 0; // VAQ bench: +n raises VL and lowers VR by n/2 each (front L/R slip)
+
+volatile uint16_t bpkLastTorqueNm = 0;
+volatile uint16_t bpkLastIstNm = 0;
+volatile uint16_t bpkLastSolfNm = 0;
+
+// ---- Frame-edit gating (per-CAN-ID passthrough toggles) --------------------
+// Bit layout per generation matches the order the cases appear in getLockData().
+// Defaults: currently-active (compiled) frames ON; frames transferred from
+// standalone / previously commented-out are OFF (=> clean passthrough).
+const uint64_t frameEditMaskDefaults[FE_GEN_COUNT] = {
+    0x0000000FULL, // FE_GEN_1 : bits 0-3 on   (4 active frames)
+    0x0000001FULL, // FE_GEN_2 : bits 0-4 on   (5 active), bits 5-9 off (added)
+    0x0000003FULL, // FE_GEN_4 : bits 0-5 on   (6 active), bits 6-11 off (added)
+    0x000000FFULL, // FE_GEN_50: bits 0-7 on   (8 active), bits 8-27 off (Motor_14/ESP_07 opt-in)
+    0x0000000FULL, // FE_GEN_51: bits 0-3 on   (4 active), bits 4-17 off (uncommented)
+};
+
+uint64_t frameEditMask[FE_GEN_COUNT] = {
+    0x0000000FULL, 0x0000001FULL, 0x0000003FULL, 0x000000FFULL, 0x0000000FULL};
+
+// Standalone frame-edit defaults: EVERYTHING on. In standalone the module
+// synthesises the whole bus, so all editable frames must be generated by
+// default (the passthrough defaults above only enable the historically-edited
+// subset). A separate mask keeps the two modes fully independent.
+const uint64_t frameEditMaskDefaultsSA[FE_GEN_COUNT] = {
+    0x0000000FULL, // FE_GEN_1 : bits 0-3   (4 blocks)  all on
+    0x00001FFFULL, // FE_GEN_2 : bits 0-12  (13 blocks) all on
+    0x00000FFFULL, // FE_GEN_4 : bits 0-11  (12 blocks) all on
+    0x0FFFFFFFULL, // FE_GEN_50: bits 0-27  (28 blocks) all on
+    0x0003FFFFULL, // FE_GEN_51: bits 0-17  (18 blocks) all on
+};
+
+uint64_t frameEditMaskSA[FE_GEN_COUNT] = {
+    0x0000000FULL, 0x00001FFFULL, 0x00000FFFULL, 0x0FFFFFFFULL, 0x0003FFFFULL};
+
+// Descriptor table used by the API/UI. Order per generation defines the bit index.
+const FrameEditBlock frameEditBlocks[] = {
+    // Gen1
+    {FE_GEN_1, 0, MOTOR1_ID, "Motor_1 (0x280)"},
+    {FE_GEN_1, 1, MOTOR3_ID, "Motor_3 (0x380)"},
+    {FE_GEN_1, 2, BRAKES1_ID, "Bremse_1 (0x1A0)"},
+    {FE_GEN_1, 3, BRAKES3_ID, "Bremse_3 (0x4A0)"},
+    // Gen2
+    {FE_GEN_2, 0, MOTOR1_ID, "Motor_1 (0x280)"},
+    {FE_GEN_2, 1, MOTOR3_ID, "Motor_3 (0x380)"},
+    {FE_GEN_2, 2, BRAKES1_ID, "Bremse_1 (0x1A0)"},
+    {FE_GEN_2, 3, BRAKES2_ID, "Bremse_2 (0x5A0)"},
+    {FE_GEN_2, 4, BRAKES3_ID, "Bremse_3 (0x4A0)"},
+    {FE_GEN_2, 5, BRAKES4_ID, "Bremse_4 (0x2A0)"},
+    {FE_GEN_2, 6, BRAKES5_ID, "Bremse_5 (0x4A8)"},
+    {FE_GEN_2, 7, BRAKES9_ID, "Bremse_9 (0x0AE)"},
+    {FE_GEN_2, 8, BRAKES10_ID, "Bremse_10 (0x3A0)"},
+    {FE_GEN_2, 9, MOTOR5_ID, "Motor_5 (0x480)"},
+    {FE_GEN_2, 10, mLW_1, "LW_1 (0x0C2)"},
+    {FE_GEN_2, 11, MOTOR2_ID, "Motor_2 (0x288)"},
+    {FE_GEN_2, 12, mKombi_1, "Kombi_1 (0x320)"},
+    // Gen4
+    {FE_GEN_4, 0, mLW_1, "LW_1 (0x0C2)"},
+    {FE_GEN_4, 1, MOTOR1_ID, "Motor_1 (0x280)"},
+    {FE_GEN_4, 2, BRAKES1_ID, "Bremse_1 (0x1A0)"},
+    {FE_GEN_4, 3, BRAKES2_ID, "Bremse_2 (0x5A0)"},
+    {FE_GEN_4, 4, BRAKES3_ID, "Bremse_3 (0x4A0)"},
+    {FE_GEN_4, 5, BRAKES4_ID, "Bremse_4 (0x2A0)"},
+    {FE_GEN_4, 6, mKombi_1, "Kombi_1 (0x320)"},
+    {FE_GEN_4, 7, mKombi_3, "Kombi_3 (0x520)"},
+    {FE_GEN_4, 8, mGate_Komf_1, "Gate_Komf_1 (0x390)"},
+    {FE_GEN_4, 9, BRAKES11_ID, "Bremse_11 (0x5B7)"},
+    {FE_GEN_4, 10, mKombi_2, "Kombi_2 (0x420)"},
+    {FE_GEN_4, 11, mDiagnose_1, "Diagnose_1 (0x7D0)"},
+    // Gen50 (0CQ MQB)
+    {FE_GEN_50, 0, ESP_19, "ESP_19 (0x0B2)"},
+    {FE_GEN_50, 1, GETRIEBE_11, "Getriebe_11 (0x0AD)"},
+    {FE_GEN_50, 2, MOTOR_12, "Motor_12 (0x0A8)"},
+    {FE_GEN_50, 3, MOTOR_11, "Motor_11 (0x0A7)"},
+    {FE_GEN_50, 4, ESP_14, "ESP_14 (0x08A)"},
+    {FE_GEN_50, 5, ESP_10, "ESP_10 (0x116)"},
+    {FE_GEN_50, 6, ESP_05, "ESP_05 (0x106)"},
+    {FE_GEN_50, 7, EPB_01, "EPB_01 (0x104)"},
+    {FE_GEN_50, 8, MOTOR_14, "Motor_14 (0x3BE)"},
+    {FE_GEN_50, 9, ESP_07, "ESP_07 (0x392)"},
+    {FE_GEN_50, 10, ESP_18, "ESP_18 (0x135)"},
+    {FE_GEN_50, 11, LWI_01, "LWI_01 (0x086)"},
+    {FE_GEN_50, 12, MOTOR_20, "Motor_20 (0x121)"},
+    {FE_GEN_50, 13, ESP_02, "ESP_02 (0x101)"},
+    {FE_GEN_50, 14, ESP_21, "ESP_21 (0x0FD)"},
+    {FE_GEN_50, 15, KOMBI_01, "Kombi_01 (0x30B)"},
+    {FE_GEN_50, 16, ESP_23, "ESP_23 (0x5BE)"},
+    {FE_GEN_50, 17, Parkhilfe_04, "Parkhilfe_04 (0x54B)"},
+    {FE_GEN_50, 18, GATEWAY_72, "Gateway_72 (0x3DB)"},
+    {FE_GEN_50, 19, GETRIEBE_14, "Getriebe_14 (0x3C8)"},
+    {FE_GEN_50, 20, ESP_29, "ESP_29 (0x18C)"},
+    {FE_GEN_50, 21, MOTOR_07, "Motor_07 (0x640)"},
+    {FE_GEN_50, 22, CHARISMA_01, "Charisma_01 (0x385)"},
+    {FE_GEN_50, 23, SYSTEMINFO_01, "Systeminfo_01 (0x585)"},
+    {FE_GEN_50, 24, MOTOR_CODE_01, "Motor_Code_01 (0x641)"},
+    {FE_GEN_50, 25, ESP_20, "ESP_20 (0x65D)"},
+    {FE_GEN_50, 26, DIAGNOSE_01, "Diagnose_01 (0x6B2)"},
+    {FE_GEN_50, 27, KOMBI_02, "Kombi_02 (0x6B7)"},
+    // Gen51 (0AY MQB)
+    {FE_GEN_51, 0, MOTOR1_ID, "Motor_1 (0x280)"},
+    {FE_GEN_51, 1, BRAKES3_ID, "Bremse_3 (0x4A0)"},
+    {FE_GEN_51, 2, BRAKES4_ID, "Bremse_4 (0x2A0)"},
+    {FE_GEN_51, 3, mLW_1, "LW_1 (0x0C2)"},
+    {FE_GEN_51, 4, BRAKES1_ID, "Bremse_1 (0x1A0)"},
+    {FE_GEN_51, 5, mGetriebe_2, "Getriebe_2 (0x540)"},
+    {FE_GEN_51, 6, BRAKES5_ID, "Bremse_5 (0x4A8)"},
+    {FE_GEN_51, 7, BRAKES8_ID, "Bremse_8 (0x1AC)"},
+    {FE_GEN_51, 8, BRAKES2_ID, "Bremse_2 (0x5A0)"},
+    {FE_GEN_51, 9, MOTOR2_ID, "Motor_2 (0x288)"},
+    {FE_GEN_51, 10, MOTOR5_ID, "Motor_5 (0x480)"},
+    {FE_GEN_51, 11, mKombi_1, "Kombi_1 (0x320)"},
+    {FE_GEN_51, 12, mKombi_3, "Kombi_3 (0x520)"},
+    {FE_GEN_51, 13, mGate_Komf_1, "Gate_Komf_1 (0x390)"},
+    {FE_GEN_51, 14, BRAKES11_ID, "Bremse_11 (0x5B7)"},
+    {FE_GEN_51, 15, mSysteminfo_1, "Systeminfo_1 (0x5D0)"},
+    {FE_GEN_51, 16, mKombi_2, "Kombi_2 (0x420)"},
+    {FE_GEN_51, 17, mDiagnose_1, "Diagnose_1 (0x7D0)"},
+};
+const uint16_t frameEditBlockCount = sizeof(frameEditBlocks) / sizeof(frameEditBlocks[0]);
+
+int frameEditGenIdx(uint8_t generation)
+{
+    switch (generation)
+    {
+    case 1:
+        return FE_GEN_1;
+    case 2:
+        return FE_GEN_2;
+    case 4:
+        return FE_GEN_4;
+    case 50:
+        return FE_GEN_50;
+    case 52:
+        return FE_GEN_50; // Gen5 0CQ VAQ shares 0CQ frame-edit toggles (clone base)
+    case 51:
+        return FE_GEN_51;
+    default:
+        return -1; // not gated (e.g. gen41/42)
+    }
+}
+
+uint64_t *activeFrameEditMask()
+{
+    // Standalone generates the whole bus (frameEditMaskSA, all-on default);
+    // normal mode edits real passthrough frames (frameEditMask). Each consumer
+    // (standaloneTx / passthrough editor / API) runs in the matching mode, so
+    // routing through this keeps every one of them on the correct mask.
+    return isStandalone ? frameEditMaskSA : frameEditMask;
+}
+
+bool frameEditEnabled(uint8_t genIdx, uint8_t bit)
+{
+    if (genIdx >= FE_GEN_COUNT)
+        return true;
+    return (activeFrameEditMask()[genIdx] >> bit) & 0x1ULL;
+}
+
+void resetFrameEditMask()
+{
+    for (uint8_t i = 0; i < FE_GEN_COUNT; i++)
+    {
+        frameEditMask[i]   = frameEditMaskDefaults[i];
+        frameEditMaskSA[i] = frameEditMaskDefaultsSA[i];
+    }
+}
 
 bool canSleepEnabled = true;
 bool canSleepAggressive = false; // opt-in: transceiver standby + DFS floor 10MHz + low WiFi TX power
+bool benchMode = false;          // opt-in: hold WiFi up on the bench until real CAN traffic is seen
+bool bleEnabled = true;          // BLE link to the DashCAN app
+uint32_t blePasskey = 0;         // 0 = not made yet; setupBLE() generates one
 volatile bool canWakeRequest = false; // ISR-set wake flag when transceivers in standby see bus activity
 uint16_t lpWakeThresholdFps = 1100; // wake threshold fps; default 1100 — user adjustable via UI
 
@@ -152,25 +359,57 @@ bool analyzerMode = false;   // WiFi GVRET/SLCAN (TCP Port 23)
 bool analyzerSerial = false; // Serial GVRET (SavvyCAN Serial Connection)
 
 // UDS MQB diagnostic polling (Gen 5 only)
-bool udsMQBEnabled = false;
+bool liveDiagEnabled = false;             // master live-diagnostics enable; gates UDS (Gen5) + TP2.0 (Gen2/4)
+volatile uint32_t externalDiagLastMs = 0; // last time an external scanner request was seen on Bus 0 (0 = never)
 QueueHandle_t udsRxQueue = nullptr;
-QueueHandle_t udsWebRxQueue = nullptr; // /api/uds/read responses, tapped (copied) from parseCAN_chs
-volatile uint32_t udsWebRespId = 0;    // response ID /api/uds/read waits for; 0 = no read in flight
+volatile bool udsPollActive = false;      // poller owns the Haldex diag channel -> 0x779 replies stay off Bus 0
+volatile uint8_t udsSessionMode = 0;      // 0 none, 0x01 default session, 0x03 extended session
+QueueHandle_t udsWebRxQueue = nullptr;    // /api/uds/read responses, tapped (copied) by the parse task
+volatile uint32_t udsWebRespId = 0;       // response ID /api/uds/read waits for; 0 = no read in flight
+volatile uint8_t udsWebBus = 0;           // bus the in-flight /api/uds/read is using
+
+// Haldex-bus diagnostic addressing (see defs.h). Defaults are the Haldex pair;
+// udsApplyDefaultIds() swaps to the VAQ pair for generation 52.
+uint32_t udsHaldexReqId = ISO_ALLRAD_REQ;
+uint32_t udsHaldexRespId = ISO_ALLRAD_RESP;
+bool udsIdsManual = false;
+
+// Haldex-bus RX census + last feedback frame (serial lab RXIDS / FB).
+HdxRxStat hdxRxStats[HDX_RX_STATS_MAX] = {};
+volatile uint32_t hdxRxDroppedIds = 0;
+volatile uint32_t hdxFbMs = 0;
+volatile uint32_t hdxFbId = 0;
+volatile uint8_t hdxFbDlc = 0;
+volatile uint8_t hdxFbData[8] = {0};
+uint8_t received_quer_state = 0;
+uint8_t received_quer_sync = 0;
+volatile uint32_t canTxDropBus0 = 0;      // canTransmit() failures on Bus 0 (chassis)
+volatile uint32_t canTxDropBus1 = 0;      // canTransmit() failures on Bus 1 (Haldex)
 float udsTerminalVoltage = 0.0f;
 float udsModuleTemp = 0.0f;
 float udsClutchTemp = 0.0f;
 float udsCoolingFinTemp = 0.0f;
-uint16_t udsClutchTempRaw = 0;
-uint16_t udsCoolingFinTempRaw = 0;
-// Per-DID freshness: false until the DID decodes at least once this session,
-// cleared on session teardown. The API publishes null (not the reset 0) while
-// false so a capture client can distinguish "no sample yet" from a real 0.
-bool udsClutchTempValid = false;
-bool udsCoolingFinTempValid = false;
 float udsClutchCurrent = 0.0f;
 uint8_t udsClutchPWM = 0;
 float udsClutchVoltage = 0.0f;
 uint8_t udsBlockagePct = 0;
+volatile uint32_t udsLastDecodeMs = 0;
+
+// KWP2000 over VW TP2.0 diagnostics (Gen2 / Gen4 PQ Haldex)
+QueueHandle_t tp20RxQueue = nullptr;
+volatile uint32_t kwpTp20EcuTxId = 0;
+bool kwpTp20Connected = false;
+char kwpTp20RawDump[512] = {0};
+
+// Gen4 (0AY) scaled measuring values (see OpenHaldexC6_defs.h for formulas)
+float kwpOilTemp = 0.0f;
+float kwpPlateTemp = 0.0f;
+float kwpSupplyVoltage = 0.0f;
+float kwpOilPressure = 0.0f;
+float kwpEstTorque = 0.0f;
+float kwpClutchDuty = 0.0f;
+float kwpClutchValveCurrent = 0.0f;
+
 
 // LED
 uint8_t ledBrightness = led_brightness_default;
@@ -180,9 +419,8 @@ uint8_t analyzerProtocol = ANALYZER_PROTOCOL_GVRET;
 
 uint32_t alerts_to_enable = 0;
 
-uint32_t lastCANChassisTick = 0; // unsigned: survives the signed 32-bit millis() rollover (see defs.h)
-uint32_t lastCANHaldexTick = 0;
-volatile uint32_t externalDiagLastMs = 0; // last time a tester request was seen on Bus 0 (0 = never)
+long lastCANChassisTick = 0;
+long lastCANHaldexTick = 0;
 uint32_t canHealthTimeoutMs = 1000;
 
 uint8_t lastMode = 0;
@@ -194,11 +432,18 @@ uint32_t rxtxcount = 0; // frame counter
 uint32_t stackCHS = 0;
 uint32_t stackHDX = 0;
 
+uint32_t stackframes10 = 0;
 uint32_t stackframes13 = 0;
+uint32_t stackframes20 = 0;
+uint32_t stackframes25 = 0;
 uint32_t stackframes50 = 0;
+uint32_t stackframes100 = 0;
+uint32_t stackframes200 = 0;
 uint32_t stackframes250 = 0;
+uint32_t stackframes1000 = 0;
 
 uint32_t stackbroadcastOpenHaldex = 0;
+uint32_t stackupdateLabels = 0;
 uint32_t stackshowHaldexState = 0;
 uint32_t stackwriteEEP = 0;
 
@@ -206,44 +451,10 @@ uint32_t stackwriteEEP = 0;
 openhaldex_state_t state;
 float lock_target = 0;
 
-uint16_t lockReleaseRampMs = 500; // ms for a full lock release; 0 = instant
-uint16_t lockEngageRampMs = 0;    // ms for a full lock-up; 0 = instant
+float lockReleaseRatePerSec = 120.0f;
 bool lockReleaseEnabled = true;  // when false, lock target changes are instantaneous
+bool steeringScaleEnabled = true; // when false, steering-angle lock scaling is bypassed (full lock)
 uint8_t forceModesPriority = 0; // 0=Haz>TC>Ext, 1=TC>Haz>Ext, 2=Haz>Ext>TC, 3=TC>Ext>Haz, 4=Ext>TC>Haz, 5=Ext>Haz>TC
-
-// Steering angle decoded from MQB LWI_01 (0x086). Written only by parseCAN_chs;
-// getLockData reads it on the same task.
-uint16_t steeringAngleTenths = 0;   // |angle| in 0.1 deg units
-bool steeringAngleNegative = false; // sign (direction) - display only
-bool steeringAngleValid = false;    // false while the LWI QBit flags the signal degraded
-uint32_t lastSteeringResponse = 0;  // millis() of the last decoded LWI_01
-uint32_t steeringTimeout = 1000;    // staleness window in ms; stale angle -> gain 100%
-
-// Per-corner wheel speeds decoded from MQB ESP_19 (0x0B2), raw 0.0075 km/h/LSB,
-// in [FL, FR, RL, RR] order. Written only by parseCAN_chs; read by the slip
-// responder (same task) and the API/browser dash (plain reads, same benign-tear
-// convention as received_vehicle_speed and the steering angle above).
-uint16_t wheelSpeedRaw[4] = {0, 0, 0, 0};
-uint32_t lastWheelSpeedResponse = 0; // millis() of the last decoded 0x0B2; 0 = none
-
-// Per-corner slip geometry. Ackermann compensation needs the car's wheelbase,
-// front/rear track, and steering rack ratio. Defaults are the Audi TT Mk3 (8S) on
-// the Golf 7R MQB platform; these are compile-time for now (calibrate on-car, then
-// wire to EEP/API if they need tuning without a reflash). slipMinSpeedRaw is the
-// mean wheel-speed floor below which slip is not trusted (~5 km/h in 0.0075 units).
-uint16_t slipWheelbaseMm  = 2505; // TT Mk3 wheelbase
-uint16_t slipTrackFrontMm = 1572; // TT Mk3 front track
-uint16_t slipTrackRearMm  = 1544; // TT Mk3 rear track
-float    slipSteeringRatio = 15.6f; // MQB nominal steering-wheel:road-wheel ratio
-uint16_t slipMinSpeedRaw  = 667;  // ~5 km/h / 0.0075
-
-// Steering-gain taper settings (written by the API under stateMutex, read
-// inside getLockData which already holds it). Disabled by default so behaviour
-// is unchanged until explicitly enabled.
-bool steeringGainEnabled = false;   // master toggle for the taper
-uint16_t steeringGainStartDeg = 45; // gain stays 100% at or below this angle
-uint16_t steeringGainFullDeg = 180; // gain reaches the floor at or above this angle
-uint8_t steeringGainFloor = 50;     // minimum gain percent (never taper to fully open)
 
 // setup - main inputs
 bool isMPH = false; // 0 = kph, 1 = mph
@@ -259,23 +470,47 @@ uint8_t lockArray[throttleArrayCount][speedArrayCount] = {
     {80, 80, 80, 80, 80, 80, 80},
     {80, 80, 80, 80, 80, 80, 80}};
 
+// Steering-angle lock-scale curve: angle breakpoints (deg) -> lock multiplier (%).
+uint16_t steeringArray[steeringArrayCount] = {0, 45, 90, 180, 360};
+uint8_t steeringLockScaleArray[steeringArrayCount] = {100, 100, 80, 50, 20};
+
 // for running through vars to see effects
 uint8_t tempCounter;
 
 // Haldex learn table: index = correction factor (0-100%), value = observed engagement (0-100%)
 uint8_t haldexLearnTable[101];
 bool haldexLearnTableValid = false;
-// Snapshot of the table taken by startHaldexLearn before the sweep wipes it.
-// Restored by haldexLearnTask when the sweep is cancelled or speed-aborted, so
-// an interrupted learn does not destroy the previous good calibration (and,
-// via motor11_use_bpk_packing keying off learn_table_valid, silently flip the
-// user from BPK back to V3 packing).
-uint8_t haldexLearnTableBackup[101];
-bool haldexLearnTableBackupValid = false;
 volatile bool haldexLearnActive = false;
 volatile bool haldexLearnCancel = false;
 volatile uint8_t haldexLearnStep = 0;   // 0-100 = current step, 101 = complete
 volatile uint8_t haldexLearnCF = 0;     // current correction factor override during learn
+
+// Long Learn state (see Calculations.h). Results persist in RAM until the next
+// run so the UI can show / export them after completion.
+volatile bool longLearnActive = false;
+volatile bool longLearnCancel = false;
+volatile uint8_t longLearnPhase = LL_IDLE;
+volatile uint8_t longLearnSweepIdx = 0;
+volatile uint8_t longLearnSweepTotal = 0;
+volatile int16_t longLearnCurrentBit = -1;
+uint8_t longLearnGenIdx = 0;
+uint8_t longLearnGeneration = 0;
+bool longLearnTestAll = false;
+uint8_t longLearnBlockResult[64];
+LearnScore longLearnBaseline;
+LearnScore longLearnFinal;
+bool longLearnBaselineValid = false;
+bool longLearnFinalValid = false;
+uint8_t longLearnFloorStart = 0;
+uint8_t longLearnFloorResult = 0;
+uint64_t longLearnMaskStart = 0;
+uint16_t longLearnBpkStart = 0;
+bool longLearnBpkAdjusted = false;
+LongLearnSweep longLearnSweeps[LL_MAX_SWEEPS];
+uint8_t longLearnSweepCount = 0;
+uint32_t longLearnStartMs = 0;
+uint32_t longLearnEndMs = 0;
+char longLearnNotes[LL_NOTES_LEN + 1] = "";
 uint8_t tempCounter1;
 uint16_t tempCounter2;
 
@@ -386,6 +621,11 @@ const uint8_t ID_SEQ_121[16] = {
     0xe9, 0x65, 0xae, 0x6b, 0x7b, 0x35, 0xe5, 0x5f,
     0x4e, 0xc7, 0x86, 0xa2, 0xbb, 0xdd, 0xeb, 0xb4};
 
+// CAN ID 0x110 - ESP_10
+const uint8_t ID_SEQ_110[16] = {
+    0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac,
+    0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac};
+
 // CAN ID 0x106 - ESP_05
 const uint8_t ID_SEQ_106[16] = {
     0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
@@ -396,7 +636,7 @@ const uint8_t ID_SEQ_104[16] = {
     0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
     0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05};
 
-// CAN ID 0x116 - ESP_10 (VW MQB E2E DataID 0xac)
+// CAN ID 0x116 - ESP_10
 const uint8_t ID_SEQ_116[16] = {
     0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac,
     0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac, 0xac};
@@ -476,11 +716,17 @@ extern uint8_t calcChecksum(uint8_t *frame, const uint8_t *idSeq)
     uint8_t counter = frame[1] & 0x0F; // extract alive counter from B1
     uint8_t crcInput[8];
 
-    crcInput[0] = idSeq[counter]; // prepend DataID byte
+    // VW E2E profile: CRC-8 (0x2F) over B1..B7 with the counter-indexed
+    // DataID byte APPENDED last. Verified 2026-09-17 against a real MQB
+    // capture: 4,400+ frames on 13 IDs (086 0A7 0A8 0AD 0FD 101 104 106 116
+    // 121 392 3BE 641 65D) match 100 % with the DataID last and 0 % with it
+    // first. The Gen5 Haldex never rejected the old (wrong) checksum; the
+    // VAQ does check at least some frames.
     for (uint8_t i = 1; i < 8; i++)
     {
-        crcInput[i] = frame[i]; // B1..B7
+        crcInput[i - 1] = frame[i]; // B1..B7
     }
+    crcInput[7] = idSeq[counter]; // DataID byte last
 
     return crc8_autosar(crcInput, 8);
 }
@@ -516,6 +762,11 @@ extern uint8_t checksum_086(uint8_t *frame)
 extern uint8_t checksum_121(uint8_t *frame)
 {
     return calcChecksum(frame, ID_SEQ_121);
+}
+
+extern uint8_t checksum_110(uint8_t *frame)
+{
+    return calcChecksum(frame, ID_SEQ_110);
 }
 
 extern uint8_t checksum_106(uint8_t *frame)

@@ -1,52 +1,36 @@
 # Third-Party Notices
 
-OpenHaldex-C6-Edge ("this fork") is a personal, non-commercial firmware fork of
-[Forbes-Automotive/OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6).
+OpenHaldex-C6 is distributed under the **MIT License** for the portions original
+to Forbes Automotive.
 
-**This fork is distributed under the Forbes Automotive Source-Available License
-(FASL) v1.0** - see [`LICENSE.md`](LICENSE.md). The FASL is preserved unchanged from
-upstream and governs redistribution and use of this fork as a whole.
-
-The codebase this fork descends from incorporates and derives from third-party work
-that was licensed separately. Those upstream portions retain their original licenses.
-Where a conflict exists between the FASL and an upstream license, **the upstream
-license governs the upstream portions it applies to.**
+It also incorporates and derives from third-party work that is licensed
+separately. Those portions retain their original licenses. Where a conflict exists
+between the MIT License and an upstream license, **the upstream license governs the
+upstream portions.**
 
 This file records the upstream projects, the components derived from them, and the
-license/permission basis relied upon. It exists so that the attribution obligations
-carried by those upstream portions travel with this fork.
+license/permission basis relied upon.
 
 ---
 
 ## 1. Original OpenHaldex (Generation 1)
 
 - **Author / Upstream:** ABangingDonk
-- **Project:** OpenHaldex / OpenHaldexT4 - https://github.com/ABangingDonk/OpenHaldexT4
-- **License:** No license file is published in the upstream repository, so no
-  explicit redistribution grant is on record for this work.
-- **Relationship:** The OpenHaldex lineage started from ABangingDonk's original
-  OpenHaldex codebase for Generation 1 Haldex control. Gen1 control concepts and
-  code descend from this work.
-
-> **Attribution note:** the ABangingDonk OpenHaldexT4 repository does not carry a
-> LICENSE file, so the permission basis for redistributing Gen1-derived code is not
-> formally documented upstream. This fork credits the original author and does not
-> claim a grant that is not on record. Anyone redistributing Gen1-derived portions
-> should confirm the permission basis with the original author; if a grant cannot be
-> established, the affected portions should be treated accordingly.
+- **Project:** OpenHaldex / OpenHaldexT4 — https://github.com/ABangingDonk/OpenHaldexT4
+- **Relationship:** OpenHaldex-C6 started from ABangingDonk's original OpenHaldex
+  codebase for Generation 1 Haldex control.
 
 ---
 
 ## 2. OpenHaldex-S3 (SpringfieldVW / Chris "meatro")
 
 - **Author / Upstream:** Chris (GitHub: meatro)
-- **Project:** OpenHaldex-S3 - https://github.com/meatro/OpenHaldex-S3
+- **Project:** OpenHaldex-S3 — https://github.com/meatro/OpenHaldex-S3
 - **License:** MIT License (see full text below)
-- **Relationship:** The CAN analysis / GVRET / SavvyCAN-style tooling (the analyzer
-  mode - a passive CAN bridge exposing a GVRET-over-TCP interface for SavvyCAN)
-  derives from work in OpenHaldex-S3, which entered the C6 lineage via the
-  "S3 port onto C6" import upstream. This fork carries that analyzer path
-  (`src/OpenHaldexC6_Analyzer.cpp`).
+- **Relationship:** On 2026-02-08, commit `a4dc321` ("S3 port onto C6") imported
+  work derived from OpenHaldex-S3 into this repository. Derived / ported components
+  include, in whole or in part:
+  - CAN analysis / GVRET / SavvyCAN-style tooling (CAN View)
 
 > MIT requires that the copyright notice and permission notice below be retained in
 > all copies or substantial portions of the derived code. These portions remain
@@ -57,7 +41,7 @@ carried by those upstream portions travel with this fork.
 ```
 MIT License
 
-Copyright (c) 2026 SpringfieldVW.com
+Copyright (c) OpenHaldex-S3 contributors (SpringfieldVW / Chris "meatro")
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -82,24 +66,19 @@ SOFTWARE.
 
 ## 3. Forbes Automotive Original Work
 
-Portions original to Forbes Automotive - including the Gen2 / Gen4 / Gen5 reverse
-engineering and implementation, the MQB UDS live-data readout, the low-power sleep
-system, and other Forbes-authored code - form the base this fork builds on.
-
-Upstream distributes those portions under the terms stated in the upstream project.
-Redistribution of **this fork** as a whole is governed by the FASL v1.0
-([`LICENSE.md`](LICENSE.md)); the Forbes Automotive copyright is preserved unchanged.
-This fork is unofficial and is not affiliated with or endorsed by Forbes Automotive.
-For official, supported firmware and hardware, see the upstream project and
-[forbes-automotive.com](https://forbes-automotive.com/).
+- Portions original to Forbes Automotive (including Gen2 / Gen4 / Gen5 reverse
+  engineering and implementation, other Forbes-authored code, and the hardware
+  design files — Gerbers, schematics, PCB layouts and enclosure files) are
+  distributed under the **MIT License**.
+  See `LICENSE.md`.
 
 ---
 
-## Summary
+## Summary of licensing model
 
-- **This fork:** source-available under FASL v1.0, personal and non-commercial.
-- **Upstream lineage attributions:** the ABangingDonk (Gen1) and meatro/OpenHaldex-S3
-  (analyzer / GVRET / SavvyCAN tooling) portions retain their original licenses; the
-  MIT permission notice for the S3-derived portions is preserved above as MIT requires.
-- **No warranty.** See the disclaimer in [`README.md`](README.md) and the warranty
-  terms in [`LICENSE.md`](LICENSE.md).
+- **Project labeling:** OpenHaldex-C6 is **open source** under the permissive MIT
+  License, which permits use, modification, redistribution and commercial use.
+- **MIT portions** (OpenHaldex-S3 derived, and any MIT-basis upstream) remain under
+  MIT and may be used commercially by others under MIT terms.
+- **Attribution:** upstream copyright and permission notices must be preserved in
+  source and binary distributions, per the MIT redistribution terms.

@@ -1,33 +1,13 @@
 #include <OpenHaldexC6_IO.h>
 #include <OpenHaldexC6_can.h>
 #include <OpenHaldexC6_WiFi.h>
-#include <OpenHaldexC6_lowpower.h>
-#include "driver/usb_serial_jtag.h" // usb_serial_jtag_is_connected() - bench USB-host detection
-#include "esp_pm.h"       // release/acquire the no-light-sleep lock around deliberate sleep
-#include "esp_task_wdt.h" // hardware task watchdog - reboots on a full control-path deadlock
+#include <OpenHaldexC6_OTA.h> // otaWebClientActive(): bridge-mode browsers hold WiFi up
+#include <OpenHaldexC6_Analyzer.h> // setAnalyzerMode(): enabling the controller leaves analyzer mode
 
-// Toggle the ESP_PM_NO_LIGHT_SLEEP lock: held (light sleep blocked) while awake,
-// released only when the low-power state machine deliberately sleeps, re-acquired
-// on wake. No-op when CAN sleep is disabled (lock null).
-//
-// Defense-in-depth, currently redundant: main.cpp sets .light_sleep_enable=false,
-// so automatic light sleep is off at the esp_pm_configure level and this lock has
-// no effect today. It is kept deliberately so that if light_sleep_enable is ever
-// re-enabled, mid-drive light sleep (which can power-gate the TWAI domain and
-// stop the CAN controller) is still blocked without having to re-add this wiring.
-static inline void pmAllowLightSleep(bool allow)
-{
-  if (pmNoLightSleepLock == nullptr) return;
-  esp_pm_lock_handle_t lk = (esp_pm_lock_handle_t)pmNoLightSleepLock;
-  if (allow)
-    esp_pm_lock_release(lk); // deliberate sleep: let the SoC light-sleep
-  else
-    esp_pm_lock_acquire(lk); // awake: block light sleep so CAN stays up
-}
-
-// Low-power state machine: WATCHING = WiFi up, normal IO; SLEEPING = WiFi
-// down, LED off, and (if canSleepAggressive) CAN transceivers in standby
-// with GPIO ISR wake on the CAN_RX pins.
+// Low-power state: 
+//   WATCHING = WiFi Active, Normal IO
+//   SLEEPING = WiFi Off, LED off, and (if canSleepAggressive) CAN transceivers in standby
+//   using GPIO ISR Wake on the CAN_RX pins.
 #define LP_WATCHING 0
 #define LP_SLEEPING 1
 
@@ -38,6 +18,12 @@ static uint32_t lpLastChassisSnap    = 0;
 static uint32_t lpLastHaldexSnap     = 0;
 static uint32_t lpChassisFps         = 0;
 static uint32_t lpHaldexFps          = 0;
+
+// Bench mode support (PR #39): latches true the first time real CAN traffic is
+// seen on either bus this power cycle. Once set, benchMode stops suppressing
+// sleep - the unit is demonstrably harnessed - so a forgotten toggle can't
+// weaken the parked-car battery protection. Not persisted; resets on boot.
+static bool everSawCANThisSession = false;
 
 // Aggressive-mode state.
 static bool     lpTransceiversStandby = false; // CAN_RS pins driven high (TCAN1044 standby)
@@ -99,7 +85,7 @@ static void lpDetachWakeIsrs()
   lpWakeIsrAttached = false;
 }
 
-// TCAN1044: RS pin HIGH = standby (RXD reflects wake events, very low Iq);
+// TCAN1044: RS pin HIGH = standby (RXD reflects wake events, very low current draw);
 //           RS pin LOW  = normal operation. ISRs are armed BEFORE entering
 // standby so we never miss the first SOF edge, and torn down AFTER leaving
 // standby so the TWAI driver has uncontested ownership of the RX pin.
@@ -128,10 +114,10 @@ static void lpSuspendBackgroundTasks()
   if (lpTasksSuspended) return;
   for (uint8_t i = 0; i < sizeof(lpManagedTasks) / sizeof(lpManagedTasks[0]); i++)
   {
-    TaskHandle_t h = *lpManagedTasks[i].handle;
-    if (h && eTaskGetState(h) != eSuspended)
+    TaskHandle_t handle = *lpManagedTasks[i].handle;
+    if (handle && eTaskGetState(handle) != eSuspended)
     {
-      vTaskSuspend(h);
+      vTaskSuspend(handle);
     }
   }
   lpTasksSuspended = true;
@@ -143,10 +129,11 @@ static void lpResumeBackgroundTasks()
   for (uint8_t i = 0; i < sizeof(lpManagedTasks) / sizeof(lpManagedTasks[0]); i++)
   {
     if (lpManagedTasks[i].standaloneOnly && !isStandalone) continue;
-    TaskHandle_t h = *lpManagedTasks[i].handle;
-    if (h && eTaskGetState(h) == eSuspended)
+    
+    TaskHandle_t handle = *lpManagedTasks[i].handle;
+    if (handle && eTaskGetState(handle) == eSuspended)
     {
-      vTaskResume(h);
+      vTaskResume(handle);
     }
   }
   lpTasksSuspended = false;
@@ -177,13 +164,11 @@ void modeChange(void)
   if (disableOnboardButton)
     return; // onboard button disabled, ignore press
 
-  // read-modify-write of state.mode races the CAN and web tasks - hold the lock
-  xSemaphoreTake(stateMutex, portMAX_DELAY);
   uint8_t next_mode = (uint8_t)state.mode + 1; // Determine the next mode in the sequence.
 
   if (isStandalone)
   {
-    // In standalone mode, skip MODE_EXPERT when cycling through modes, as it's not used.
+    // In standalone mode, skip MODE_EXPERT when cycling through modes as it's not used.
     if (next_mode == MODE_EXPERT)
     {
       next_mode++;
@@ -207,7 +192,39 @@ void modeChange(void)
     }
   }
   lastMode = state.mode;
-  xSemaphoreGive(stateMutex);
+}
+
+bool requestMode(uint8_t mode)
+{
+  if (mode >= (uint8_t)openhaldex_mode_t_MAX || disableController)
+  {
+    return false;
+  }
+
+  if (isStandalone && mode == MODE_STOCK)
+  {
+    state.mode = (openhaldex_mode_t)lastMode; // Stock is passthrough-only: standalone keeps the last driving mode
+  }
+  else
+  {
+    state.mode = (openhaldex_mode_t)mode;
+  }
+  lastMode = state.mode;
+  return true;
+}
+
+void setControllerDisabled(bool disabled)
+{
+  disableController = disabled;
+  if (disableController)
+  {
+    state.mode = MODE_STOCK;
+    lastMode = 0;
+  }
+  if (!disableController && analyzerMode)
+  {
+    setAnalyzerMode(false);
+  }
 }
 
 void modeChangeExt(void)
@@ -220,7 +237,6 @@ void modeChangeExt(void)
   if (extBtnForceMode)
     return; // Hold mode: short press has no effect; only hold triggers force mode
 
-  xSemaphoreTake(stateMutex, portMAX_DELAY); // same read-modify-write as modeChange
   uint8_t next_mode = (uint8_t)state.mode + 1; // Determine the next mode in the sequence.
 
   if (isStandalone)
@@ -249,7 +265,6 @@ void modeChangeExt(void)
     }
   }
   lastMode = state.mode;
-  xSemaphoreGive(stateMutex);
 }
 
 void modeChangeExtLong(void)
@@ -292,80 +307,16 @@ void setupButtons()
 
 void updateTriggers(void *arg)
 {
-  // Subscribe this supervisor to the hardware task watchdog. It always loops on
-  // a bounded cadence (<=2s even in aggressive sleep) and it takes stateMutex
-  // for the LED below, so if the shared mutex is ever lost and the whole control
-  // path deadlocks on portMAX_DELAY, this task stalls too and the watchdog
-  // reboots the module - the only net that recovers a mutex deadlock. The 8s
-  // timeout is well clear of the normal 500ms / 2s cadence so it can't false-trip.
-  bool wdtSubscribed = (esp_task_wdt_add(NULL) == ESP_OK);
-  if (!wdtSubscribed)
-  {
-    // Task WDT not initialised yet (or add failed) - init it, then subscribe.
-    esp_task_wdt_config_t wdt_cfg = {};
-    wdt_cfg.timeout_ms = 8000;
-    wdt_cfg.idle_core_mask = 0;
-    wdt_cfg.trigger_panic = true;
-    esp_task_wdt_init(&wdt_cfg);
-    wdtSubscribed = (esp_task_wdt_add(NULL) == ESP_OK);
-    if (!wdtSubscribed)
-    {
-      // Subscription failed even after init (e.g. WDT resource limits). The
-      // deadlock backstop is now absent - surface it rather than fail silently.
-      DEBUG("Task WDT subscription failed - deadlock backstop disabled for updateTriggers");
-    }
-  }
-
   while (1)
   {
-    if (wdtSubscribed)
-      esp_task_wdt_reset(); // pet the dog every iteration, on every code path below
-
     const uint32_t now = millis();
     hasCANChassis = (lastCANChassisTick > 0) && ((now - (uint32_t)lastCANChassisTick) <= canHealthTimeoutMs); // 1000ms timeout for CAN health - if we haven't received a message in 1000ms, consider the CAN connection unhealthy
     hasCANHaldex = (lastCANHaldexTick > 0) && ((now - (uint32_t)lastCANHaldexTick) <= canHealthTimeoutMs);    // 1000ms timeout for CAN health - if we haven't received a message in 1000ms, consider the CAN connection unhealthy
 
-    // Fail safe on signal loss: parseCAN only ever overwrites these on frame
-    // arrival, so on bus loss they latch their last value forever. In
-    // standalone that means synthesizing lock from stale speed/throttle (and a
-    // stale ESP/hazard force flag holding a force mode on) indefinitely. Zero
-    // them once the health timeout declares the bus dead - speed/throttle 0
-    // fails the lock_enabled gates, so the commanded lock decays to open.
-    // lastCANChassisTick > 0 keeps the boot state (never seen a frame) as-is.
-    if (!hasCANChassis && lastCANChassisTick > 0)
-    {
-      received_vehicle_speed = 0;
-      received_pedal_value = 0;
-      tcForceModeFlag = false;
-      hazardForceModeFlag = false;
-      isABSValid = false;
-    }
-    if (!hasCANHaldex && lastCANHaldexTick > 0)
-    {
-      received_haldex_engagement = 0; // stale engagement would freeze telemetry and poison a running learn
-    }
+    if (hasCANChassis || hasCANHaldex)
+      everSawCANThisSession = true; // real bus seen: bench mode (if on) stops holding WiFi up from here on
 
-    // Gen41 Bus0 heartbeat liveness: parseCAN_chs only ever sets these true on
-    // frame arrival, so unplugging the Haldex left the dashboard reporting
-    // "alive" forever. Age each flag off its own timestamp so liveness goes
-    // false when the heartbeat stops, even while the rest of the chassis bus
-    // is still healthy. Timestamps are never 0 once a heartbeat has been seen.
-    // Checked under stateMutex, matching the paired flag+timestamp writes in
-    // parseCAN_chs, so a heartbeat landing mid-check cannot be cleared.
-    xSemaphoreTake(stateMutex, portMAX_DELAY);
-    if (received_haldex_alive_bus0 &&
-        (now - received_haldex_alive_bus0_ms) > canHealthTimeoutMs)
-    {
-      received_haldex_alive_bus0 = false;
-    }
-    if (received_drivetrain_state_ok &&
-        (now - received_drivetrain_state_ms) > canHealthTimeoutMs)
-    {
-      received_drivetrain_state_ok = false;
-    }
-    xSemaphoreGive(stateMutex);
-
-    // Low-power WiFi management.
+    // Low-power WiFi management
     // Standalone: Haldex bus fps. OEM: chassis bus fps.
     //
     // LP_WATCHING : no clients + canActive false for watchMs -> shut WiFi+LED -> LP_SLEEPING
@@ -373,12 +324,12 @@ void updateTriggers(void *arg)
     //               CPU auto-sleeps via esp_pm_configure in main.cpp when FreeRTOS is idle.
     //
     // Aggressive add-on (canSleepAggressive=true): while LP_SLEEPING we also
-    // park the CAN transceivers in standby and suspend the background
-    // periodic tasks. A GPIO ISR on CAN_RX is the sole wake path - the moment
-    // bus activity returns, the falling edge on RXD fires the ISR and brings
-    // everything back. See the helpers near the top of this file.
+    // put the CAN transceivers in standby and suspend the background
+    // periodic tasks. A GPIO ISR on CAN_RX is the only wake path - the moment
+    // bus activity returns, the falling edge on CAN_RX fires the ISR and brings
+    // everything back.
     {
-      // Compute fps once per second from the running frame counters.
+      // Compute frames-per-second once per second from the running frame counters.
       if ((now - lpLastFpsCheck) >= 1000UL)
       {
         lpChassisFps = lpChassisFrameCount - lpLastChassisSnap;
@@ -403,22 +354,28 @@ void updateTriggers(void *arg)
         }
       }
 
-      const bool noClients = (WiFi.softAPgetStationNum() == 0) && (WiFi.getMode() != WIFI_OFF);
+      // "No clients" = nobody joined to our AP AND no browser polling the UI.
+      // The second half covers a phone/laptop reaching us through the home
+      // router (bridge mode), which softAPgetStationNum() can't see - without
+      // it the controller could switch WiFi off in the middle of an OTA update
+      // done over the bridge on the bench. An upload in progress always holds.
+      const bool noClients = (WiFi.softAPgetStationNum() == 0) && (WiFi.getMode() != WIFI_OFF) && !otaWebClientActive();
       // Standalone: Haldex fps >= fixed 50 fps threshold.
-      // OEM: chassis fps >= lpWakeThresholdFps (UI slider, default 1100).
-      // Decision lives in the pure lpCanActive() seam (include/OpenHaldexC6_lowpower.h)
-      // so the shipped logic is pinned by the native Unity test.
-      const bool canActive = lpCanActive(isStandalone, lpHaldexFps, lpChassisFps, lpWakeThresholdFps);
-      // Bench override: a USB host on the USB Serial/JTAG port (plugged into a
-      // PC) keeps the AP up and wakes a sleeping box, so the dashboard is
-      // reachable without a CAN source. False in the car (vehicle-powered, no
-      // USB host), so normal low-power behaviour is unchanged there.
-      const bool usbHostConnected = usb_serial_jtag_is_connected();
+      // OEM: chassis fps >= lpWakeThresholdFps (UI slider, default 50).
+      const bool canActive = isStandalone ? (lpHaldexFps >= 50U)
+                                          : (lpChassisFps >= lpWakeThresholdFps);
+      // Bench mode: with no real CAN seen this session, behave as if the bus
+      // were active so LP_WATCHING never sleeps. The instant traffic appears
+      // (everSawCANThisSession latches) this stops applying.
+      const bool benchHold = benchMode && !everSawCANThisSession;
 
       switch (lpState)
       {
       case LP_WATCHING:
-        if (lpShouldSleep(noClients, canActive, usbHostConnected))
+        // canSleepEnabled is the UI toggle: it used to gate only the CPU
+        // frequency scaling in main.cpp, never this WiFi shutdown, so turning
+        // it off did nothing visible (PR #39 fix).
+        if (canSleepEnabled && noClients && !canActive && !benchHold)
         {
           if (lpNoClientsSince == 0)
             lpNoClientsSince = now;
@@ -433,11 +390,9 @@ void updateTriggers(void *arg)
             DEBUG("Low power: no clients + CAN idle (%lu fps) - shutting down WiFi+LED%s",
                   (unsigned long)(isStandalone ? lpHaldexFps : lpChassisFps),
                   canSleepAggressive ? " + transceivers standby (ISR wake)" : "");
-            // Deliberate sleep: allow light sleep now (releases the awake lock).
-            pmAllowLightSleep(true);
             strip.setLedColorData(led_channel, 0, 0, 0);
             strip.show();
-            // Aggressive: park transceivers immediately and suspend background
+            // Aggressive: shutdown transceivers immediately and suspend background
             // periodic tasks. Wake is purely ISR-driven on the CAN_RX pins.
             if (canSleepAggressive)
             {
@@ -453,7 +408,7 @@ void updateTriggers(void *arg)
         break;
 
       case LP_SLEEPING:
-        // Aggressive: pure ISR-driven wake. The CAN_RX GPIO ISR sets
+        // Aggressive: ISR-driven wake. The CAN_RX GPIO ISR sets
         // canWakeRequest on the first falling edge from the (standby)
         // transceiver; we then bring the transceivers live so the fps path
         // can confirm real traffic and exit to LP_WATCHING.
@@ -472,19 +427,17 @@ void updateTriggers(void *arg)
           lpResumeBackgroundTasks();
         }
 
-        if (lpShouldWake(canActive, usbHostConnected))
+        if (canActive)
         {
           // Ensure transceivers are back to normal before we re-enable WiFi/IO.
           lpSetTransceiverStandby(false);
           lpResumeBackgroundTasks();
-          // Awake again: block light sleep so CAN can't be stopped mid-drive.
-          pmAllowLightSleep(false);
           lowPowerMode = false;
           lpNoClientsSince = 0;
           lpState = LP_WATCHING;
-          DEBUG("Low power: waking (%s) - restoring WiFi",
-                usbHostConnected ? "USB host connected"
-                                 : "CAN active");
+          DEBUG("Low power: CAN active (%lu fps, threshold %u) - restoring WiFi",
+                (unsigned long)(isStandalone ? lpHaldexFps : lpChassisFps),
+                (unsigned)lpWakeThresholdFps);
           rebootWiFi = true;
         }
         // CPU auto-sleeps via esp_pm_configure(light_sleep_enable=true) in main.cpp.
@@ -495,11 +448,7 @@ void updateTriggers(void *arg)
     // Analyzer mode: keep buttons + CAN recovery, but skip brake/handbrake IO outputs.
     if (analyzerMode)
     {
-      if (isBusFailure)
-      {
-        twai_initiate_recovery_v2(twai_bus_0);
-        twai_initiate_recovery_v2(twai_bus_1);
-      }
+      canBusRecovery();
 
       vTaskDelay(updateTriggersRefresh / portTICK_PERIOD_MS);
       continue;
@@ -535,18 +484,12 @@ void updateTriggers(void *arg)
       brakeActive = false;
     }
 
-    if (isBusFailure)
-    {
-      twai_initiate_recovery_v2(twai_bus_0);
-      twai_initiate_recovery_v2(twai_bus_1);
-    }
+    // Poll both controllers and drive the bus-off recovery state machine.
+    canBusRecovery();
 
     if (!lowPowerMode)
     {
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-      const openhaldex_mode_t ledMode = state.mode; // snapshot for the LED colour
-      xSemaphoreGive(stateMutex);
-      switch (ledMode)
+      switch (state.mode)
       {
       case 0:
         strip.setLedColorData(led_channel, ledBrightness, 0, 0); // red
@@ -559,7 +502,7 @@ void updateTriggers(void *arg)
         break;
       case 3:
       {
-        // Neon pink
+        // neon pink
         uint8_t r = (uint8_t)((255 * ledBrightness) / 255); // 255
         uint8_t g = (uint8_t)((16 * ledBrightness) / 255);
         uint8_t b = (uint8_t)((240 * ledBrightness) / 255);

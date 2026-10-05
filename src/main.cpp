@@ -1,6 +1,7 @@
 /*
 OpenHaldex-C6 - Forbes Automotive
-Haldex Controller for Gen1, Gen2, Gen4 and Gen5 Haldex Controllers. Supports WiFi. Version: 3.10 - now ported to PlatformIO.
+Haldex Controller for Gen1, Gen2, Gen4 and Gen5 Haldex Controllers
+Version: 8.00.5
 */
 
 #include <OpenHaldexC6_defs.h>
@@ -11,14 +12,22 @@ Haldex Controller for Gen1, Gen2, Gen4 and Gen5 Haldex Controllers. Supports WiF
 #include <OpenHaldexC6_WiFi.h>
 #include <OpenHaldexC6_Analyzer.h>
 #include <OpenHaldexC6_API.h>
+#include <OpenHaldexC6_BLE.h>
 #include <ESPmDNS.h> // for mDNS responder to allow openhaldex.local access to the web UI without needing to know the IP address
 #include "esp_pm.h"  // for power management when CAN sleep enabled
 
 void setup()
 {
 #if enableDebug || detailedDebug || detailedDebugCAN || detailedDebugWiFi || detailedDebugEEP || detailedDebugIO
-  Serial.begin(500000);                // start serial at a high baud rate for debugging
-  Serial.setTxTimeoutMs(10);           // set a small timeout for Serial writes to prevent blocking if the Serial Monitor is not open
+  Serial.begin(500000);      // start serial at a high baud rate for debugging
+  Serial.setTxTimeoutMs(10); // set a small timeout for Serial writes to prevent blocking if the Serial Monitor is not open
+  // native USB-CDC: give the host up to 3s to attach so early boot logs (LittleFS/WiFi/mDNS) aren't lost before it connects
+  unsigned long serialWaitStart = millis();
+  while (!Serial && millis() - serialWaitStart < 3000)
+  {
+    delay(10);
+  }
+  delay(250);                          // small grace period after attach before the first message is sent
   DEBUG("OpenHaldex-C6 Launching..."); // debug message to indicate startup
 #endif
 
@@ -31,62 +40,35 @@ void setup()
   setupWebServer(); // setup WebServer
   setupAPI();       // setup API handling for WebServer
   setupOTA();       // setup Over-the-Air Updates
+  setupBLE();       // setup BLE link to the DashCAN app (stack comes up from its own task)
 
   // Power management: when CAN sleep is enabled, scale CPU frequency down
   if (canSleepEnabled)
   {
     esp_pm_config_t pm_cfg = {
         .max_freq_mhz = 160,
-        // Aggressive: drop CPU floor to 10MHz (XTAL/N) for deeper idle.
+        // Aggressive: drop CPU lower limit to 10MHz (XTAL/N) for deeper idle.
         .min_freq_mhz = canSleepAggressive ? 10 : 40,
-        // Automatic light sleep is DISABLED. On the C6 there is no armed GPIO
-        // wake source for light sleep, and the TWAI domain power-gates on sleep
-        // (setupCAN, sleep_allow_pd) and can come back stopped with nothing to
-        // wake it - the module goes dead mid-drive until a physical replug.
-        // The low-power feature still saves power by shutting down WiFi+LED (and
-        // parking the transceivers in aggressive mode) while the CPU keeps
-        // running, so the RX task, fps counter, and wake ISR stay live and the
-        // box can always recover on its own. CPU frequency scaling (DFS) below
-        // the max is still active for idle power savings.
-        .light_sleep_enable = false,
+        .light_sleep_enable = true,
     };
     esp_err_t pm_err = esp_pm_configure(&pm_cfg);
     if (pm_err != ESP_OK)
     {
       DEBUG("ESP Power Management Failed: %d (continuing without CPU frequency scaling)", (int)pm_err);
     }
-
-    // Hold light sleep OFF while the module is awake. Automatic light sleep can
-    // power down the TWAI power domain (setupCAN sets sleep_allow_pd); if the
-    // restore ever fails the CAN controller comes back stopped and the Haldex
-    // loses its frame feed - loss of drive. This lock blocks incidental light
-    // sleep during live driving. The low-power state machine in updateTriggers
-    // releases it only when it DELIBERATELY sleeps (5 min idle, no clients) and
-    // re-acquires it on wake, so the shipped low-power feature is unchanged.
-    esp_pm_lock_handle_t lk = nullptr;
-    if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "can_live", &lk) == ESP_OK)
-    {
-      pmNoLightSleepLock = (void *)lk;
-      esp_pm_lock_acquire(lk); // awake at boot
-    }
-    else
-    {
-      DEBUG("Failed to create PM no-light-sleep lock (CAN may sleep mid-drive)");
-    }
   }
 
   if (needsFirmwareConfirmation())
   {
-    DEBUG("[OTA SAFETY] New firmware detected - confirming after safety checks...");
-    // Small delay to ensure CAN buses are fully initialized
-    delay(100);
-    confirmFirmwareValidity();
+    DEBUG("[OTA SAFETY] New firmware detected - confirmation deferred to otaRollbackTick()");
   }
 }
 
 void loop()
 {
-  delay(1); // add a small delay to prevent watchdog resets and allow other tasks to run
+  vTaskDelay(pdMS_TO_TICKS(100)); // yield the Arduino loop task so other FreeRTOS tasks can run
+
+  otaRollbackTick(); // confirm a freshly-installed OTA image once the device has proven itself
 
   { // temp counters for debugging, just left in because they can be useful for testing timing of various functions/tasks
     tempCounter++;
@@ -117,10 +99,7 @@ void loop()
 #endif
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
-    dnsStop(); // no AP -> no captive-DNS responder
   }
-
-  dnsProcess(); // answer any pending phone connectivity-check DNS query
 
   if (rebootWiFi)
   {
@@ -133,38 +112,22 @@ void loop()
     {
       strip.setLedColorData(led_channel, ledBrightness, ledBrightness, ledBrightness);
       strip.show();
-      delay(50);
+      vTaskDelay(pdMS_TO_TICKS(50));
       strip.setLedColorData(led_channel, 0, 0, 0);
       strip.show();
-      delay(50);
+      vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     WiFi.disconnect(true, true); // disconnect and erase AP settings to ensure a clean restart
     WiFi.mode(WIFI_OFF);         // turn off WiFi to reset the state
 
-    WiFi.mode(WIFI_AP); // restart in AP mode
-    WiFi.softAPConfig(IPAddress(192, 168, 1, 1), IPAddress(192, 168, 1, 1), IPAddress(255, 255, 255, 0));
-    if (strlen(wifiPassword) >= 8)
-    {
-      WiFi.softAP(wifiHostName, wifiPassword); // password-protected network
-    }
-    else
-    {
-      WiFi.softAP(wifiHostName); // open network
-    }
-    WiFi.setSleep(false);
-    // Aggressive sleep: trim AP TX power to reduce active-WiFi current.
-    if (canSleepAggressive)
-    {
-      WiFi.setTxPower(WIFI_POWER_8_5dBm);
-    }
+    startSoftAP(); // restart in AP mode (local-only DHCP, current SSID/password)
     MDNS.end();
     MDNS.begin("openhaldex"); // restart openhaldex.local
     MDNS.addService("http", "tcp", 80);
 
-    dnsStop();  // clear any responder bound to the old AP interface
-    dnsStart(); // rebind captive-DNS to the fresh AP
-
     rebootWiFi = false;
   }
+
+  pollWifiSta(); // bridge mode: track the home-network connection (no-op when not configured)
 }
