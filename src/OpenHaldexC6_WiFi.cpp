@@ -65,6 +65,11 @@ void pollWifiSta()
 {
   if (wifiStaSsid[0] == '\0')
     return;
+  // Parked with the radio off: a retry here (WiFi.begin) would switch STA
+  // back on every interval and drain the battery. startSoftAP() restarts the
+  // STA side when the radio comes back.
+  if (lowPowerMode || WiFi.getMode() == WIFI_OFF)
+    return;
   const uint32_t now = millis();
   const bool nowConnected = (WiFi.status() == WL_CONNECTED);
   if (nowConnected && !wifiStaConnected)

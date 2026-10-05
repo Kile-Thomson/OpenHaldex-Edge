@@ -84,24 +84,51 @@ static void sendJSON(AsyncWebServerRequest *request, int code, const JsonDocumen
     request->send(code, "application/json", out);
 }
 
-// helper function to reserve space (and delete) for incoming data
+// Collects a request body that may arrive in several chunks, then hands the
+// whole thing to `done`. The buffer MUST be malloc-owned: ESPAsyncWebServer
+// releases a non-null _tempObject with free() when a request is destroyed
+// (e.g. a POST aborted mid-body), so a new'd object here would be freed with
+// the wrong allocator and corrupt the heap.
 static void parseJSON(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total, void (*done)(AsyncWebServerRequest *, const String &))
 {
     if (index == 0)
     {
-        request->_tempObject = new String();              // create a new String to hold the incoming data, stored in the request's temp object pointer
-        ((String *)request->_tempObject)->reserve(total); // reserve space for the incoming data to optimize memory usage and prevent fragmentation
+        request->_tempObject = malloc(total + 1);
     }
 
-    String *body = (String *)request->_tempObject; // get the pointer to the String object from the request's temp object pointer
-    body->concat((const char *)data, len);         // append the incoming data chunk to the String object
-
-    if (index + len == total)
+    char *buf = (char *)request->_tempObject;
+    const bool last = (index + len == total);
+    if (buf == nullptr)
     {
-        String bodyString = *body;      // create a copy of the body string to pass to the done callback, since we'll be deleting the original String object to free memory
-        delete body;                    // delete the original String object to free memory, since we have a copy of the data in bodyString for the callback
-        request->_tempObject = nullptr; // clear the temp object pointer to avoid dangling pointer issues
-        done(request, bodyString);      // call the done callback with the request and the complete body string
+        // Allocation failed (or an earlier chunk did): drop the body and fail
+        // the request once, on the final chunk.
+        if (last)
+            request->send(500, "application/json", "{\"error\":\"out of memory\"}");
+        return;
+    }
+    if (index + len > total)
+    {
+        free(buf);
+        request->_tempObject = nullptr;
+        request->send(400, "application/json", "{\"error\":\"bad body length\"}");
+        return;
+    }
+
+    memcpy(buf + index, data, len);
+
+    if (last)
+    {
+        buf[total] = '\0';
+        String body;
+        const bool ok = body.concat(buf, total);
+        free(buf);
+        request->_tempObject = nullptr;
+        if (!ok)
+        {
+            request->send(500, "application/json", "{\"error\":\"out of memory\"}");
+            return;
+        }
+        done(request, body);
     }
 }
 
@@ -1801,7 +1828,7 @@ void setupAPI()
                 if (!access_ap_password_valid(newPwd))
                 {
                     // An empty password would leave an open AP - never accepted.
-                    JsonDocument resp; resp["ok"] = false; resp["error"] = "Password must be 8 to 64 characters (the AP always needs one)";
+                    JsonDocument resp; resp["ok"] = false; resp["error"] = "Password must be 8 to 63 characters (the AP always needs one)";
                     sendJSON(req, 400, resp); return;
                 }
                 memset(wifiPassword, 0, sizeof(wifiPassword));

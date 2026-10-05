@@ -1013,7 +1013,15 @@ bool startLongLearn(bool testAll)
   memset(longLearnBlockResult, 0, sizeof(longLearnBlockResult));
   longLearnActive = true;
 
-  xTaskCreate(longLearnTask, "longLearn", 6144, nullptr, 1, nullptr);
+  if (xTaskCreate(longLearnTask, "longLearn", 6144, nullptr, 1, nullptr) != pdPASS)
+  {
+    // No task means nothing would ever clear the flag, locking out every
+    // later learn until a reboot.
+    longLearnActive = false;
+    longLearnPhase = LL_FAILED;
+    longLearnEndMs = millis();
+    return false;
+  }
   return true;
 }
 
@@ -1796,7 +1804,9 @@ void getLockData(twai_message_t &rx_message_chs)
         uint8_t esp14Floor = esp14_min_floor(esp14MinFloorPct, rangeMax);
         // Danger Zone: at a full 50:50 request only, pin Min to Max so the Haldex has
         // no modulation room and goes to full pump duty.
-        if (dangerZoneEnabled && lock_target >= 100 && rangeMax > 1)
+        // Never during a learn sweep: lock_target there is the selected mode, not
+        // the sweep CF, and a pinned Min corrupts the learned table.
+        if (dangerZoneEnabled && !haldexLearnActive && lock_target >= 100 && rangeMax > 1)
           esp14Floor = (uint8_t)(rangeMax - 1);
         rx_message_chs.data[4] = esp14Floor; // BR_Vorg_Quer_Min
         rx_message_chs.data[6] = esp14Floor; // BR_Vorg_Allrad_Min

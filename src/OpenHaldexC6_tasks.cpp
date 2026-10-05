@@ -249,7 +249,9 @@ void longLearnTask(void *arg)
     esp14MinFloorPct = floors[fi];
     if (!runLearnSweep(preHoldMs))
     {
-      if (haldexLearnCancel)
+      // A speed abort inside the sweep sets longLearnCancel (not
+      // haldexLearnCancel), so both must end the run here.
+      if (haldexLearnCancel || longLearnCancel)
       {
         outcome = LL_CANCELLED;
         goto restore;
@@ -277,6 +279,12 @@ void longLearnTask(void *arg)
     // Phase 2 (BPK Adjust) picks up from there if this is Gen5.
     if (s.reach >= 100)
       break;
+  }
+  // Never carry an aborted run into Phase 2/3: both command lock again.
+  if (longLearnCancel)
+  {
+    outcome = LL_CANCELLED;
+    goto restore;
   }
   esp14MinFloorPct = bestFloor;
   longLearnFloorResult = bestFloor;
@@ -391,6 +399,11 @@ void longLearnTask(void *arg)
   // sweep per block.
   longLearnPhase = LL_BLOCKS;
   mask[gi] = allMask; // clean baseline with every block back on
+  if (longLearnCancel)
+  {
+    outcome = LL_CANCELLED;
+    goto restore;
+  }
   {
     const uint32_t releaseMs = 2000, settleMs = 1000;
     // Confirm good at BOTH ends of the range before touching any block. Testing

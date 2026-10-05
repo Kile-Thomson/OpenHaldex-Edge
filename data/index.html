@@ -1003,7 +1003,7 @@
                 <p class="hint">Set a WPA2 password (min. 8 characters) to secure the access point. The access point always needs a password: saving restarts it and you reconnect with the new one. Forgotten it? Long-press the mode button on the unit - that clears the password and the setup page asks for a new one.</p>
                 <p class="hint" id="wifiPasswordStatus">--</p>
                 <div class="wifi-password-row">
-                    <input type="password" id="wifiPasswordInput" placeholder="New password (min. 8 characters)" class="input-wifi-password" maxlength="64" autocomplete="new-password">
+                    <input type="password" id="wifiPasswordInput" placeholder="New password (min. 8 characters)" class="input-wifi-password" maxlength="63" autocomplete="new-password">
                     <button class="btn-icon-eye" id="wifiPasswordToggle" title="Show / hide password">&#128065;</button>
                 </div>
                 <div class="wifi-controls">
@@ -1056,7 +1056,7 @@
                     <input type="file" id="backupImportFile" accept="application/json,.json" style="display:none;">
                 </div>
                 <div id="backupPwSection" class="wifi-password-row" style="display:none; margin-top:12px;">
-                    <input type="password" id="backupPwInput" placeholder="Re-enter WiFi AP password" class="input-wifi-password" maxlength="64" autocomplete="new-password">
+                    <input type="password" id="backupPwInput" placeholder="Re-enter WiFi AP password" class="input-wifi-password" maxlength="63" autocomplete="new-password">
                     <button class="btn-secondary" id="backupPwApply">Apply Password</button>
                 </div>
                 <div id="backupStaPwSection" class="wifi-password-row" style="display:none; margin-top:12px;">

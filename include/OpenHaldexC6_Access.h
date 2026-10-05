@@ -65,5 +65,5 @@ static inline bool access_analyzer_injection(bool provisioned, bool via_sta) {
 static inline bool access_ap_password_valid(const char *pw) {
   if (pw == nullptr) return false;
   size_t n = strlen(pw);
-  return n >= 8 && n <= 64;
+  return n >= 8 && n <= 63;
 }

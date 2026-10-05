@@ -226,8 +226,14 @@ function initFullscreen() {
   sync();
 }
 
-// once settings are stored, start applying data where required
+// once settings are stored, start applying data where required. Runs once:
+// initStoredSettings() is also used to refresh values later (e.g. after
+// Forget Paired Phones), and a second pass would bind every listener and
+// timer again.
+let appInitialized = false;
 function initApp() {
+  if (appInitialized) return;
+  appInitialized = true;
   initNavigation();
   initDashboard();
   initDashTiles();
@@ -240,6 +246,7 @@ function initApp() {
   initCalibrate();
   initLearn();
   initLongLearn();
+  initFrameEditReset();
   initWifiSsid();
   initWifi();
   initBle();
@@ -3524,6 +3531,31 @@ async function saveFrameEdit(bit, on) {
   }
 }
 
+// "Reset to Defaults" under Frame blocks: puts every block mask back to the
+// firmware defaults, then redraws the list from the device.
+function initFrameEditReset() {
+  const btn = document.getElementById("frameEditReset");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    if (!confirm("Turn every frame block back to its default setting?")) return;
+    try {
+      const resp = await fetchJson("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frameEditReset: true }),
+      });
+      if (!resp) {
+        showNotification("Failed to reset frame blocks", "error");
+        return;
+      }
+      showNotification("Frame blocks reset to defaults");
+    } catch (error) {
+      showNotification("Error resetting frame blocks", "error");
+    }
+    refreshFrameBlocks();
+  });
+}
+
 // Re-fetch settings and re-render the frame checkboxes (e.g. after a generation
 // change or a reset-to-defaults).
 async function refreshFrameBlocks() {
@@ -3892,7 +3924,13 @@ const UPD_DIR_API = "https://api.github.com/repos/" + UPD_REPO + "/contents/Rele
 //            rebuilt in place when a fix lands before the next version is cut
 const UPD_CHANNEL_KEY = "otaUpdateChannel";
 let updChannel = "stable";
-const UPD_FOLDER_RE = /^V(\d+(?:\.\d+)*)$/i;
+// Folder names are V<x.y.z> plus an optional pre-release suffix (V9.01.0-beta1).
+const UPD_FOLDER_RE = /^V(\d+(?:\.\d+)*(?:-[0-9A-Za-z.]+)?)$/i;
+// Firmware and the web UI report only the core number (9.01.0) even when the
+// release is tagged 9.01.0-beta1, so post-install checks compare the core.
+function updCoreVersion(v) {
+  return String(v || "").split("-")[0];
+}
 // Mirror that last answered - the .bin downloads follow the index.
 let UPD_RELEASES_BASE = UPD_MIRRORS[0].base;
 
@@ -4015,7 +4053,7 @@ function initUpdateCheck() {
       dirs.forEach((v) => {
         if (byVer[v]) return;
         byVer[v] = {
-          version: v, channel: "stable", ota: true, unindexed: true,
+          version: v, channel: v.indexOf("-") >= 0 ? "beta" : "stable", ota: true, unindexed: true,
           notes: "Not in the release index yet - no release notes.",
           firmware: { path: "V" + v + "/firmware.bin" },
           filesystem: { path: "V" + v + "/littlefs.bin" },
@@ -4282,7 +4320,7 @@ function initUpdateCheck() {
           const set = (id, v) => { const e = $(id); if (e) e.textContent = v || "--"; };
           set("updInstalled", "v" + i.version);
           set("otaFwVersion", i.version);
-          if (i.version === rel.version) {
+          if (i.version === rel.version || i.version === updCoreVersion(rel.version)) {
             setState("Installed v" + i.version, "upd-current");
             setStatus("Update complete: now running v" + i.version + ". Reload the page to pick up the new web UI.", "ok");
             setTimeout(() => location.reload(), 2500);
@@ -4324,7 +4362,7 @@ function initUpdateCheck() {
       setStatus("Verifying filesystem...");
       const fsi = await fetchJson("/ota/fsinfo");
       if (!fsi || !fsi.ok) throw new Error("Filesystem verification failed (" + ((fsi && fsi.error) || "not mounted") + "). Retry the update.");
-      if (fsi.fsVersion && fsi.fsVersion !== "--" && fsi.fsVersion !== rel.version) {
+      if (fsi.fsVersion && fsi.fsVersion !== "--" && fsi.fsVersion !== rel.version && fsi.fsVersion !== updCoreVersion(rel.version)) {
         throw new Error("Filesystem reports v" + fsi.fsVersion + ", expected v" + rel.version + ". Retry the update.");
       }
       setStep("verify", "done");
@@ -4479,7 +4517,7 @@ function initWifiSta(prefix) {
   if (pwToggle) pwToggle.addEventListener("click", () => {
     const hidden = pwInput.type === "password";
     pwInput.type = hidden ? "text" : "password";
-    pwToggle.textContent = hidden ? "\u1f648" : "\u1f441";
+    pwToggle.textContent = hidden ? "\u{1F648}" : "\u{1F441}";
   });
 
   // Network scan: explicit button, never automatic - the single radio leaves
@@ -4503,7 +4541,7 @@ function initWifiSta(prefix) {
       resp.networks.forEach((n) => {
         const o = document.createElement("option");
         o.value = n.ssid;
-        o.textContent = n.ssid + (n.secure ? " \u1f512" : "") + " (" + n.rssi + " dBm)";
+        o.textContent = n.ssid + (n.secure ? " \u{1F512}" : "") + " (" + n.rssi + " dBm)";
         ssidList.appendChild(o);
       });
     }

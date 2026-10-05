@@ -395,15 +395,21 @@ static void labSetStandalone(bool on)
 // every lock-derived byte scale by haldexLearnCF/100), which is exactly what
 // the learn sweeps already use - so a CF here produces the same CAN output a
 // sweep would at that step, without running a whole sweep.
+// True while a CF command from this console owns the learn plumbing, so the
+// task loop can drop it if the car starts moving.
+static bool labCfHeld = false;
+
 static void labSetCF(int cf)
 {
   if (cf < 0)
   {
+    labCfHeld = false;
     haldexLearnActive = false;
     haldexLearnCF = 0;
     haldexLearnStep = 0;
     return;
   }
+  labCfHeld = true;
   haldexLearnCancel = false;
   haldexLearnActive = true;
   haldexLearnCF = (uint8_t)cf;
@@ -729,6 +735,13 @@ static void labHandleLine(char *line)
       Serial.println("ERR,CF needs 0..100 or OFF");
       return;
     }
+    // Same interlock as the learn paths: a commanded CF ignores mode, the
+    // disengage window and the throttle gate, so it is stationary-only.
+    if (!learn_speed_ok(received_vehicle_speed))
+    {
+      Serial.println("ERR,CF refused: vehicle moving");
+      return;
+    }
     labSetCF(v);
     Serial.printf("OK,CF,%u\n", (unsigned)haldexLearnCF);
   }
@@ -957,6 +970,15 @@ static void serialLabTask(void *arg)
 {
   while (1)
   {
+    // Release a held CF command as soon as the car moves (checked before the
+    // analyzer branch so it also applies while SavvyCAN owns the port).
+    if (labCfHeld && !learn_speed_ok(received_vehicle_speed))
+    {
+      labSetCF(-1);
+      if (!analyzerSerial)
+        Serial.println("EVT,CF,OFF,vehicle moving");
+    }
+
     // SavvyCAN serial mode owns the port (binary GVRET) - stay out of its way.
     if (analyzerSerial)
     {
