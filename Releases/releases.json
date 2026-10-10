@@ -35,6 +35,23 @@
         "size": 458752,
         "sha256": "dbcc35bb4e00f353685ff11107871905b4b55d9e74a759e1379c13250442a0d9"
       }
+    },
+    {
+      "version": "9.01.0-beta3",
+      "channel": "beta",
+      "date": "2026-10-10",
+      "ota": true,
+      "notes": "Newer build toolchain, smaller AsyncTCP stack, a README brought up to date with upstream V9.00.6, and a fix to the Update tab hint on mobile data. OTA from beta2.",
+      "firmware": {
+        "path": "V9.01.0-beta3/firmware.bin",
+        "size": 1782848,
+        "sha256": "7b965b73e8f502ad30d4274ccb2a992f42268d0998ff8d52438e397a83e26808"
+      },
+      "filesystem": {
+        "path": "V9.01.0-beta3/littlefs.bin",
+        "size": 458752,
+        "sha256": "3601b11315869f27599e995de89a60ffe6b69804ee0872d62be7587ba5b60c24"
+      }
     }
   ]
 }
