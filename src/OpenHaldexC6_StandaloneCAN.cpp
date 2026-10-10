@@ -55,6 +55,7 @@ static const uint8_t *idSeqFor(uint32_t id)
 
 static inline void standaloneTx(twai_message_t &f)
 {
+  f.self = 0; // a self-received frame reads as a live Haldex (flicker to ok with lock 0)
   int genid = frameEditGenIdx(haldexGeneration);
   if (genid >= 0)
   {
@@ -93,295 +94,187 @@ static inline void standaloneTx(twai_message_t &f)
 }
 
 // Periodic frame tasks
-void frames10(void *arg)
+static void frames10()
 {
-  while (1)
+  switch (haldexGeneration)
   {
-    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
-    if (analyzerMode)
-    {
-      vTaskDelay(10 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (isStandalone)
-    {
-      // Hold stateMutex across the builder body: the GenN builders read
-      // state.mode and the expert/learn maps, and frames100 writes lock_target.
-      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-      switch (haldexGeneration)
-      {
-      case 1:
-        Gen1_frames10();
-        break;
-      case 2:
-        Gen2_frames10();
-        break;
-      case 4:
-        Gen4_frames10();
-        break;
-      case 41:
-        Gen41_frames10();
-        break;
-      case 42:
-        Gen42_frames10();
-        break;
-      case 50:
-        Gen5_0CQ_frames10();
-        break;
-      case 51:
-        Gen5_0AY_frames10();
-        break;
-      case 52:
-        Gen5_0CQ_VAQ_frames10();
-        break;
-      }
-      xSemaphoreGive(stateMutex);
-    }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+  case 1:
+    Gen1_frames10();
+    break;
+  case 2:
+    Gen2_frames10();
+    break;
+  case 4:
+    Gen4_frames10();
+    break;
+  case 41:
+    Gen41_frames10();
+    break;
+  case 42:
+    Gen42_frames10();
+    break;
+  case 50:
+    Gen5_0CQ_frames10();
+    break;
+  case 51:
+    Gen5_0AY_frames10();
+    break;
+  case 52:
+    Gen5_0CQ_VAQ_frames10();
+    break;
   }
 }
 
-void frames20(void *arg)
+static void frames20()
 {
-  while (1)
+  switch (haldexGeneration)
   {
-    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
-    if (analyzerMode)
-    {
-      vTaskDelay(20 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (isStandalone)
-    {
-      // Hold stateMutex across the builder body: the GenN builders read
-      // state.mode and the expert/learn maps, and frames100 writes lock_target.
-      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-      switch (haldexGeneration)
-      {
-      case 1:
-        Gen1_frames20();
-        break;
-      case 2:
-        Gen2_frames20();
-        break;
-      case 4:
-        Gen4_frames20();
-        break;
-      case 41:
-        Gen41_frames20();
-        break;
-      case 42:
-        Gen42_frames20();
-        break;
-      case 50:
-        Gen5_0CQ_frames20();
-        break;
-      case 51:
-        Gen5_0AY_frames20();
-        break;
-      case 52:
-        Gen5_0CQ_VAQ_frames20();
-        break;
-      }
-      xSemaphoreGive(stateMutex);
-    }
-    vTaskDelay(20 / portTICK_PERIOD_MS);
+  case 1:
+    Gen1_frames20();
+    break;
+  case 2:
+    Gen2_frames20();
+    break;
+  case 4:
+    Gen4_frames20();
+    break;
+  case 41:
+    Gen41_frames20();
+    break;
+  case 42:
+    Gen42_frames20();
+    break;
+  case 50:
+    Gen5_0CQ_frames20();
+    break;
+  case 51:
+    Gen5_0AY_frames20();
+    break;
+  case 52:
+    Gen5_0CQ_VAQ_frames20();
+    break;
   }
 }
 
-void frames25(void *arg)
+static void frames25()
 {
-  while (1)
+  switch (haldexGeneration)
   {
-    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
-    if (analyzerMode)
-    {
-      vTaskDelay(25 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (isStandalone)
-    {
-      // Hold stateMutex across the builder body: the GenN builders read
-      // state.mode and the expert/learn maps, and frames100 writes lock_target.
-      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-      switch (haldexGeneration)
-      {
-      case 1:
-        Gen1_frames25();
-        break;
-      case 2:
-        Gen2_frames25();
-        break;
-      case 4:
-        Gen4_frames25();
-        break;
-      case 41:
-        Gen41_frames25();
-        break;
-      case 50:
-        Gen5_0CQ_frames25();
-        break;
-      case 51:
-        Gen5_0AY_frames25();
-        break;
-      case 52:
-        Gen5_0CQ_VAQ_frames25();
-        break;
-      }
-      xSemaphoreGive(stateMutex);
-    }
-    vTaskDelay(25 / portTICK_PERIOD_MS);
+  case 1:
+    Gen1_frames25();
+    break;
+  case 2:
+    Gen2_frames25();
+    break;
+  case 4:
+    Gen4_frames25();
+    break;
+  case 41:
+    Gen41_frames25();
+    break;
+  case 50:
+    Gen5_0CQ_frames25();
+    break;
+  case 51:
+    Gen5_0AY_frames25();
+    break;
+  case 52:
+    Gen5_0CQ_VAQ_frames25();
+    break;
   }
 }
 
-void frames100(void *arg)
+static void frames100()
 {
-  while (1)
+  lock_target = get_lock_target_adjustment();
+  switch (haldexGeneration)
   {
-    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
-    if (analyzerMode)
-    {
-      vTaskDelay(100 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (isStandalone)
-    {
-      // Hold stateMutex across the builder body: the GenN builders read
-      // state.mode and the expert/learn maps, and frames100 writes lock_target.
-      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-      lock_target = get_lock_target_adjustment();
-      switch (haldexGeneration)
-      {
-      case 1:
-        Gen1_frames100();
-        break;
-      case 2:
-        Gen2_frames100();
-        break;
-      case 4:
-        Gen4_frames100();
-        break;
-      case 41:
-        Gen41_frames100();
-        break;
-      case 42:
-        Gen42_frames100();
-        break;
-      case 50:
-        Gen5_0CQ_frames100();
-        break;
-      case 51:
-        Gen5_0AY_frames100();
-        break;
-      case 52:
-        Gen5_0CQ_VAQ_frames100();
-        break;
-      }
-      xSemaphoreGive(stateMutex);
-    }
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+  case 1:
+    Gen1_frames100();
+    break;
+  case 2:
+    Gen2_frames100();
+    break;
+  case 4:
+    Gen4_frames100();
+    break;
+  case 41:
+    Gen41_frames100();
+    break;
+  case 42:
+    Gen42_frames100();
+    break;
+  case 50:
+    Gen5_0CQ_frames100();
+    break;
+  case 51:
+    Gen5_0AY_frames100();
+    break;
+  case 52:
+    Gen5_0CQ_VAQ_frames100();
+    break;
   }
 }
 
-void frames200(void *arg)
+static void frames200()
 {
-  while (1)
+  switch (haldexGeneration)
   {
-    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
-    if (analyzerMode)
-    {
-      vTaskDelay(200 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (isStandalone)
-    {
-      // Hold stateMutex across the builder body: the GenN builders read
-      // state.mode and the expert/learn maps, and frames100 writes lock_target.
-      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-      switch (haldexGeneration)
-      {
-      case 1:
-        Gen1_frames200();
-        break;
-      case 2:
-        Gen2_frames200();
-        break;
-      case 4:
-        Gen4_frames200();
-        break;
-      case 41:
-        Gen41_frames200();
-        break;
-      case 42:
-        Gen42_frames200();
-        break;
-      case 50:
-        Gen5_0CQ_frames200();
-        break;
-      case 51:
-        Gen5_0AY_frames200();
-        break;
-      case 52:
-        Gen5_0CQ_VAQ_frames200();
-        break;
-      }
-      xSemaphoreGive(stateMutex);
-    }
-    vTaskDelay(200 / portTICK_PERIOD_MS);
+  case 1:
+    Gen1_frames200();
+    break;
+  case 2:
+    Gen2_frames200();
+    break;
+  case 4:
+    Gen4_frames200();
+    break;
+  case 41:
+    Gen41_frames200();
+    break;
+  case 42:
+    Gen42_frames200();
+    break;
+  case 50:
+    Gen5_0CQ_frames200();
+    break;
+  case 51:
+    Gen5_0AY_frames200();
+    break;
+  case 52:
+    Gen5_0CQ_VAQ_frames200();
+    break;
   }
 }
 
-void frames1000(void *arg)
+static void frames1000()
 {
-  while (1)
+  switch (haldexGeneration)
   {
-    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
-    if (analyzerMode)
-    {
-      vTaskDelay(1000 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (isStandalone)
-    {
-      // Hold stateMutex across the builder body: the GenN builders read
-      // state.mode and the expert/learn maps, and frames100 writes lock_target.
-      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-      switch (haldexGeneration)
-      {
-      case 1:
-        Gen1_frames1000();
-        break;
-      case 2:
-        Gen2_frames1000();
-        break;
-      case 4:
-        Gen4_frames1000();
-        break;
-      case 41:
-        Gen41_frames1000();
-        break;
-      case 42:
-        Gen42_frames1000();
-        break;
-      case 50:
-        Gen5_0CQ_frames1000();
-        break;
-      case 51:
-        Gen5_0AY_frames1000();
-        break;
-      case 52:
-        Gen5_0CQ_VAQ_frames1000();
-        break;
-      }
-      xSemaphoreGive(stateMutex);
-    }
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  case 1:
+    Gen1_frames1000();
+    break;
+  case 2:
+    Gen2_frames1000();
+    break;
+  case 4:
+    Gen4_frames1000();
+    break;
+  case 41:
+    Gen41_frames1000();
+    break;
+  case 42:
+    Gen42_frames1000();
+    break;
+  case 50:
+    Gen5_0CQ_frames1000();
+    break;
+  case 51:
+    Gen5_0AY_frames1000();
+    break;
+  case 52:
+    Gen5_0CQ_VAQ_frames1000();
+    break;
   }
 }
 
@@ -937,160 +830,126 @@ void Gen4_frames1000()
     mDiagnose_1_counter = 0;
 }
 
-void frames13(void *arg)
+static void frames13()
 {
-  while (1)
+  switch (haldexGeneration)
   {
-    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
-    if (analyzerMode)
-    {
-      vTaskDelay(1 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (isStandalone)
-    {
-      // Hold stateMutex across the builder body: the GenN builders read
-      // state.mode and the expert/learn maps, and frames100 writes lock_target.
-      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-#if detailedDebugStack
-      stackframes13 = uxTaskGetStackHighWaterMark(NULL);
-#endif
-      switch (haldexGeneration)
-      {
-      case 41:
-        Gen41_frames13();
-        break;
-      }
-      xSemaphoreGive(stateMutex);
-    }
-    vTaskDelay(13 / portTICK_PERIOD_MS);
+  case 41:
+    Gen41_frames13();
+    break;
   }
 }
 
-void frames50(void *arg)
+static void frames50()
 {
-  while (1)
+  switch (haldexGeneration)
   {
-    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
-    if (analyzerMode)
-    {
-      vTaskDelay(50 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (isStandalone)
-    {
-      // Hold stateMutex across the builder body: the GenN builders read
-      // state.mode and the expert/learn maps, and frames100 writes lock_target.
-      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-#if detailedDebugStack
-      stackframes50 = uxTaskGetStackHighWaterMark(NULL);
-#endif
-      switch (haldexGeneration)
-      {
-      case 41:
-        Gen41_frames50();
-        break;
-      }
-      xSemaphoreGive(stateMutex);
-    }
-    vTaskDelay(50 / portTICK_PERIOD_MS);
+  case 41:
+    Gen41_frames50();
+    break;
   }
 }
 
-void frames250(void *arg)
+static void frames250()
 {
-  while (1)
+  switch (haldexGeneration)
   {
-    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
-    if (analyzerMode)
-    {
-      vTaskDelay(250 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (isStandalone)
-    {
-      // Hold stateMutex across the builder body: the GenN builders read
-      // state.mode and the expert/learn maps, and frames100 writes lock_target.
-      // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout
-      xSemaphoreTake(stateMutex, portMAX_DELAY);
-#if detailedDebugStack
-      stackframes250 = uxTaskGetStackHighWaterMark(NULL);
-#endif
-      switch (haldexGeneration)
-      {
-      case 41:
-        Gen41_frames250();
-        break;
-      }
-      xSemaphoreGive(stateMutex);
-    }
-    vTaskDelay(250 / portTICK_PERIOD_MS);
+  case 41:
+    Gen41_frames250();
+    break;
   }
 }
 
-void gen41DualBusRatesTask(void *arg)
+// Gen4.1 dual-bus: repeat the cached chassis 0x0C1 / 0x0C5 frames onto bus 0.
+static void gen41Bus0Frames20()
 {
-  static const uint32_t GEN41_BUS0_C1_MS = 20;
-  static const uint32_t GEN41_BUS0_C5_MS = 20;
+  if (haldexGeneration != 41)
+    return;
 
-  uint32_t last_c1_ms = 0;
-  uint32_t last_c5_ms = 0;
+  extern twai_message_t gen41_bus0_cache_c1;
+  extern twai_message_t gen41_bus0_cache_c5;
+  extern bool gen41_bus0_cache_valid_c1;
+  extern bool gen41_bus0_cache_valid_c5;
+  extern portMUX_TYPE gen41_bus0_cache_mux;
+
+  twai_message_t c1, c5;
+  bool has_c1, has_c5;
+  taskENTER_CRITICAL(&gen41_bus0_cache_mux);
+  has_c1 = gen41_bus0_cache_valid_c1;
+  has_c5 = gen41_bus0_cache_valid_c5;
+  if (has_c1)
+    c1 = gen41_bus0_cache_c1;
+  if (has_c5)
+    c5 = gen41_bus0_cache_c5;
+  taskEXIT_CRITICAL(&gen41_bus0_cache_mux);
+
+  if (has_c1)
+    twai_transmit_v2(twai_bus_0, &c1, 0);
+  if (has_c5)
+    twai_transmit_v2(twai_bus_0, &c5, 0);
+}
+
+// One task drives every standalone rate. These used to be ten tasks (one per
+// rate, plus the Gen4.1 bus-0 repeater), each with its own stack and all of them
+// held suspended for an entire OEM-mode drive; as one task they give ~23 KB back
+// to the C6's shared SRAM (WiFi + BLE + web server). Buckets are listed in the
+// old task-priority order, so a tick due for several rates sends them in the
+// same order as before. Every TX is non-blocking, so no bucket stalls the rest.
+void standaloneFramesTask(void *arg)
+{
+  struct Bucket
+  {
+    uint16_t periodMs;
+    void (*run)();
+    uint32_t dueMs;
+    bool needsState; // builder reads shared state: run it under stateMutex
+  };
+  Bucket buckets[] = {
+      {10, frames10, 0, true},
+      {13, frames13, 0, true},
+      {20, gen41Bus0Frames20, 0, false},
+      {20, frames20, 0, true},
+      {25, frames25, 0, true},
+      {50, frames50, 0, true},
+      {100, frames100, 0, true},
+      {200, frames200, 0, true},
+      {250, frames250, 0, true},
+      {1000, frames1000, 0, true},
+  };
 
   while (1)
   {
-    if (analyzerMode || !isStandalone || haldexGeneration != 41)
+    // Analyzer mode runs as a passive bridge; skip standalone frame generation.
+    if (analyzerMode || !isStandalone)
     {
       vTaskDelay(10 / portTICK_PERIOD_MS);
       continue;
     }
 
-    const uint32_t now_ms = millis();
-
-    if ((now_ms - last_c1_ms) >= GEN41_BUS0_C1_MS)
+    const uint32_t now = millis();
+    for (Bucket &b : buckets)
     {
-      extern twai_message_t gen41_bus0_cache_c1;
-      extern bool gen41_bus0_cache_valid_c1;
-      extern portMUX_TYPE gen41_bus0_cache_mux;
-      twai_message_t tx = {};
-      bool has_frame = false;
-      taskENTER_CRITICAL(&gen41_bus0_cache_mux);
-      if (gen41_bus0_cache_valid_c1)
+      if ((int32_t)(now - b.dueMs) < 0)
+        continue;
+      if (b.needsState)
       {
-        tx = gen41_bus0_cache_c1;
-        has_frame = true;
+        // Hold stateMutex across the builder body: the GenN builders read
+        // state.mode and the expert/learn maps, and frames100 writes lock_target.
+        // The only blocking call inside is twai_transmit_v2 with a 0-tick timeout.
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        b.run();
+        xSemaphoreGive(stateMutex);
       }
-      taskEXIT_CRITICAL(&gen41_bus0_cache_mux);
-      if (has_frame)
+      else
       {
-        twai_transmit_v2(twai_bus_0, &tx, 0);
+        b.run();
       }
-      last_c1_ms = now_ms;
+      b.dueMs += b.periodMs;
+      if ((int32_t)(now - b.dueMs) >= 0) // first run, or back from suspend / analyzer: restart the cadence, don't burst
+        b.dueMs = now + b.periodMs;
     }
 
-    if ((now_ms - last_c5_ms) >= GEN41_BUS0_C5_MS)
-    {
-      extern twai_message_t gen41_bus0_cache_c5;
-      extern bool gen41_bus0_cache_valid_c5;
-      extern portMUX_TYPE gen41_bus0_cache_mux;
-      twai_message_t tx = {};
-      bool has_frame = false;
-      taskENTER_CRITICAL(&gen41_bus0_cache_mux);
-      if (gen41_bus0_cache_valid_c5)
-      {
-        tx = gen41_bus0_cache_c5;
-        has_frame = true;
-      }
-      taskEXIT_CRITICAL(&gen41_bus0_cache_mux);
-      if (has_frame)
-      {
-        twai_transmit_v2(twai_bus_0, &tx, 0);
-      }
-      last_c5_ms = now_ms;
-    }
-
-    vTaskDelay(1 / portTICK_PERIOD_MS);
+    vTaskDelay(1); // one tick
   }
 }
 
@@ -1983,7 +1842,9 @@ void Gen5_0CQ_frames10()
   frame.rtr = 0;
   frame.data_length_code = 8;
 
-  if (!fixHunting)
+  // Danger Zone rides on the BPK packing (raised torque ceiling), so it forces
+  // that path for the cycles it is live even with Fix Hunting off.
+  if (!fixHunting && !dangerZoneActive())
   {
     // ---- V3 packing (default, working on 554C/D/H and 554K@100%) ----
     appliedTorque = get_lock_target_adjusted_value(0xFA, false);
@@ -1999,7 +1860,7 @@ void Gen5_0CQ_frames10()
   }
   else
   {
-    // ---- BPK packing (Fix Hunting toggle on; needed for 554K @ partial lock) ----
+    // ---- BPK packing (Fix Hunting toggle on, or Danger Zone live) ----
     // Shared with the normal-mode packer so the two can never drift, and so the
     // serial lab tunables apply identically in both. See fill_motor11_bpk().
     appliedTorque = get_lock_target_adjusted_value(0xFE, false); // pre-scale value, for telemetry
@@ -2045,10 +1906,8 @@ void Gen5_0CQ_frames10()
     // BR_Vorg_*_Min launch-PWM floor (esp14MinFloorPct, 0 = unchanged), clamped
     // strictly below Max so the Haldex keeps room to modulate.
     uint8_t esp14Floor = esp14_min_floor(esp14MinFloorPct, rangeMax);
-    // Danger Zone: at a full 50:50 request only, pin Min to Max so the Haldex has
-    // no modulation room and goes to full pump duty.
-    if (dangerZoneEnabled && lock_target >= 100 && rangeMax > 1)
-      esp14Floor = (uint8_t)(rangeMax - 1);
+    // (Danger Zone no longer pins Min here: on the 0CQ the pump duty follows
+    // the Motor_11 torque, see fill_motor11_bpk.)
     frame.data[4] = esp14Floor; // BR_Vorg_Quer_Min
     frame.data[6] = esp14Floor; // BR_Vorg_Allrad_Min
   }
@@ -2661,7 +2520,7 @@ void Gen5_0CQ_VAQ_frames10()
   frame.rtr = 0;
   frame.data_length_code = 8;
 
-  if (!fixHunting)
+  if (!fixHunting && !dangerZoneActive())
   {
     // ---- V3 packing (default, working on 554C/D/H and 554K@100%) ----
     appliedTorque = get_lock_target_adjusted_value(0xFA, false);
@@ -2745,8 +2604,6 @@ void Gen5_0CQ_VAQ_frames10()
         f = (uint16_t)(appliedTorque - 1);
       esp14Floor = (uint8_t)f;
     }
-    if (dangerZoneEnabled && lock_target >= 100 && appliedTorque > 1)
-      esp14Floor = (uint8_t)(appliedTorque - 1);
     frame.data[6] = esp14Floor; // BR_Vorg_Allrad_Min
   }
   frame.data[7] = appliedTorque; // BR_Vorg_Allrad_Max

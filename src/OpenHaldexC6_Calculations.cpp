@@ -647,15 +647,80 @@ void fill_esp19_wheel_speeds(uint8_t data[8])
   }
 }
 
+uint16_t bpk_effective_ceiling_nm(uint16_t ceilingNm, bool dangerActive, uint16_t dangerNm)
+{
+  uint16_t c = ceilingNm;
+  if (dangerActive && dangerNm > c)
+    c = dangerNm;
+  // The 10-bit field with offset -509 encodes at most +514 Nm: clamp to the
+  // documented 509 Nm signal maximum so a raised value can never wrap 0x3FF.
+  return (c > 509) ? 509 : c;
+}
+
+void ll_compare_curves(const uint8_t *t, const uint8_t *ref, uint8_t &maxDev, int8_t &meanDelta)
+{
+  int worst = 0;
+  int32_t sum = 0;
+  for (uint8_t i = 0; i <= 100; i++)
+  {
+    const int d = (int)t[i] - (int)ref[i];
+    sum += d;
+    if (d > worst)
+      worst = d;
+    else if (-d > worst)
+      worst = -d;
+  }
+  int32_t m = sum / 101;
+  if (m > 127)
+    m = 127;
+  if (m < -127)
+    m = -127;
+  maxDev = (uint8_t)worst;
+  meanDelta = (int8_t)m;
+}
+
+void ll_compare_points(const uint8_t *a, const uint8_t *ref, uint8_t &maxDev, int8_t &meanDelta)
+{
+  int worst = 0, sum = 0;
+  for (uint8_t k = 0; k < LL_NPTS; k++)
+  {
+    const int d = (int)a[k] - (int)ref[k];
+    sum += d;
+    if (d > worst)
+      worst = d;
+    else if (-d > worst)
+      worst = -d;
+  }
+  maxDev = (uint8_t)worst;
+  meanDelta = (int8_t)(sum / LL_NPTS);
+}
+
+uint8_t ll_judge(bool smooth, uint8_t maxDev, int8_t meanDelta, uint8_t tol)
+{
+  if (smooth && maxDev <= tol)
+    return LLB_REMOVED; // no effect
+  if (!smooth || meanDelta <= 0)
+    return LLB_NEEDED;  // lower or lost smoothness without it
+  return LLB_HARMFUL;   // moved up without it - still an effect, kept on
+}
+
+bool dangerZoneActive()
+{
+  return dangerZoneEnabled && !haldexLearnActive && lock_target > 99.0f;
+}
+
 void fill_motor11_bpk(uint8_t data[8], uint8_t counter)
 {
   // DBC-correct bit packing for Motor_11 (0x0A7). Every field below is a
   // runtime tunable (see defs.h) so the serial lab can massage the wire
   // format live; the defaults are the values that were hardcoded here.
   // Signals are 10-bit with offset -509, i.e. raw = Nm + 509.
-  // The 10-bit field with offset -509 encodes at most +514 Nm: clamp the ceiling to the
-  // documented 509 Nm signal maximum so a raised value can never wrap the 0x3FF mask.
-  const uint16_t ceilNm = (bpkCeilingNm > 509) ? 509 : bpkCeilingNm;
+  // Danger Zone: the pump duty on the 0CQ follows the torque this frame
+  // claims, not ESP_14 (bench 2026-09-20: 220 Nm -> 58 % / 9 A, 320 Nm ->
+  // 90 % / 11 A, 400 Nm -> 95 % / 11.5 A, relief valve pegged). At a full
+  // lock request, raise the ceiling to dangerZoneNm unless the user's own
+  // calibration is already higher.
+  const uint16_t ceilNm = bpk_effective_ceiling_nm(bpkCeilingNm, dangerZoneActive(), dangerZoneNm);
   const uint16_t floorNm = (bpkFloorNm < ceilNm) ? bpkFloorNm : 0;
 
   uint16_t torqueNm = get_lock_target_adjusted_value(0xFE, false);
@@ -1008,6 +1073,10 @@ bool startLongLearn(bool testAll)
   longLearnBaselineValid = false;
   longLearnFinalValid = false;
   longLearnBpkAdjusted = false;
+  longLearnFailReason = LLF_NONE;
+  longLearnNoise = 0;
+  longLearnTol = LL_TOLERANCE;
+  longLearnInteraction = false;
   longLearnStartMs = millis();
   longLearnEndMs = 0;
   memset(longLearnBlockResult, 0, sizeof(longLearnBlockResult));
@@ -1753,7 +1822,8 @@ void getLockData(twai_message_t &rx_message_chs)
       //   fixHunting == false : V3 packing - works on 554C/D/H and 554K @ 100% lock.
       //   fixHunting == true  : DBC-correct BPK packing - needed on 554K at partial
       //                         lock (60/40, 70/30) where V3 packing causes hunting.
-      if (!fixHunting)
+      //   Danger Zone live    : BPK packing regardless (raised ceiling), see fill_motor11_bpk.
+      if (!fixHunting && !dangerZoneActive())
       {
         rx_message_chs.data[0] = 0x00;                                        // checksum placeholder
         rx_message_chs.data[1] = MOTOR_11_counter;                            // rolling - 0x40>0x4F
@@ -1801,13 +1871,9 @@ void getLockData(twai_message_t &rx_message_chs)
         // BR_Vorg_*_Min launch-PWM floor (esp14MinFloorPct, 0 = unchanged). Shared
         // helper: floor % of full command through the learn-corrected path, clamped
         // strictly below Max so the Haldex keeps room to modulate.
+        // (Danger Zone no longer pins Min here: on the 0CQ the pump duty follows
+        // the Motor_11 torque, see fill_motor11_bpk.)
         uint8_t esp14Floor = esp14_min_floor(esp14MinFloorPct, rangeMax);
-        // Danger Zone: at a full 50:50 request only, pin Min to Max so the Haldex has
-        // no modulation room and goes to full pump duty.
-        // Never during a learn sweep: lock_target there is the selected mode, not
-        // the sweep CF, and a pinned Min corrupts the learned table.
-        if (dangerZoneEnabled && !haldexLearnActive && lock_target >= 100 && rangeMax > 1)
-          esp14Floor = (uint8_t)(rangeMax - 1);
         rx_message_chs.data[4] = esp14Floor; // BR_Vorg_Quer_Min
         rx_message_chs.data[6] = esp14Floor; // BR_Vorg_Allrad_Min
       }
@@ -2663,14 +2729,24 @@ bool uds_scale_mqb_did(uint16_t did, const uint8_t *payload, uint8_t len, float 
   }
 
   case 0x2BE6: // clutch pump current, A
-  case 0x2BE9: // clutch pump voltage, V
   {
     // Big-endian on the wire, unlike the little-endian temperature DIDs -
     // confirmed against the upstream V8.00.2 source (its poller reads
-    // data[4]<<8 | data[5] for these two DIDs only).
+    // data[4]<<8 | data[5] for this DID).
     if (len < 2) return false;
     const uint16_t raw = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);
     out = raw * 0.001f;
+    return true;
+  }
+
+  case 0x2BE9: // clutch pump voltage, V
+  {
+    // Little-endian, x 0.1 V (same scale as terminal voltage). Upstream 9.00.6
+    // bench check: pump at 61 % PWM on 13.4 V reads raw 80/81 -> 8.0 V. The old
+    // big-endian x 0.001 read showed an impossible 20.5 V.
+    if (len < 2) return false;
+    const uint16_t raw = (uint16_t)(((uint16_t)payload[1] << 8) | payload[0]);
+    out = raw * 0.1f;
     return true;
   }
 

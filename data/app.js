@@ -484,6 +484,16 @@ async function initStoredSettings() {
     const benchModeElem = document.getElementById("benchMode");
     if (benchModeElem) benchModeElem.checked = data.benchMode || false;
 
+    const espNowEnabledElem = document.getElementById("espNowEnabled");
+    if (espNowEnabledElem) espNowEnabledElem.checked = data.espNowEnabled !== false;
+    const espNowControlElem = document.getElementById("espNowControl");
+    if (espNowControlElem) espNowControlElem.checked = data.espNowControl !== false;
+
+    _sleepCalState = data.sleepCalState ?? 0;
+    _sleepCalAvgFps = data.sleepCalAvgFps ?? 0;
+    renderSleepCal();
+    setTimeout(() => maybeOfferSleepSetup(_haldexGeneration), 1000);
+
     const bleEnabledElem = document.getElementById("bleEnabled");
     if (bleEnabledElem) bleEnabledElem.checked = data.bleEnabled !== undefined ? data.bleEnabled : true;
     if (data.blePasskey !== undefined) {
@@ -1170,6 +1180,19 @@ function initNavigation() {
     });
   }
 
+  // Sleep auto-setup toggle: on = armed (measures the next parked stretch), off = declined.
+  const sleepCalArm = document.getElementById("sleepCalArm");
+  if (sleepCalArm) {
+    sleepCalArm.addEventListener("change", async () => {
+      if (await saveSetting("sleepCalArm", sleepCalArm.checked)) {
+        _sleepCalState = sleepCalArm.checked ? 1 : 3;
+        renderSleepCal();
+      } else {
+        renderSleepCal(); // put the switch back to what the unit holds
+      }
+    });
+  }
+
   // LP wake threshold slider
   const lpWakeRange = document.getElementById("lpWakeThresholdFpsRange");
   const lpWakeVal   = document.getElementById("lpWakeThresholdFpsValue");
@@ -1397,7 +1420,11 @@ function initSettings() {
       elem.addEventListener("change", async () => {
         await saveSetting(id, parseInt(elem.value));
         // A new generation changes which frame blocks can be edited.
-        if (id === "haldexGeneration") refreshFrameBlocks();
+        if (id === "haldexGeneration") {
+          _haldexGeneration = parseInt(elem.value);
+          refreshFrameBlocks();
+          maybeOfferSleepSetup(_haldexGeneration, true); // picking Gen5 always asks again
+        }
       });
     }
   });
@@ -1466,6 +1493,8 @@ function initSettings() {
     "dangerZoneEnabled",
     "benchMode",
     "bleEnabled",
+    "espNowEnabled",
+    "espNowControl",
     "liveDiagEnabled",
     "lockReleaseEnabled",
     "steeringGainEnabled",
@@ -3568,15 +3597,48 @@ async function refreshFrameBlocks() {
 }
 
 
+// ---- Sleep auto-setup (offered once, Gen5) ---------------------------------
+let _sleepCalState = 0; // 0 never asked, 1 armed, 2 done, 3 declined
+let _sleepCalAvgFps = 0;
+
+function renderSleepCal() {
+  const sw = document.getElementById("sleepCalArm");
+  if (sw) sw.checked = _sleepCalState === 1;
+  const el = document.getElementById("sleepCalStatus");
+  if (!el) return;
+  if (_sleepCalState === 1) el.textContent = "Armed: next time the car is left parked with the ignition off, the quiet bus is measured for 15 min.";
+  if (_sleepCalState === 2) el.textContent = `Done: set from the parked bus (average ${_sleepCalAvgFps} fps).`;
+  el.hidden = _sleepCalState !== 1 && _sleepCalState !== 2;
+}
+
+// On page load: only if never asked. On a generation change to Gen5: always.
+async function maybeOfferSleepSetup(gen, changed = false) {
+  if (![50, 51, 52].includes(gen) || (!changed && _sleepCalState !== 0)) return;
+  const yes = confirm("Enable CAN sleep and set it up automatically?\n\n" +
+    "Next time the car is left, the controller measures the parked bus for 15 min and sets the wake threshold. Runs once.");
+  if (await saveSetting("sleepCalArm", yes)) {
+    _sleepCalState = yes ? 1 : 3;
+    renderSleepCal();
+  }
+}
+
 // ---- Long Learn (Calibrate > Long Learn) -----------------------------------
 // Drives /api/longlearn/*: polls status while a run is active, renders the
 // tracker + per-block verdicts, keeps the chassis notes on the unit, and
 // exports a plain-text report of the car, calibration, block set and sweeps.
-const LL_PHASE_NAMES = ["Idle", "Initial Sweep (all blocks on)", "BPK Adjust (torque ceiling)",
-                        "Sweeping Blocks", "Confirmation learn on final set", "Complete", "Cancelled", "Failed"];
+const LL_PHASE_NAMES = ["Idle", "Reference (all blocks on)", "BPK Adjust (hunting)",
+                        "Testing blocks (one off, point reads)", "Confirmation sweep", "Complete", "Cancelled", "Failed"];
 const LL_RESULT = { 0: ["untested", ""], 1: ["core", "core"], 2: ["needed", "needed"],
-                    3: ["not needed", "removed"], 4: ["affects (better without)", "harmful"] };
-const LL_SWEEP_KIND = ["baseline", "floor", "block", "final", "bpk ceiling"];
+                    3: ["no effect", "removed"], 4: ["affects (higher without)", "harmful"] };
+const LL_SWEEP_KIND = ["reference", "reference points", "block", "final", "bpk"];
+const LL_FAIL = ["", "no Haldex data with all blocks on",
+                 "all blocks on is not a smooth 100% - fix that first, nothing to compare blocks against",
+                 "the two all-on point reads disagree too much (noisy) to judge blocks"];
+// Block-off read for a bit -> " (dev N%)" suffix, or "" if not tested yet.
+function llDev(data, bit) {
+  const sw = (data.sweeps || []).find((x) => x.kind === 2 && x.bit === bit);
+  return sw ? ` (dev ${sw.dev}%)` : "";
+}
 
 function llScoreText(sc) {
   if (!sc) return "--";
@@ -3625,8 +3687,8 @@ function initLongLearn() {
       if (data.active && data.currentBit === b.bit) { cls = "testing"; txt = "testing..."; }
       else {
         const r = LL_RESULT[b.result] || LL_RESULT[0];
-        txt = r[0]; cls = r[1];
-        if (b.result === 0) txt = b.def ? "default" : (data.phase === 0 ? (b.enabled ? "on" : "off") : "queued");
+        txt = r[0] + llDev(data, b.bit); cls = r[1];
+        if (b.result === 0) txt = b.core ? "core" : (data.phase === 0 ? (b.enabled ? "on" : "off") : "queued");
       }
       tag.className = "ll-tag " + cls;
       tag.textContent = txt;
@@ -3661,16 +3723,17 @@ function initLongLearn() {
     } else if (running && data.phase === 1) {
       testing = "all blocks on";
     } else if (running && data.phase === 2) {
-      testing = `raising torque ceiling (${data.bpkNow} Nm)`;
+      testing = `BPK packing / torque ceiling (${data.bpkNow} Nm)`;
     } else if (running && data.phase === 4) {
       testing = "final block set";
     }
     setText("llTesting", testing);
     const isGen5 = data.generation === 50 || data.generation === 52;
     setText("llFloor", isGen5 ? `${data.floorNow}%` + (data.phase >= 2 ? ` (was ${data.floorStart}%)` : "") : "n/a (Gen5 only)");
-    setText("llBpk", isGen5 ? `${data.bpkNow} Nm` + (data.bpkAdjusted ? ` (was ${data.bpkStart} Nm)` : "") +
-"" : "n/a (Gen5 only)");
-    setText("llBaseline", llScoreText(data.baseline));
+    setText("llBpk", isGen5 ? `${data.bpkNow} Nm, Fix Hunting ${data.fixHunting ? "on" : "off"}` +
+      (data.bpkAdjusted ? ` (was ${data.bpkStart} Nm)` : "") : "n/a (Gen5 only)");
+    setText("llBaseline", llScoreText(data.baseline) +
+      (data.phase >= 3 && data.phase !== 7 ? ` | noise ${data.noise}%, threshold ${data.tol}%` : ""));
     setText("llElapsed", llFmtElapsed(data.elapsedS));
 
     const cf = data.cf ?? 0, eng = data.eng ?? 0;
@@ -3688,14 +3751,15 @@ function initLongLearn() {
       const kept = (data.blocks || []).filter((b) => b.enabled).length;
       statusText.textContent = `Long Learn complete \u2713 - ${kept} of ${(data.blocks || []).length} blocks enabled, ` +
         (isGen5 ? `PWM floor ${data.floorResult}%, ` : "") +
-        (isGen5 && data.bpkAdjusted ? `torque ceiling ${data.bpkNow} Nm, ` : "") +
+        (isGen5 && data.bpkAdjusted ? `BPK kept: Fix Hunting ${data.fixHunting ? "on" : "off"}, ceiling ${data.bpkNow} Nm, ` : "") +
+        (data.interaction ? "the no-effect blocks changed the curve when off together, so all were left on, " : "") +
         `final: ${llScoreText(f)}`;
-      statusText.style.color = f && f.smooth ? "var(--success)" : "var(--warning)";
+      statusText.style.color = f && f.smooth && !data.interaction ? "var(--success)" : "var(--warning)";
     } else if (data.phase === 6) {
       statusText.textContent = "Long Learn cancelled - previous blocks, floor, torque ceiling and learn table put back";
       statusText.style.color = "var(--warning)";
     } else if (data.phase === 7) {
-      statusText.textContent = "Long Learn failed - no Haldex data during a sweep. Previous settings restored";
+      statusText.textContent = `Long Learn stopped - ${LL_FAIL[data.failReason] || "sweep failed"}. Previous settings restored`;
       statusText.style.color = "var(--danger)";
     } else {
       statusText.textContent = "Not run yet";
@@ -3807,19 +3871,22 @@ function buildLongLearnReport(settings, ll, learn, notesText) {
   L.push(`  Launch PWM Floor: ${settings.esp14MinFloorPct} %` +
          (ll.phase === 5 && isGen5 ? `  (Long Learn: ${ll.floorStart} % -> ${ll.floorResult} %)` : ""));
   if (ll.phase === 5 && isGen5 && ll.bpkAdjusted) {
-    L.push(`  Torque ceiling raised by Long Learn: ${ll.bpkStart} Nm -> ${ll.bpkNow} Nm`);
+    L.push(`  BPK set by Long Learn (kept): Fix Hunting ${ll.fixHunting ? "on" : "off"}, ceiling ${ll.bpkStart} Nm -> ${ll.bpkNow} Nm`);
   }
   L.push("");
   L.push(`Long Learn: ${LL_PHASE_NAMES[ll.phase] || "--"}` +
          (ll.phase >= 5 ? `  (${ll.sweepIdx} sweeps, ${llFmtElapsed(ll.elapsedS)}, test-all ${ll.testAll ? "on" : "off"})` : ""));
+  if (ll.phase === 7) L.push(`  Stopped: ${LL_FAIL[ll.failReason] || "sweep failed"}`);
   if (ll.baseline) L.push(`  Reference (all on): ${llScoreText(ll.baseline)}`);
   if (ll.final)    L.push(`  Final (kept set):   ${llScoreText(ll.final)}`);
+  if (ll.phase === 5) L.push(`  Reference noise ${ll.noise}%, block threshold ${ll.tol}% (worst of the points CF ${(ll.ptCF || []).join("/")})`);
+  if (ll.interaction) L.push("  INTERACTION: the no-effect blocks changed the curve when off together - all left on");
   L.push("");
   L.push(`Frame blocks (mask ${ll.mask || "--"}) - [x] = enabled. Edit and re-apply under Calibrate > Frame blocks:`);
   (ll.blocks || []).forEach((b) => {
     const r = LL_RESULT[b.result] || LL_RESULT[0];
     const verdict = b.result === 0 ? (ll.phase === 0 ? "" : "untested") : r[0];
-    L.push(`  [${b.enabled ? "x" : " "}] ${pad(b.name, 22)} bit ${pad(b.bit, 3)} ${pad(b.def ? "default" : "added", 8)} ${verdict}`);
+    L.push(`  [${b.enabled ? "x" : " "}] ${pad(b.name, 22)} bit ${pad(b.bit, 3)} ${pad(b.core ? "core" : "static", 8)} ${verdict}${llDev(ll, b.bit)}`);
   });
   L.push("");
   if (Array.isArray(ll.sweeps) && ll.sweeps.length) {
@@ -3830,11 +3897,14 @@ function buildLongLearnReport(settings, ll, learn, notesText) {
         const b = (ll.blocks || []).find((x) => x.bit === sw.bit);
         what = `without ${b ? b.name : "bit " + sw.bit}`;
       } else if (sw.kind === 4) {
-        what = `ceiling ${sw.bpk} Nm`;
+        what = `bpk ${sw.bpk} Nm`;
       }
-      const verdict = sw.kind === 2 ? ((LL_RESULT[sw.verdict] || ["?"])[0]) : (sw.verdict ? "smooth/100%" : "not smooth/100%");
-      L.push(`  #${pad(i + 1, 3)} ${pad(what, 28)} floor ${pad(sw.floor + "%", 5)} reach ${pad(sw.reach, 4)} step ${pad(sw.maxStep, 3)} ` +
-             `engage@${pad(sw.engageCF > 100 ? "--" : sw.engageCF, 3)}->${pad(sw.engageJump, 3)} score ${pad(sw.score, 3)} => ${verdict}`);
+      const pts = Array.isArray(sw.pts) ? sw.pts : null; // point reads, not a curve
+      const verdict = sw.kind === 2 ? ((LL_RESULT[sw.verdict] || ["?"])[0]) : sw.kind === 1 ? "" : (sw.verdict ? "smooth" : "NOT smooth");
+      const dev = sw.kind === 2 || sw.kind === 3 ? ` dev ${pad(sw.dev, 3)} mean ${pad((sw.dMean > 0 ? "+" : "") + sw.dMean, 4)}` : "";
+      L.push(`  #${pad(i + 1, 3)} ${pad(what, 28)} ` + (pts ? pts.map((v, k) => `@${(ll.ptCF || [])[k]} ${pad(v, 4)}`).join("") :
+             `reach ${pad(sw.reach, 4)} step ${pad(sw.maxStep, 3)} engage@${pad(sw.engageCF > 100 ? "--" : sw.engageCF, 3)}->${pad(sw.engageJump, 3)} score ${pad(sw.score, 3)}`) +
+             `${dev}${verdict ? " => " + verdict : ""}`);
     });
     L.push("");
   }
@@ -4603,7 +4673,7 @@ const BACKUP_GENERAL_KEYS = [
   "steeringGainEnabled", "steeringGainStartDeg", "steeringGainFullDeg", "steeringGainFloor",
   "liveDiagEnabled", "ledBrightness",
   "canSleepEnabled", "canSleepAggressive", "benchMode", "lpWakeThresholdFps",
-  "longLearnNotes", "bleEnabled",
+  "longLearnNotes", "bleEnabled", "espNowEnabled", "espNowControl",
 ];
 
 function initBackupRestore() {

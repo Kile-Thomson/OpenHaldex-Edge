@@ -168,6 +168,71 @@ V9.00.0 - shared Forbes Automotive UI theme; automatic product web-asset
           revalidation, 304 when unchanged) instead of max-age=1y + a hand-
           bumped ?v= that kept being forgotten - phones were running a stale
           app.js against new HTML, so buttons on new cards did nothing.
+        - fixed saving the Haldex generation (dropdown or backup restore)
+          overwriting the saved drive mode with the generation number
+          (lastMode = generation) - Gen1/41/5x then booted in FWD.
+
+V9.00.5 - 9.00.4 (VAQ + Themes + ESP-NOW) merged with the GitHub contributor PRs:
+        - #39 WiFi bridge mode / config backup tool (already ported in 9.00.4)
+        - #40 CLI: accept the old _fw_version backup key (not needed by our tool)
+        - #43 OTA tab: Stable / Latest build update channel (web UI only)
+        - #44 Bluetooth LE for the DashCAN app (NimBLE) + lock release
+          switch/rate now actually save. PARTITION CHANGE: app slots
+          0x1A0000 -> 0x1C0000, LittleFS 0xB0000 -> 0x70000 (at 0x390000).
+          Needs ONE USB flash from any older build - cannot go over OTA.
+        - #42 Vehicle Geometry card (wheelbase / tracks / steering ratio)
+          for the per-corner slip calc, persisted, in backups. Defaults TT Mk3.
+        - #41 favicons, PWA manifest, home-screen icons. The six iOS splash
+          screens were left out: with them the UI (~145 blocks) no longer
+          fits the 0x70000 LittleFS (112 blocks) that #44 introduced.
+        - ESP-NOW and BLE now run side by side on the one radio - untested
+          together on hardware.
+
+V9.00.6 - GitHub main after 9.00.5, plus a toolchain update:
+        - #45 Stock no longer feeds the reported Haldex engagement back as
+          the lock command (positive feedback loop that latched high lock
+          until FWD / power cycle). Stock now commands zero forced lock, and
+          inline Stock (base mode or force trigger) forwards frames untouched.
+        - #46 when a bus goes silent (1 s health timeout), zero the latched
+          inputs it feeds: speed, pedal, ESP/hazard force flags, ABS valid
+          (chassis) and reported engagement (Haldex). Boot state unchanged.
+        - #47 default VAG correction factor (no learn table) now matches its
+          comment: CF = (target + 20) / 2, was target / 2 + 20 (+10 CF).
+        - #49 line endings normalised to LF (no code change).
+        - platform pioarduino 54.03.20 -> 55.03.312; "Async TCP" added to
+          lib_ignore so only mathieucarbou/AsyncTCP is linked. 55.03.312
+          needs PlatformIO Core >= 6.2.0 (older Core refuses the platform).
+          Arduino core 3.3.12 / IDF 5.5.5. Flash 92.5% of the 0x1C0000 app
+          slot; littlefs.bin fills the 0x70000 partition exactly.
+        - Boot-loop fix: if NimBLEDevice::init() fails (C6 controller logs
+          "ble ll env init error code:-13"), bleStart() now bails out and BLE
+          stays off until reboot. Previously it carried on into getNumBonds()
+          on an un-started host -> NULL mutex -> panic ~1 s after WiFi up.
+          Free internal heap is logged just before BLE init.
+        - Root cause of both the BLE -13 and the web UI serving broken pages:
+          internal heap. Measured 23.7 KB free / 14 KB largest block before
+          BLE init (IRAM +28 KB vs the pre-BLE build on the newer core, plus
+          static RAM growth). Freenove WS2812 lib dropped - it hard-codes a
+          256-LED RMT buffer (24 KB static) for our one LED; replaced by
+          OneLed (include/OpenHaldexC6_led.h) on the core's
+          rgbLedWriteOrdered(), same API/colour order/brightness behaviour.
+        - debugMemory (defs.h): heap + every task's stack high-water mark,
+          15 s after boot then every 60 s, to right-size task stacks.
+        - Task stacks sized from debugMemory: 10 frame tasks 8000/4000 ->
+          2560 (used ~250-450 B), AsyncTCP 16 KB -> 8 KB; updateTriggers
+          2000 -> 3072 and broadcastOpenHaldex 1000 -> 2048 (432 / 644 B
+          left - near overflow). With the LED change, BLE now starts (48 KB
+          free at init) but left only 10 KB, so the web UI still died on
+          page load; this frees ~44 KB more.
+        - Long Learn reworked around "prove all-on, then test each static block":
+          core = lock-driven blocks (frameEditLockDriven, always sent); all-on
+          must give a smooth 100% sweep or the run stops; two all-on reads at
+          CF 20/40/70/100 give the reference + noise threshold; each static
+          block is then tested OFF ON ITS OWN at those points (was: cumulative
+          removal, each block judged against a shrinking set); full
+          confirmation sweep with all no-effect blocks off together, else
+          everything left on (interaction flag). ~6-8 min on Gen5. Gen5
+          BPK Adjust kept (hunting -> Fix Hunting + ceiling walk), result kept.
 
 V9.01.0 - OpenHaldex Edge v9: upstream v9 base (bridge mode, BLE, Long Learn, OTA channels) plus the
           Edge firmware work (https://github.com/Kile-Thomson/OpenHaldex-Edge). Firmware side:
@@ -191,6 +256,15 @@ V9.01.0 - OpenHaldex Edge v9: upstream v9 base (bridge mode, BLE, Long Learn, OT
           "broadcastOpen"/"udsMQBEn"/"learnTable") are migrated once. Drive mode self-heals.
         - Stock passthrough also skips the brake/handbrake override; handlers answer on every path.
         - Native test env (pio test -e native) and an esp32c6-release env (all debug flags off).
+
+V9.01.0-beta2 - upstream V9.00.6 merged into Edge (no version bump, same 9.01.0 firmware line):
+        - Taken from upstream: BLE init-failure bail-out, OneLed instead of the Freenove
+          WS2812 lib, one standalone-frames task instead of ten, debugMemory, Long Learn
+          per-block test with reference noise, sleep auto-setup (KL15 + parked-bus
+          measurement), Danger Zone through Motor_11 torque, ESP-NOW gauge status and signed
+          commands, 0x2BE9 pump voltage scaling (little-endian x 0.1 V).
+        - Kept from Edge: CAN queues 128/64, mutex discipline, speed interlock on Long Learn,
+          lastMode fix, light-sleep lock, security model, map slots, OTA single-file.
 
 */
 

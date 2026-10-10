@@ -1,5 +1,6 @@
 #include <OpenHaldexC6_EEP.h>          // include the header for EEPROM/preference functions
 #include <OpenHaldexC6_Calculations.h> // for haldexLearnTable and learn globals
+#include <OpenHaldexC6_ESPNow.h>       // espNowEnabled / espNowControl
 
 // Persisted settings: ONE NVS namespace ("openhaldex") with a "seeded" sentinel.
 //
@@ -63,6 +64,10 @@ static bool loadSettingsFrom(Preferences &src)
   canSleepEnabled = src.getBool("canSleepEn", true);                     // load CAN-wake light sleep enable
   canSleepAggressive = src.getBool("canSleepAggr", false);               // load aggressive CAN sleep enable
   lpWakeThresholdFps = src.getUShort("lpWakeFps", 1100);                 // load LP wake threshold (fps)
+  sleepCalState = src.getUChar("sleepCal", SLEEP_CAL_NONE);              // load sleep auto-setup state
+  sleepCalAvgFps = src.getUShort("sleepCalAvg", 0);                      // load parked-bus average (fps)
+  espNowEnabled = src.getBool("espNowOn", true);                         // load gauges over ESP-NOW (default on)
+  espNowControl = src.getBool("espNowCtl", true);                        // load gauge control over ESP-NOW (default on)
   benchMode = src.getBool("benchMode", false);                           // load bench mode
   bleEnabled = src.getBool("bleEn", true);                               // load BLE enable
   blePasskey = src.getUInt("blePasskey", 0);                             // load BLE pairing code (0 = generate)
@@ -225,6 +230,10 @@ static void persistSettingsToPref()
   pref.putBool("canSleepEn", canSleepEnabled);               // CAN-wake light sleep enable
   pref.putBool("canSleepAggr", canSleepAggressive);          // aggressive CAN sleep enable
   pref.putUShort("lpWakeFps", lpWakeThresholdFps);           // LP wake threshold (fps)
+  pref.putUChar("sleepCal", sleepCalState);                  // sleep auto-setup state
+  pref.putUShort("sleepCalAvg", sleepCalAvgFps);             // parked-bus average (fps)
+  pref.putBool("espNowOn", espNowEnabled);                   // gauges over ESP-NOW
+  pref.putBool("espNowCtl", espNowControl);                  // gauge control over ESP-NOW
   pref.putBool("benchMode", benchMode);                      // bench mode
   pref.putBool("bleEn", bleEnabled);                         // BLE enable
   pref.putUInt("blePasskey", blePasskey);                    // BLE pairing code

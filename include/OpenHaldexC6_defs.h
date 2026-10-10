@@ -16,7 +16,7 @@
 #include <OpenHaldexC6_canID.h>
 #include <OpenHaldexC6_ver.h>
 
-#include "Freenove_WS2812_Lib_for_ESP32.h" // for RGB LED
+#include <OpenHaldexC6_led.h>              // for RGB LED (single WS2812, replaces Freenove lib - see header)
 #include <Preferences.h>                   // for eeprom/remember settings
 
 #include <WiFi.h>    // included for WiFi pages
@@ -51,6 +51,7 @@
 #define detailedDebugIO 0
 #define detailedDebugArray 0
 #define debugCANSleep 0
+#define debugMemory 0
 #else
 #define enableDebug 0               // set to 1 to enable debug messages over Serial; set to 0 to disable
 #define detailedDebug 0             // set to 1 to enable more detailed debug messages (only recommended when debugging specific issues, as it can be very verbose)
@@ -62,6 +63,7 @@
 #define detailedDebugIO 0           // set to 1 to enable detailed IO debug messages (only recommended when debugging IO-related issues, as it can be very verbose)
 #define detailedDebugArray 0        // set to 1 to enable detailed debug messages for arrays (like throttle/speed/lock curves) - only recommended when debugging issues related to those, as it can be very verbose
 #define debugCANSleep 0             // set to 1 to skip the 5-min idle/60-s count and sleep after ~2 s with no clients
+#define debugMemory 1               // set to 1 to print heap + every task's unused stack 15 s after boot, then every 60 s
 #endif
 
 // Learn-sweep speed interlock: the sweep ramps the clutch to full lock over
@@ -172,16 +174,7 @@ extern twai_message_t rx_message_chs; // incoming chassis message
 extern twai_message_t tx_message_hdx; // outgoing haldex message
 extern twai_message_t tx_message_chs; // outgoing chassis message
 
-extern TaskHandle_t handle_frames1000;           // for enabling/disabling 1000ms frames
-extern TaskHandle_t handle_frames250;            // for enabling/disabling 250ms frames
-extern TaskHandle_t handle_frames200;            // for enabling/disabling 200ms frames
-extern TaskHandle_t handle_frames100;            // for enabling/disabling 100ms frames
-extern TaskHandle_t handle_frames50;             // for enabling/disabling 50ms frames
-extern TaskHandle_t handle_frames25;             // for enabling/disabling 25ms frames
-extern TaskHandle_t handle_frames20;             // for enabling/disabling 20ms frames
-extern TaskHandle_t handle_frames13;             // for enabling/disabling 13ms frames
-extern TaskHandle_t handle_frames10;             // for enabling/disabling 10ms frames
-extern TaskHandle_t handle_gen41_dual_bus_rates; // dedicated Gen41 dual-bus cadence task
+extern TaskHandle_t handle_standaloneFrames;     // standalone frame scheduler (runs only while standalone)
 extern TaskHandle_t handle_broadcastOpenHaldex;  // OpenHaldex CAN broadcast task (suspended in aggressive sleep)
 extern TaskHandle_t handle_showHaldexState;      // serial state logger (suspended in aggressive sleep)
 extern TaskHandle_t handle_updateTriggers;       // notified by CAN_RX wake ISRs in aggressive sleep
@@ -211,7 +204,7 @@ struct StateLock
 };
 
 // for LED
-extern Freenove_ESP32_WS2812 strip; // 1 led, gpio pin, channel, type of LED
+extern OneLed strip; // 1 led, gpio pin, colour order
 
 // for mode changing (buttons & external inputs)
 extern InterruptButton btnMode;     // pin, GPIO_MODE_INPUT, state when pressed, long press, autorepeat, double-click, debounce
@@ -220,12 +213,7 @@ extern InterruptButton btnMode_ext; // pin, GPIO_MODE_INPUT, state when pressed,
 extern AsyncWebServer webServer;
 
 // functions
-void frames10(void *arg);
-void frames20(void *arg);
-void frames25(void *arg);
-void frames100(void *arg);
-void frames200(void *arg);
-void frames1000(void *arg);
+void standaloneFramesTask(void *arg);
 
 void parseCAN_chs(void *arg);
 void parseCAN_hdx(void *arg);
@@ -328,6 +316,9 @@ extern bool received_kickdown;
 extern float received_pedal_value;
 extern uint16_t received_vehicle_speed;
 extern uint16_t received_vehicle_rpm;
+extern bool received_kl15;          // MQB ZAS_Kl_15 (ignition on), from Klemmen_Status_01
+extern uint32_t lastKl15Ms;         // millis() of the last Klemmen_Status_01; 0 = never seen
+bool ignitionOn();                  // KL15 on and fresh; false when unknown
 extern uint16_t received_vehicle_boost;
 extern uint8_t haldexGeneration;
 // Steering-wheel angle magnitude (deg, abs) decoded from chassis CAN + last-seen time.
@@ -404,13 +395,18 @@ extern int32_t bpkForceSolfNm;
 // Last Motor_11 payload actually transmitted, for telemetry.
 extern volatile uint8_t bpkLastFrame[8];
 
-// Danger Zone: at a full 50:50 request, pin the ESP_14 coupling-range minimum
-// to the maximum so the Haldex is given no room to modulate and drives the pump
-// to full duty. Measured on the bench: ~99% PWM and ~10.5 A, versus ~56% PWM at
-// the same request with this off. Maximum clamping force, but the Haldex's
-// REPORTED engagement reads LOWER (80s rather than ~98%) because its estimate
-// backs off once the pressure relief valve opens. Off by default; persisted.
+// Danger Zone: at a full lock request (50:50, or Expert with lock_target > 99),
+// send Motor_11 in BPK packing with the torque ceiling raised to dangerZoneNm.
+// The 0CQ's pump duty follows the engine torque this frame claims, so the pump
+// goes past its normal ~60 % / 9-10 A and pegs the pressure relief valve.
+// Bench 2026-09-20 (0CQ, BPK): 220 Nm -> 58 % / 9 A; 285 Nm pegs the PRV;
+// 320 Nm -> 90 % / 11.0 A; 400 Nm -> 95 % / 11.5 A. Maximum clamping force,
+// but the Haldex's REPORTED engagement reads LOWER (80s rather than ~98%)
+// because its estimate backs off once the relief valve opens. ESP_14 Min/Max
+// pinning (the original implementation) was measured to do nothing on the 0CQ.
+// Off by default; the toggle is persisted, the Nm value is a lab tunable.
 extern bool dangerZoneEnabled;
+extern uint16_t dangerZoneNm; // 320 - used only when it exceeds bpkCeilingNm
 
 // ---- Serial lab byte overrides ----------------------------------------------
 // Force an individual byte of any generated standalone frame, so each byte's
@@ -489,6 +485,7 @@ extern uint64_t frameEditMask[FE_GEN_COUNT];                 // passthrough (nor
 extern uint64_t frameEditMaskSA[FE_GEN_COUNT];               // standalone enable bits per generation
 extern const uint64_t frameEditMaskDefaults[FE_GEN_COUNT];   // normal-mode defaults (historically-edited frames on)
 extern const uint64_t frameEditMaskDefaultsSA[FE_GEN_COUNT]; // standalone defaults (all frames on)
+extern const uint64_t frameEditLockDriven[FE_GEN_COUNT];     // blocks whose payload follows lock_target (Long Learn core)
 extern const FrameEditBlock frameEditBlocks[];            // descriptor table for UI/API
 extern const uint16_t frameEditBlockCount;                // number of entries in frameEditBlocks[]
 int frameEditGenIdx(uint8_t generation);                  // haldexGeneration -> FE_GEN_* (-1 if not gated)
@@ -559,6 +556,17 @@ extern bool analyzerSerial; // Serial GVRET (1 Mbaud, SavvyCAN serial connection
 // Default 1100 fps on chassis bus; Standalone uses a hardcoded 50 fps threshold.
 // Frames required = lpWakeThresholdFps * lowPowerProbeMs / 1000
 extern uint16_t lpWakeThresholdFps; // runtime wake threshold (fps), adjustable via UI
+
+// One-shot sleep auto-setup (offered for Gen5): measure the parked chassis bus
+// for 15 min, then wake threshold = average + SLEEP_CAL_MARGIN_FPS.
+#define SLEEP_CAL_NONE 0     // never offered
+#define SLEEP_CAL_ARMED 1    // waiting for the car to be left parked
+#define SLEEP_CAL_DONE 2     // measured; threshold set
+#define SLEEP_CAL_DECLINED 3 // user said no; don't ask again
+#define SLEEP_CAL_WINDOW_S 900
+#define SLEEP_CAL_MARGIN_FPS 300
+extern uint8_t sleepCalState;    // persisted
+extern uint16_t sleepCalAvgFps;  // parked-bus average measured by the auto-setup (persisted, for display)
 
 // Analyzer protocol for the TCP bridge (GVRET for SavvyCAN, Lawicel/SLCAN for CANHacker).
 #define ANALYZER_PROTOCOL_GVRET 0
@@ -666,7 +674,7 @@ extern bool udsClutchTempValid;       // true once 0x2BF1 decoded this session
 extern bool udsCoolingFinTempValid;   // true once 0x2BE4 decoded this session
 extern float udsClutchCurrent;   // 0x2BE6: BE16 x 0.001 A
 extern uint8_t udsClutchPWM;     // 0x2BE7: raw % (1 byte, 0-100)
-extern float udsClutchVoltage;   // 0x2BE9: BE16 x 0.001 V
+extern float udsClutchVoltage;   // 0x2BE9: LE16 x 0.1 V
 extern uint8_t udsBlockagePct;   // unconfirmed DID - always 0
 extern volatile uint32_t udsLastDecodeMs; // millis() of the last decoded UDS value (0 = none); freshness for BLE Diag
 
@@ -725,9 +733,6 @@ extern uint32_t rxtxcount; // frame counter
 extern uint32_t stackCHS;
 extern uint32_t stackHDX;
 
-extern uint32_t stackframes13;
-extern uint32_t stackframes50;
-extern uint32_t stackframes250;
 
 extern uint32_t stackbroadcastOpenHaldex;
 extern uint32_t stackshowHaldexState;
