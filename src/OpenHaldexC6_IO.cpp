@@ -607,7 +607,7 @@ void updateTriggers(void *arg)
                                  : "CAN active");
           rebootWiFi = true;
         }
-        // CPU auto-sleeps via esp_pm_configure(light_sleep_enable=true) in main.cpp.
+        // Light sleep stays blocked by the PM lock except while deliberately asleep.
         break;
       }
     }
