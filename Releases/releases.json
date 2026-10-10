@@ -18,6 +18,23 @@
         "size": 458752,
         "sha256": "c21e64fa0c02d8ed3f3795ea8514d4c4f2883e74e7f4b248f093bc5945c7a5e3"
       }
+    },
+    {
+      "version": "9.01.0-beta2",
+      "channel": "beta",
+      "date": "2026-10-10",
+      "ota": true,
+      "notes": "Merges Forbes's V9.00.6: BLE boot-loop fix, much less RAM, a faster per-block Long Learn, sleep auto-setup and ESP-NOW gauges. An OTA update from beta1.",
+      "firmware": {
+        "path": "V9.01.0-beta2/firmware.bin",
+        "size": 1682432,
+        "sha256": "1bda5ce76915ecc6aab2c253a3e04258b86823be799b958070e927517619689e"
+      },
+      "filesystem": {
+        "path": "V9.01.0-beta2/littlefs.bin",
+        "size": 458752,
+        "sha256": "dbcc35bb4e00f353685ff11107871905b4b55d9e74a759e1379c13250442a0d9"
+      }
     }
   ]
 }
