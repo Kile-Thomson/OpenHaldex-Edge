@@ -11,7 +11,7 @@
 # OpenHaldex Edge
 
 > [!IMPORTANT]
-> **OpenHaldex Edge is a fork of [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6).** Forbes did the hard work: the reverse engineering, the Gen2, Gen4 and Gen5 logic, the hardware and the open-source release. Edge starts from their V9.00.0 firmware and adds to it. Same hardware, same wiring, same modes.
+> **OpenHaldex Edge is a fork of [Forbes Automotive OpenHaldex-C6](https://github.com/Forbes-Automotive/OpenHaldex-C6).** Forbes did the hard work: the reverse engineering, the Gen2, Gen4 and Gen5 logic, the hardware and the open-source release. Edge starts from their V9.00.6 firmware and adds to it. Same hardware, same wiring, same modes.
 >
 > Edge uses the **same MIT licence** as upstream, with nothing added to it. There are no plans to restrict it, now or later. Edge's own code is contributed under the same terms. See [Licensing](#licensing).
 >
@@ -39,7 +39,7 @@ Edge takes Forbes's platform and puts day-to-day use first. The whole controller
 
 Everything below runs on the Forbes hardware.
 
-**From Forbes Automotive (V9.00.0, all included):**
+**From Forbes Automotive (V9.00.6, all included):**
 
 - Gen1, Gen2, Gen4 (PQ, GM/SAAB) and Gen5 (MQB 0CQ, 0AY, VAQ) control, Standalone mode, Expert mode with the speed/throttle table.
 - Learn Haldex, Long Learn and per-generation CAN frame blocks.
@@ -50,6 +50,7 @@ Everything below runs on the Forbes hardware.
 - Live state and signed commands over ESP-NOW for a can2gauge gauge, and the sleep auto-setup.
 - OTA updates with rollback protection, plus the release channels from PR #43.
 - The PCB, enclosure and BOM files, now in this repo too.
+- The current build toolchain (Arduino 3.3.12 on IDF 5.5.5) and the smaller AsyncTCP task stack.
 
 **Added by Edge:**
 
@@ -64,20 +65,25 @@ Everything below runs on the Forbes hardware.
 ## Contents
 
 - [Before you flash: upgrading from Edge v8 or upstream](#before-you-flash-upgrading-from-edge-v8-or-upstream)
+- [Overview and hardware](#overview-and-hardware)
+- [Purchase](#purchase)
 - [Supported platforms](#supported-platforms)
 - [Modes](#modes)
+- [Status LED](#status-led)
 - [Basic tab: when lock is allowed](#basic-tab-when-lock-is-allowed)
 - [Expert mode](#expert-mode)
 - [Calibrate: Learn, lock calibration and geometry](#calibrate-learn-lock-calibration-and-geometry)
 - [Long Learn](#long-learn)
 - [Frame blocks](#frame-blocks)
 - [Changing modes](#changing-modes)
+- [CAN broadcast and change-mode request](#can-broadcast-and-change-mode-request)
 - [WiFi setup](#wifi-setup)
 - [Home WiFi (bridge mode)](#home-wifi-bridge-mode)
 - [Backup & Restore](#backup--restore)
 - [DashCAN app (Bluetooth)](#dashcan-app-bluetooth)
 - [Gauges over WiFi (ESP-NOW)](#gauges-over-wifi-esp-now)
-- [Low power mode and Bench Mode](#low-power-mode-and-bench-mode)
+- [Low power mode](#low-power-mode)
+- [Bench Mode](#bench-mode)
 - [Live diagnostics](#live-diagnostics)
 - [CAN sniffing](#can-sniffing-savvycan--gvret)
 - [Installation](#installation)
@@ -104,6 +110,28 @@ Things worth knowing when you move from Edge v8:
 - **The learn sweep needs the car stationary** (5 km/h or less). It refuses to start, or aborts, in a moving car.
 - **The steering-angle lock taper is on by default on a fresh unit**, with the curve described under [Basic tab](#basic-tab-when-lock-is-allowed). A unit that carries Edge v8 settings keeps whatever its steering setting was.
 - **The default correction factor** used before you run a learn stays Edge's (lock + 20)/2, which matches the fit written in the source. Upstream's code currently computes lock/2 + 20; a pull request to line the two up is open upstream. Run the learn and it stops mattering.
+
+---
+
+## Overview and hardware
+
+OpenHaldex sits between the car and the OEM Haldex controller. By default it passes everything through (Stock), and in the other modes it rewrites or generates the Haldex's CAN messages to ask for a different amount of lock. The Gen2, Gen4 (including GM) and Gen5 logic comes from Forbes Automotive; Gen1 comes from A Banging Donk's original project. Gen3 is not supported.
+
+The board is built around an **ESP32-C6 Mini** with WiFi and Bluetooth LE. It has ESD and transient protection and a built-in fuse. Forbes designed it to replace the earlier Teensy 4 (OpenHaldex T4) version, which had no wireless and no on-device setup. On the board:
+
+- Two TWAI (CAN) controllers, one to the car's chassis bus and one to the Haldex.
+- An external mode-button input and an on-board RGB LED. See [Status LED](#status-led).
+- Brake and handbrake switch inputs, and brake and handbrake outputs for the differentials that need them (brake out on Generation 1 and 2, handbrake out on Generation 1). Some of these outputs need a 10k pulldown resistor on certain platforms (a note from the Forbes hardware docs).
+
+![OpenHaldex-C6 board overview](/Images/BoardOverview.png)
+
+The pinout is under [Installation](#installation), and the Gerbers and enclosure are under [PCB and enclosure](#pcb-and-enclosure).
+
+---
+
+## Purchase
+
+Assembled modules are sold by Forbes Automotive if you would rather not build one: **[OpenHaldex C6 Controller - Forbes Automotive](https://forbes-automotive.com/products/openhaldex-controller?utm_source=github&utm_medium=readme&utm_campaign=openhaldex)**. Edge runs on that hardware.
 
 ---
 
@@ -142,6 +170,12 @@ If you turn on **Disable Controller** (Settings), the module drops to Stock, and
 ![OpenHaldex Edge web UI: dashboard, live lock trace, expert 3D map and diagnostics](/Images/UIDemo.png)
 
 *Dashboard with the engagement gauge, the last 15 seconds of target against actual lock, the Expert 3D map and Diagnostics.*
+
+---
+
+## Status LED
+
+The on-board RGB LED shows the current mode, using the colours in the [Modes](#modes) table. Its brightness is a setting (0 to 255, default 255) in Settings or in the DashCAN app. The LED blinks white four times when the WiFi access point restarts. It is off while the module is asleep in [low power mode](#low-power-mode) and comes back on waking.
 
 ---
 
@@ -217,7 +251,7 @@ A **chassis notes** box (saved on the module, up to 200 characters) and **Export
 
 On the Calibrate tab, the **Frame blocks** list shows each CAN frame OpenHaldex can edit for your generation, with a switch for each. Switched off, the car's own message passes through untouched. Switched on, OpenHaldex modifies or generates that frame. Changes apply immediately and are saved per generation, and **Reset to Defaults** restores the generation's standard set.
 
-You would use this to find which edited frame upsets a learn or raises a fault code, or to tailor a car that behaves unusually. Most users never need to touch it; Long Learn does the same job automatically. It applies in both normal and Standalone mode, and only to the generation currently selected.
+You would use this to find which edited frame upsets a learn or raises a fault code, to tailor a car that behaves unusually, or to add and remove signals while developing a new feature. Most users never need to touch it; Long Learn does the same job automatically. It applies in both normal and Standalone mode, and only to the generation currently selected.
 
 ---
 
@@ -229,18 +263,44 @@ You would use this to find which edited frame upsets a learn or raises a fault c
 
 **WiFi.** The web UI at `192.168.1.1` or `openhaldex.local`.
 
-**CAN.** Send a mode number to the module. This needs **Broadcast over CAN** switched on in Settings (on by default on a fresh unit). The module listens on `0x6A0` and reads Byte 0 as the mode number.
+**CAN.** Send a mode number to `0x6A0`. See [CAN broadcast and change-mode request](#can-broadcast-and-change-mode-request) below.
 
-| Byte 0 | Mode |
-|--------|------|
-| 0 | Stock |
-| 1 | FWD |
-| 2 | 50:50 |
-| 3 | 60:40 |
-| 4 | 75:25 |
-| 5 | Expert |
+**Force modes from the car's own signals.** Each of these is optional, off by default, and set up in Settings. Each has its own target mode (default 50:50). A priority setting decides which one wins when more than one is active.
 
-The same switch makes the module broadcast its state every cycle on `0x6B0`. Turning it on adds those two CAN IDs to your bus, so check nothing else already uses them.
+- **TC / ESP button.** Pressing the traction control button to switch ESP off triggers force mode. The module reads the ESP-disabled bit (byte 7 on PQ, byte 6 on MQB).
+- **Hazard switch.** While the hazards flash, the force target applies. Read from Blinkmodi_02 (`0x366`) on MQB. Pick FWD as the target and you get a way to open the coupling for towing, recovery or limping home.
+- **External button.** The hold behaviour above.
+
+---
+
+## CAN broadcast and change-mode request
+
+One setting, **Broadcast over CAN** (Settings, on by default on a fresh unit), switches on both of these:
+
+- the module reads mode-change requests on `0x6A0`;
+- the module sends its state on `0x6B0`.
+
+> [!NOTE]
+> Turning this on puts two CAN IDs on your bus. Check nothing else on the car already uses them.
+
+### Change-mode request
+
+Send a standard 11-bit frame to `0x6A0` with the mode number in byte 0 (`data[0]`). If you send 8 bytes, set the unused ones to `0x00`. With Broadcast over CAN off the module ignores the frame, and a value above 5 is ignored too.
+
+| CAN ID | Byte 0 | Mode |
+|--------|--------|------|
+| `0x6A0` | `0x00` | Stock |
+| `0x6A0` | `0x01` | FWD |
+| `0x6A0` | `0x02` | 50:50 |
+| `0x6A0` | `0x03` | 60:40 |
+| `0x6A0` | `0x04` | 75:25 |
+| `0x6A0` | `0x05` | Expert |
+
+The request is read from the chassis bus.
+
+### Broadcast state
+
+The module sends this on `0x6B0` every cycle, as 8 data bytes. Aftermarket ECUs or displays can use it to show the Haldex state.
 
 ```
 data[0] = reserved (always 0)
@@ -249,15 +309,9 @@ data[2] = engagement raw byte returned by the Haldex
 data[3] = lock target percent requested by the firmware (0-100)
 data[4] = vehicle speed in km/h, clamped at 255
 data[5] = mode override flag
-data[6] = current mode number (0-5)
+data[6] = current mode number (0-5, same numbers as the request table)
 data[7] = pedal value (0-100%)
 ```
-
-**Force modes from the car's own signals.** Each of these is optional, off by default, and set up in Settings. Each has its own target mode (default 50:50). A priority setting decides which one wins when more than one is active.
-
-- **TC / ESP button.** Pressing the traction control button to switch ESP off triggers force mode. The module reads the ESP-disabled bit (byte 7 on PQ, byte 6 on MQB).
-- **Hazard switch.** While the hazards flash, the force target applies. Read from Blinkmodi_02 (`0x366`) on MQB. Pick FWD as the target and you get a way to open the coupling for towing, recovery or limping home.
-- **External button.** The hold behaviour above.
 
 ---
 
@@ -280,15 +334,17 @@ There is no default password and nothing to build or flash to set one.
 
 Use your phone's normal WiFi settings, not its Personal Hotspot. The module is the access point: it broadcasts its own network like a router does, and your phone joins it.
 
-The module has no internet connection and does not need one. Your phone will say the network has no internet. That is expected. If your phone keeps dropping the network because of that warning, choose "Stay connected". The module does not act as a captive portal and does not hand out a gateway or DNS, so the phone keeps using mobile data for everything else.
+The module has no internet connection and does not need one. Your phone will say the network has no internet. That is expected; dismiss it. If your phone keeps dropping the network because of that warning, choose "Stay connected". The module answers the phone's internet check with a bare 404 (so no sign-in page opens) and hands out no gateway or DNS, so the phone keeps using mobile data for everything else. That includes the [GitHub update check](#updating-over-wifi), which normally works straight from the module's own WiFi.
+
+Do not use your phone's Personal Hotspot for this. A hotspot shares your phone's data with other devices, which is not what is needed here. If you get stuck, forget the network on the phone and join again; the module runs the same whether or not anything is connected.
 
 ---
 
 ## Home WiFi (bridge mode)
 
-Optional. The module can also join a home or garage WiFi network as a client while keeping its own access point running. Then it is reachable at `openhaldex.local`, or at the address the card shows, from any phone or laptop already on that network. Leave the field blank and nothing changes.
+Optional. The module can also join a home or garage WiFi network as a client while keeping its own access point running. Then it is reachable at `openhaldex.local`, or at the address the card shows, from any phone or laptop already on that network, without switching WiFi to the module. It is also the way to update or back up from a laptop at home, and the fallback for a phone that drops mobile data on the module's own WiFi. Leave the field blank and nothing changes.
 
-Set it up on the **Diagnostics** tab under **Home WiFi (Bridge Mode)**: pick the network from the scan (or type a hidden one), enter its password, press **Save & Apply**. The card then shows the connection state, the address and the signal strength. The same card is repeated on the **Update** tab, because the phone needs internet to check GitHub for updates, and this is how it gets both.
+Set it up on the **Diagnostics** tab under **Home WiFi (Bridge Mode)**: pick the network from the scan (or type a hidden one), enter its password, press **Save & Apply**. The card then shows the connection state, the address and the signal strength. The same card is repeated on the **Update** tab, because this is the fallback when the GitHub update check cannot get internet from the module's own WiFi. Endpoints: `GET/POST /api/wifi/sta` with `{ssid, password}` (an empty `ssid` turns it off), `POST /api/wifi/sta/reset` and `GET /api/wifi/scan` (asynchronous; poll until `scanning` is false).
 
 > [!IMPORTANT]
 > Putting the module on your home network means other devices on that network can reach it. So a browser coming in through the home network has to sign in: user name `admin`, password your access point's WiFi password. The check covers every page and every `/api` and `/ota` request. A phone joined directly to the module's own access point does not sign in; joining that network already needed the password. The CAN analyzer's host-to-CAN injection is also refused for home-network clients.
@@ -296,7 +352,7 @@ Set it up on the **Diagnostics** tab under **Home WiFi (Bridge Mode)**: pick the
 Things to know:
 
 - **One radio.** The ESP32-C6 shares one radio between its access point and the home connection. A scan or connection attempt pulls it off the access point's channel for a second or two. So the module only looks for your home network for 20 seconds after starting, then once every 5 minutes. A saved network cannot keep interrupting the access point while the car is away from home.
-- **Sleep.** Bridge mode mostly does not change [low power mode](#low-power-mode-and-bench-mode). With no CAN traffic and nobody using the UI, the module still sleeps after five minutes and drops off the home network. A browser that has the UI open through your router counts as a user, so an update over the bridge is not cut off.
+- **Sleep.** Bridge mode mostly does not change [low power mode](#low-power-mode). With no CAN traffic and nobody using the UI, the module still sleeps after five minutes and drops off the home network. A browser that has the UI open through your router counts as a user, so an update over the bridge is not cut off.
 - **Open networks.** A blank home-network password connects to an open network. The module accepts it; think before you do.
 - **The backup tool.** `tools/openhaldex_config.py` does not send a login. Use it while joined to the module's own WiFi.
 
@@ -337,7 +393,7 @@ The module talks Bluetooth LE to the **DashCAN** phone app, so the basics are on
 - The **first phone** pairs without a code (it may just ask you to confirm).
 - After that, **every new phone needs a 6-digit pairing code**, shown on an already paired phone and in the web UI.
 
-**On the module.** The Bluetooth card on the Diagnostics tab has the enable switch, a phone-connected indicator, the pairing code and **Forget Paired Phones**. Forgetting removes every paired phone, makes a new code, and lets the next phone pair without one (also forget the device in the phone's own Bluetooth settings). Bluetooth sleeps with the WiFi in [low power mode](#low-power-mode-and-bench-mode).
+**On the module.** The Bluetooth card on the Diagnostics tab has the enable switch, a phone-connected indicator, the pairing code and **Forget Paired Phones**. Forgetting removes every paired phone, makes a new code, and lets the next phone pair without one (also forget the device in the phone's own Bluetooth settings). Bluetooth sleeps with the WiFi in [low power mode](#low-power-mode).
 
 > [!NOTE]
 > Until the first phone has paired, on a new module or right after Forget Paired Phones, anyone in Bluetooth range could be that first phone. Pair yours straight away. Firmware is never updated over Bluetooth.
@@ -357,25 +413,72 @@ Both switches are on the Diagnostics tab, in the *Gauges over WiFi (ESP-NOW)* ca
 - **Send status to gauges.** Off stops the broadcast and the link.
 - **Allow gauges to change settings.** Off keeps the broadcast but refuses every command.
 
-ESP-NOW follows the WiFi access point: it starts when the access point is up and stops before the WiFi goes to sleep, so a gauge goes quiet while the car is parked in [low power mode](#low-power-mode-and-bench-mode). The settings are part of Backup & Restore.
+ESP-NOW follows the WiFi access point: it starts when the access point is up and stops before the WiFi goes to sleep, so a gauge goes quiet while the car is parked in [low power mode](#low-power-mode). The settings are part of Backup & Restore.
 
 ---
 
-## Low power mode and Bench Mode
+## Low power mode
 
-The module is made to live on a **permanent +12 V** feed. With low power mode working, upstream's figures are about 14 mA asleep (car off, WiFi off, CAN quiet) and about 50 mA awake. Those numbers are inherited from upstream and have not been measured on Edge builds. Treat them as a guide.
+The module is made to live on a **permanent +12 V** feed. Upstream quotes about 14 mA asleep (car off, WiFi off, CAN quiet) and about 50 mA awake. Those figures are Forbes's and have not been measured on Edge builds. Edge differs in one way that matters: it does not use automatic CPU light sleep (see Layer 2), so it probably draws more than that asleep. Treat the numbers as a guide.
 
-Everything is on the Settings tab.
+There are three layers, each building on the one before. All are set on the Settings tab.
 
-- **CAN Sleep** (on by default). After 5 minutes with no one connected to the WiFi, no one with the UI open, and CAN traffic below the wake threshold, the module shuts the WiFi access point and the LED off and lets the CPU light-sleep. The first CAN frame above the threshold brings it back. Bluetooth sleeps and wakes with the WiFi. With CAN Sleep switched off, none of this happens and the WiFi stays up.
-- **CAN Sleep (Aggressive)** (off by default). Also puts the CAN transceivers in standby, drops the CPU minimum clock to 10 MHz and trims the WiFi transmit power. Waking is by interrupt on the CAN receive lines. Use it if the car sits for days and you want the lowest standby current.
-- **LP Wake Threshold** (default 1100 frames per second). In an OEM install the module stays awake while the chassis bus is at or above this rate and sleeps below it. Set it above your car's parked-bus rate and below its driving rate. To find the parked rate: park and lock the car, wait until the chassis bus goes quiet, join the module's WiFi (it stays awake while you are connected), and watch the **Chassis fps** and **Haldex fps** counters on the Settings tab. In Standalone mode there is no chassis bus, so the module wakes on a fixed 50 frames per second of Haldex traffic and this slider does not apply.
-- **Set sleep up automatically.** Finds the wake threshold for you (OEM installs only; the UI offers it once when the generation is Gen5, and again whenever you pick Gen5). Once armed, the module stays awake until the car is left parked: stopped, engine off, ignition off (read from the car's Klemmen_Status_01 frame, so it needs that frame on the chassis bus), nobody connected to the WiFi and real CAN seen since power-up. It then measures the chassis frame rate for 15 minutes, sets the wake threshold to that average plus 300 frames per second (rounded up to 10), switches CAN Sleep and CAN Sleep (Aggressive) on and disarms itself. Any break in those conditions restarts the 15 minutes. The result and the measured average show under the switch. It runs once; tick the switch again to repeat it.
-- **USB.** A computer on the module's USB port keeps the WiFi up, so you can use the dashboard on the bench without a CAN source.
+### Layer 1: idle AP shutdown (on with CAN Sleep, which is on by default)
 
-If your module is on a switched ignition feed, low power mode saves little and is optional.
+After **5 minutes** with no WiFi clients, no one with the UI open, and the chassis bus below the wake threshold, the module shuts down the WiFi access point, Bluetooth, the ESP-NOW gauge link and the LED. Turning **CAN Sleep** off keeps them up permanently. When the frame rate rises above the threshold again (car unlocked or started), WiFi comes back on its own.
 
-### Bench Mode
+### Layer 2: CAN Sleep (on by default)
+
+The **CAN Sleep** switch turns the sleep logic on. With it on, the CPU clock scales between 40 and 160 MHz, following load. The CAN transceivers stay powered and listening, so the first frame above the threshold wakes the module.
+
+Edge keeps the CPU running while the module is "asleep". Upstream lets the CPU light-sleep, but on the C6 the CAN controller can power down in light sleep and come back stopped, with nothing to wake it, which leaves a dead module until a replug. Edge turns automatic light sleep off, so the CAN receive task, the frame counter and the wake check always keep running, and a stopped CAN controller is restarted on its own.
+
+The clock limits are set at boot, so toggling CAN Sleep takes full effect after a restart. This layer is the recommended starting point.
+
+### Layer 3: CAN Sleep (Aggressive) (off by default, builds on Layer 2)
+
+**CAN Sleep (Aggressive)** keeps everything above and also:
+
+- puts the CAN transceivers in standby;
+- drops the CPU minimum clock to 10 MHz;
+- trims the WiFi transmit power;
+- wakes by interrupt: each CAN receive line triggers on the first bus edge and brings the transceivers back within microseconds.
+
+Use it when the car sits unused for days and you want the lowest standby current.
+
+### How to set it up
+
+Every car idles its CAN bus at a different rate, so the **LP Wake Threshold** (default 1100 frames per second) has to sit just above your car's parked rate. While the chassis bus is at or above the threshold the module stays awake; below it, it sleeps.
+
+**Gen5: automatic.** Selecting a Gen5 generation asks *Enable CAN sleep and set it up automatically?* (and asks again whenever you switch back to Gen5). Say yes, then just use the car. The next time it is left with no phone connected, the module:
+
+1. switches on CAN Sleep and CAN Sleep (Aggressive);
+2. waits until the car is parked: speed 0, engine off and ignition off (`ZAS_Kl_15` in Klemmen_Status_01, `0x3C0`), with real CAN seen since power-up;
+3. averages the chassis frame rate for **15 minutes**, restarting the count if a phone connects, the ignition comes on or the car moves;
+4. sets the LP Wake Threshold to that average plus 300 frames per second (rounded up to 10) and saves it.
+
+It runs once. Sleep stays off until it has finished, so the module never sleeps on a wrong threshold. The Controller Options card shows *armed* or the measured average; tick the switch again to repeat it.
+
+**Manual (any generation).**
+
+1. Park and lock the car. Wait 15 minutes, or until the chassis bus goes quiet.
+2. Stay joined to the module's WiFi, which keeps it awake. On the Settings tab watch the **Chassis fps** and **Haldex fps** counters and note the highest reading while the car sleeps. Some cars go fully quiet; others keep a gateway heartbeat of several hundred frames per second.
+3. Set the **LP Wake Threshold** a few hundred above that reading, for example 1100 for a car parked at 800.
+4. Make sure **CAN Sleep** (and optionally **CAN Sleep (Aggressive)**) is on, then disconnect from the WiFi.
+
+The module now sleeps and wakes when the frame rate rises above the threshold.
+
+> [!NOTE]
+> **Standalone mode:** with no chassis bus the slider does not apply. The module wakes on a fixed 50 frames per second of Haldex-bus traffic.
+
+> [!NOTE]
+> **Switched-ignition installs:** if the module is already powered off with the ignition, low power mode saves little and is optional.
+
+A computer on the module's USB port keeps the WiFi up, so you can use the dashboard on the bench without a CAN source.
+
+---
+
+## Bench Mode
 
 The module cannot tell a harnessed car that is asleep from no harness at all: both look like zero CAN traffic. So on the bench with CAN Sleep on, the WiFi drops after five minutes. **Bench Mode** (Settings, under CAN Sleep) holds the WiFi up regardless.
 
@@ -387,8 +490,10 @@ It clears itself. The moment either CAN bus shows traffic, Bench Mode switches i
 
 OpenHaldex can ask the Haldex for live measurements and show them in the web UI, as a scan tool would. This uses the module's diagnostic channel, so it is **off by default** (Settings > **Enable Live Diagnostics**). It picks the protocol from the generation you set.
 
-- **Gen5 (0CQ, 0AY, VAQ): UDS.** Terminal voltage, control module temperature, clutch temperature, cooling fin temperature, clutch current, PWM and voltage. Clutch and fin temperatures show `--` when the decoded value is not plausible.
-- **Gen2 and Gen4: KWP2000 over VW TP2.0.** Oil temperature, clutch plate temperature, supply voltage, oil pressure, estimated torque, clutch valve duty and current. Gen4 values are decoded; the raw measuring-block bytes are also exposed.
+- **Gen5 (0CQ, 0AY, VAQ): UDS** over ISO-TP. Terminal voltage, control module temperature, clutch temperature, cooling fin temperature, clutch current, PWM and voltage. Clutch and fin temperatures show `--` when the decoded value is not plausible. Forbes report the scaling was checked against VCDS on a heat-soaked bench module across the full temperature range.
+- **Gen2 and Gen4: KWP2000 over VW TP2.0.** The module opens a TP2.0 channel, starts a diagnostic session and reads the measuring blocks. Oil temperature, clutch plate temperature, supply voltage, oil pressure, estimated torque, clutch valve duty and current. Gen4 values are decoded and, per Forbes, confirmed against VCDS; the raw measuring-block bytes are also exposed so other values can be worked out.
+
+With Live Diagnostics on, the Dashboard's standard Haldex data card is replaced by the UDS card on Gen5 or the TP2.0 card on Gen2 and Gen4.
 
 If VCDS, ODIS or another scan tool is connected, the module detects its requests on the bus and pauses its own polling until the tool goes quiet, so the two do not collide. If a tool still will not connect, switch Live Diagnostics off. Extra CAN traffic can cause spurious dash errors.
 
@@ -409,7 +514,9 @@ The analyzer speaks GVRET to SavvyCAN, over WiFi (TCP port 23) or over the USB s
 2. In SavvyCAN: Connection > Add New Device Connection > Network Connection (GVRET).
 3. IP `192.168.1.1`, port `23`, CAN speed `500000`.
 
-For USB, enable SavvyCAN via Serial and add a Serial Connection (GVRET) at 500000 on the module's COM port.
+For USB, connect the module with a USB-C cable, enable SavvyCAN via Serial in Settings, then in SavvyCAN add a new device connection, Serial Connection (GVRET), pick the module's COM port and set the speed to 500000. No WiFi is needed.
+
+The SavvyCAN feature comes from Chris (meatro)'s OpenHaldex-S3. It is the easy way to see what the car says on its bus when you want to add a feature.
 
 Receiving is always allowed. **Host-to-CAN injection** (sending frames from SavvyCAN onto the car's bus) is refused until the access point password is set, and always refused for a client that came in through the home network.
 
@@ -551,7 +658,7 @@ Each tagged [release](https://github.com/Kile-Thomson/OpenHaldex-Edge/releases) 
 esptool.py --chip esp32c6 write_flash 0x0 openhaldex-c6-<tag>-merged.bin
 ```
 
-Or drag it into a browser flasher such as [ESP Web Tools](https://web.esptool.js.org/). `SHA256SUMS.txt` is attached so you can check the download. The release also carries the separate app, littlefs, bootloader and partition binaries.
+Or drag it into a browser flasher such as [ESP Web Tools](https://web.esptool.js.org/): connect the module, press Connect, pick its serial port, then flash the file at offset 0. Do not use Forbes's Module Software Updater page for Edge. It flashes their firmware, not this one. `SHA256SUMS.txt` is attached so you can check the download. The release also carries the separate app, littlefs, bootloader and partition binaries.
 
 The merged image blanks the settings area, so flashing it resets the module's settings.
 
@@ -572,7 +679,7 @@ The offsets come from the v9 partition table; the release's `manifest.json` on t
 
 Once a module is on the v9 flash layout, update it from its **Update** tab. Nothing on the module fetches from the internet itself: your browser gets the files and pushes them to the module.
 
-**Update from GitHub.** The browser needs internet while it can still reach the module. The reliable way is [bridge mode](#home-wifi-bridge-mode): join the module to your router, put the phone on the same network, and open the address the Home WiFi card shows. (On the module's own access point most phones turn mobile data off, so that route is best effort.)
+**Update from GitHub.** The browser needs internet while it can still reach the module. On the module's own WiFi the phone normally keeps mobile data (see [Connecting from a phone](#connecting-from-a-phone)), so the check works as it is. If your phone drops mobile data there anyway, or you are on a laptop at home, use [Home WiFi](#home-wifi-bridge-mode): join the module to your router, put the device on the same network, and open the address the Home WiFi card shows.
 
 1. Press **Check for updates**. The page contacts the module first, then fetches the release list from this repository's `ota` branch on GitHub, with a mirror as a fallback. If there is no internet it reads the module's bridge status and tells you what to do: join the network the module is on, fix a dropped link, or set up Home WiFi.
 2. Pick a version. Newer stable releases are listed; tick **Show beta / older versions** for the rest. The **Latest build** channel also offers the newest release again, for when its files were rebuilt in place after a fix landed. Going backwards is allowed, and the confirm warns that an older release may not have this page.
@@ -649,7 +756,7 @@ git merge upstream/main
 
 For assembled hardware, official firmware and support, go to the upstream project and [Forbes Automotive](https://forbes-automotive.com/). Their updater page flashes their build, not Edge's.
 
-Edge's firmware is built on upstream V9.00.0 plus its follow-up pull requests. The Forbes `Releases/` binary folder and Discord workflow are not part of this repo; Edge publishes through tagged GitHub releases. Third-party attribution from the shared lineage is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Edge's firmware is built on upstream V9.00.6 (through Forbes commit 1a61999). The Forbes `Releases/` binary folder and Discord workflow are not part of this repo; Edge publishes through tagged GitHub releases. Third-party attribution from the shared lineage is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ---
 
