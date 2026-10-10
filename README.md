@@ -47,6 +47,7 @@ Everything below runs on the Forbes hardware.
 - CAN sniffing for SavvyCAN, low power sleep, force modes from TC / hazards / external button.
 - Home WiFi (bridge mode), Backup & Restore and Bench Mode, contributed by louij2 (PR #39).
 - Bluetooth LE for the DashCAN app, contributed by danati (PR #44).
+- Live state and signed commands over ESP-NOW for a can2gauge gauge, and the sleep auto-setup.
 - OTA updates with rollback protection, plus the release channels from PR #43.
 - The PCB, enclosure and BOM files, now in this repo too.
 
@@ -75,6 +76,7 @@ Everything below runs on the Forbes hardware.
 - [Home WiFi (bridge mode)](#home-wifi-bridge-mode)
 - [Backup & Restore](#backup--restore)
 - [DashCAN app (Bluetooth)](#dashcan-app-bluetooth)
+- [Gauges over WiFi (ESP-NOW)](#gauges-over-wifi-esp-now)
 - [Low power mode and Bench Mode](#low-power-mode-and-bench-mode)
 - [Live diagnostics](#live-diagnostics)
 - [CAN sniffing](#can-sniffing-savvycan--gvret)
@@ -189,22 +191,23 @@ Set this up once per car, top to bottom. Until a learn table exists, the Dashboa
 4. **Launch PWM floor** (experimental, default 0%). Raises the minimum clutch PWM the Haldex is told to hold while lock is commanded, so engagement builds faster off the line. It only applies while lock is commanded, and it is kept below the maximum so the Haldex can still modulate. Watch the reported engagement as you tune: if the clutch PWM climbs but engagement was already near 100%, the extra PWM is only heat.
 5. **Car geometry** (optional). Wheelbase, front and rear track, steering ratio and the speed below which slip is ignored. The defaults are for an Audi TT Mk3 (2505 mm, 1572 mm, 1543 mm, 15.0:1, 5 km/h). They only feed the per-wheel slip card on the Dashboard. They do not change how lock behaves, so leave them alone unless you want that card to be accurate on another car.
 
-**Gen5 Fix Hunting.** Some Gen5 controllers, specifically the 554K variant, take the torque request in a different packing and can hunt at partial lock. Fix Hunting (default off) switches the Motor_11 packing to the other format. The v9 web UI does not have a switch for it; Long Learn tries it for you on Gen5 when the baseline learn is not smooth, and keeps it only if the result is better.
+**Gen5 Fix Hunting.** Some Gen5 controllers, specifically the 554K variant, take the torque request in a different packing and can hunt at partial lock. Fix Hunting (default off) switches the Motor_11 packing to the other format. The v9 web UI does not have a switch for it; Long Learn tries it for you on Gen5 when the reference learn is not smooth, and keeps it only if the result is better.
 
 ---
 
 ## Long Learn
 
-If a normal learn is not clean (jumps, plateaus, never reaches 100%), Long Learn automates the manual loop of adding or removing a [frame block](#frame-blocks) and learning again. It is on the Calibrate tab. Run it with the car stationary, the engine running and Haldex CAN live. Allow 10 to 20 minutes.
+If a normal learn is not clean (jumps, plateaus, never reaches 100%), Long Learn finds out which [frame blocks](#frame-blocks) the Haldex really needs. It is on the Calibrate tab. Run it with the car stationary, the engine running and Haldex CAN live. Allow 6 to 8 minutes on Gen5.
 
-The phases:
+The lock-driven blocks (the ones that carry the lock request, marked *core*) are always sent. Every other block is a candidate. The phases:
 
-1. **Initial Sweep.** Every frame block for your generation is switched on and one learn runs at your current Launch PWM floor. This gives a baseline.
-2. **BPK Adjust** (Gen5 0CQ and VAQ only, and only if the baseline is not smooth or does not reach about 90%). It tries Fix Hunting and keeps it only if the sweep improves. If lock is still short it raises the torque ceiling in 40 Nm steps, up to 500 Nm, until the target is reached.
-3. **Sweeping Blocks.** Each extra block (anything outside your generation's default set) is removed one at a time and checked with a release-to-0-then-back-to-100% cycle. A block whose removal makes things worse goes back on. One that makes things better is flagged "affects, better without". One that makes no difference stays off. Tick *Also test the default (core) blocks* to test those as well; that takes longer and can leave the Haldex with no lock command for part of a sweep.
-4. **Confirmation.** A full sweep is stored against the final block set.
+1. **Reference.** Every block is switched on, as Standalone sends them, and one full 0 to 100% learn runs on your current settings.
+2. **BPK Adjust** (Gen5 0CQ and VAQ only, and only if the reference hunts or does not reach about 90%). It tries Fix Hunting and keeps it only if the sweep improves. If lock is still short it raises the torque ceiling in 40 Nm steps, up to 500 Nm, until the target is reached. Whatever wins is kept when the run completes.
+3. **Prove it.** The all-on sweep on the settled settings must be a smooth 100%. Then two quick reads at 20, 40, 70 and 100% lock with everything on; how far the two reads differ is the noise level that blocks are judged against. If the sweep is not smooth, or the reads differ by more than 10%, the run stops and says why. There is nothing trustworthy to compare blocks with.
+4. **Testing blocks.** Each candidate is switched off on its own, with everything else on, read at the same four points after a release to 0, then switched back on. A block that changes the reading by more than the noise is *needed* (or *affects, higher without* if the reading went up, which keeps it on but flags it). One that makes no difference is *no effect*. Each verdict shows how far the reading moved. Tick *Also test the lock-driven (core) blocks* to test those too; that takes longer and can leave the Haldex with no lock command for part of a run.
+5. **Confirmation.** Every *no effect* block is switched off together and a full sweep is compared point by point with the reference. If it still matches, that set and its table are stored. If not (a step between the test points, or two frames covering for each other) every block is left on, the reference table is stored and the run is marked as an interaction.
 
-The tracker shows the phase, the sweep count, the block under test, the current floor and torque ceiling, a reference score and live Sent and Returned bars. Cancelling, or losing Haldex data during the first sweep, puts back the blocks, floor, torque ceiling, Fix Hunting setting and learn table you had before. Moving above 5 km/h aborts the run the same way.
+The tracker shows the phase, the sweep count, the block under test, the current floor, torque ceiling and Fix Hunting state, the reference score with its noise level, and live Sent and Returned bars. Cancelling, or a run that stops, puts back the blocks, floor, torque ceiling, Fix Hunting setting and learn table you had before. Moving above 5 km/h aborts the run the same way.
 
 A **chassis notes** box (saved on the module, up to 200 characters) and **Export report (.txt)** produce a plain text record of the car, the calibration values, the recommended block set, the sweep log and the stored table. It is useful for sharing a known good layout for a chassis.
 
@@ -343,6 +346,21 @@ The protocol is written up in [`documents/MOBILE_APP_OPENHALDEX.md`](documents/M
 
 ---
 
+## Gauges over WiFi (ESP-NOW)
+
+The module broadcasts its live state over ESP-NOW, a short-range WiFi link that needs no router, so a Forbes **can2gauge** CAN gauge can show the Haldex with power only and no CAN connection. About ten times a second it sends the mode, generation, lock target and actual, speed, rpm, throttle, per-wheel slip, the Long Learn progress and the live diagnostics values. This was added upstream by Forbes Automotive.
+
+With control allowed, a gauge can also change the drive mode, change the generation, start, cancel or clear a Learn, start or cancel Long Learn, and switch the controller on and off. Generation and learn commands are only accepted with the car stopped (or no chassis CAN at all). Every command is signed with the **WiFi password** and carries a one-use number from the module, so a gauge only works if it knows the same password, and a captured command cannot be replayed. The password is not sent. With analyzer mode on, commands are refused.
+
+Both switches are on the Diagnostics tab, in the *Gauges over WiFi (ESP-NOW)* card, and both default to on:
+
+- **Send status to gauges.** Off stops the broadcast and the link.
+- **Allow gauges to change settings.** Off keeps the broadcast but refuses every command.
+
+ESP-NOW follows the WiFi access point: it starts when the access point is up and stops before the WiFi goes to sleep, so a gauge goes quiet while the car is parked in [low power mode](#low-power-mode-and-bench-mode). The settings are part of Backup & Restore.
+
+---
+
 ## Low power mode and Bench Mode
 
 The module is made to live on a **permanent +12 V** feed. With low power mode working, upstream's figures are about 14 mA asleep (car off, WiFi off, CAN quiet) and about 50 mA awake. Those numbers are inherited from upstream and have not been measured on Edge builds. Treat them as a guide.
@@ -352,6 +370,7 @@ Everything is on the Settings tab.
 - **CAN Sleep** (on by default). After 5 minutes with no one connected to the WiFi, no one with the UI open, and CAN traffic below the wake threshold, the module shuts the WiFi access point and the LED off and lets the CPU light-sleep. The first CAN frame above the threshold brings it back. Bluetooth sleeps and wakes with the WiFi. With CAN Sleep switched off, none of this happens and the WiFi stays up.
 - **CAN Sleep (Aggressive)** (off by default). Also puts the CAN transceivers in standby, drops the CPU minimum clock to 10 MHz and trims the WiFi transmit power. Waking is by interrupt on the CAN receive lines. Use it if the car sits for days and you want the lowest standby current.
 - **LP Wake Threshold** (default 1100 frames per second). In an OEM install the module stays awake while the chassis bus is at or above this rate and sleeps below it. Set it above your car's parked-bus rate and below its driving rate. To find the parked rate: park and lock the car, wait until the chassis bus goes quiet, join the module's WiFi (it stays awake while you are connected), and watch the **Chassis fps** and **Haldex fps** counters on the Settings tab. In Standalone mode there is no chassis bus, so the module wakes on a fixed 50 frames per second of Haldex traffic and this slider does not apply.
+- **Set sleep up automatically.** Finds the wake threshold for you (OEM installs only; the UI offers it once when the generation is Gen5, and again whenever you pick Gen5). Once armed, the module stays awake until the car is left parked: stopped, engine off, ignition off (read from the car's Klemmen_Status_01 frame, so it needs that frame on the chassis bus), nobody connected to the WiFi and real CAN seen since power-up. It then measures the chassis frame rate for 15 minutes, sets the wake threshold to that average plus 300 frames per second (rounded up to 10), switches CAN Sleep and CAN Sleep (Aggressive) on and disarms itself. Any break in those conditions restarts the 15 minutes. The result and the measured average show under the switch. It runs once; tick the switch again to repeat it.
 - **USB.** A computer on the module's USB port keeps the WiFi up, so you can use the dashboard on the bench without a CAN source.
 
 If your module is on a switched ignition feed, low power mode saves little and is optional.

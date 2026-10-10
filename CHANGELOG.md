@@ -11,6 +11,41 @@ version.
 
 ---
 
+## v9.01.0-beta2 - 2026-10-10
+
+> Merges Forbes's V9.00.6: BLE boot-loop fix, much less RAM, a faster per-block Long Learn, sleep auto-setup and ESP-NOW gauges. An OTA update from beta1.
+
+### Updating
+
+beta1 to beta2 is an OTA update. The partition table (`src/partitions_4mb.csv`) is unchanged, so use the update page (merged image or release channel) and no USB flash is needed. Settings are kept: the new keys default on first boot.
+
+### Added
+
+From upstream V9.00.6 and V9.00.5 (Forbes Automotive):
+
+- **Boot-loop guard for Bluetooth.** If the Bluetooth controller fails to start (the C6 logs `ble ll env init error code:-13`), Bluetooth stays off until the next reboot and the rest of the module carries on. Before, the module crashed about a second after WiFi came up. Free heap is logged just before the start.
+- **Long Learn reworked.** The lock-driven blocks are always sent. All blocks on must give a smooth 100% sweep first, and two reads at 20, 40, 70 and 100% lock set a noise level. Each extra block is then switched off on its own and read at those points (before, blocks were removed one after another and judged against a shrinking set). A confirmation sweep with all the no-effect blocks off together must match, or every block is left on and the run is flagged. If the reference is not smooth or too noisy the run stops with a reason. About 6 to 8 minutes on Gen5. The Gen5 BPK step is kept, and the packing and ceiling it settles on are kept when the run finishes.
+- **Sleep auto-setup.** An armed module waits for the car to be left parked (ignition off, read from Klemmen_Status_01), measures the chassis frame rate for 15 minutes, sets the wake threshold just above it and turns CAN Sleep on. New switch under CAN Sleep on the Settings tab.
+- **Gauges over WiFi (ESP-NOW).** Live state broadcast for a Forbes can2gauge CAN gauge, plus signed commands (mode, generation, learn, controller on and off). The signing key is the WiFi password. Two switches in a new card on the Diagnostics tab, both on by default.
+- **Danger Zone through the torque request.** The pump duty on the 0CQ follows the Motor_11 torque, so Danger Zone now raises that ceiling to 320 Nm (serial lab `DANGERNM`) at a full lock request. It no longer pins the ESP_14 Min band.
+- **Pump voltage (UDS 0x2BE9)** is read as little-endian, 0.1 V per count. The old reading showed an impossible 20.5 V.
+
+### Changed
+
+- **Less RAM.** The Freenove WS2812 library (a 24 KB static LED buffer for one LED) is replaced by a small `OneLed` class on the core's LED writer. The ten standalone frame tasks are one scheduler task. Task stacks were resized from measured use (updateTriggers 3072, broadcastOpenHaldex 2048). `debugMemory` logs heap and per-task stack headroom in developer builds; release builds keep it off.
+- The Long Learn tracker and report on the web UI show the new phases, the per-block deviation, the noise level and the stop reason.
+- Line endings are LF in the repo (upstream #49).
+
+### Kept from Edge
+
+CAN queues at 128 and 64 frames, the state mutex around every frame builder (the scheduler takes it for each one), the speed interlock and restore-on-abort in Long Learn, Edge's drive-mode fix on generation change, the light-sleep lock, Stock passthrough, the web access rules, map slots, one-file OTA, Edge's web UI, icons and manifest, and platform 54.03.20.
+
+### Not taken
+
+Forbes's `Releases/` binaries (Edge publishes through tagged GitHub releases), the Discord workflow, upstream's themes, and the AsyncTCP stack cut that upstream's notes mention but never put in `platformio.ini`.
+
+---
+
 ## v9.01.0-beta1 - 2026-10-06
 
 > Edge rebuilt on Forbes V9: Home WiFi, Bluetooth for DashCAN, Long Learn, Backup & Restore, OTA from GitHub, plus Edge's UI and safety work. First v9 flash is over USB.
