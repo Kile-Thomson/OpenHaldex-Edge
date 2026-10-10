@@ -474,14 +474,14 @@
 
             <section class="card" id="longLearnSection">
                 <h2>Long Learn</h2>
-                <p class="hint">Advanced. Automates the add-a-block, remove-a-block loop for a learn that will not come out clean. It turns <strong>every</strong> frame block for this generation on, then (Gen5 0CQ / VAQ) steps the Launch PWM floor up until the learn is smooth. After that it removes the extra blocks one at a time: a block whose removal changes the learn goes back on (and is flagged if the learn was actually better without it), one that makes no difference stays off. A last confirmation learn is stored against the final set. Allow 10 to 20 minutes with the car running and Haldex CAN live. Cancelling puts back the old blocks, floor and learn table.</p>
+                <p class="hint">Advanced. Finds which frame blocks the Haldex actually needs, for a learn that will not come out clean. It first checks that every block on gives a smooth 100% sweep (on Gen5 0CQ / VAQ it may switch to BPK packing and raise the torque ceiling to get there), and takes two quick reads at 20, 40, 70 and 100% lock to measure the noise. Then it turns each extra block off on its own, reads the same points, and turns it back on: a block that changes the reading beyond the noise is needed, one that makes no difference stays off. A last sweep with all the no-effect blocks off together must match the reference, or every block is left on. Allow 6 to 8 minutes with the car stopped, engine running and Haldex CAN live. Cancelling puts back the old blocks, floor, torque ceiling and learn table.</p>
                 <div class="toggle-group">
                     <label class="toggle">
                         <input type="checkbox" id="longLearnTestAll">
                         <span class="toggle-slider"></span>
-                        <span class="toggle-label">Also test the default (core) blocks</span>
+                        <span class="toggle-label">Also test the lock-driven (core) blocks</span>
                     </label>
-                    <p class="hint">Off: your current set is kept and only the extra blocks are tested. On: every block is tested. That takes longer and can leave the Haldex with no lock command for part of a sweep.</p>
+                    <p class="hint">Off: the lock-driven blocks are always sent and only the extra blocks are tested. On: those are tested too. That takes longer and can leave the Haldex with no lock command for part of a sweep.</p>
                 </div>
                 <p class="hint" id="longLearnStatusText">--</p>
                 <div class="learn-progress-wrap" id="longLearnProgressWrap" style="display:none;">
@@ -726,6 +726,13 @@
                         </div>
                     </div>
                     <p class="hint">OEM: chassis bus fps to confirm ignition-on. Standalone: Haldex bus fps. Parked = 0 fps.</p>
+                    <label class="toggle">
+                        <input type="checkbox" id="sleepCalArm">
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">Set sleep up automatically</span>
+                    </label>
+                    <p class="hint">Turns CAN sleep on and sets the wake threshold for you. Next time the car is left parked with the ignition off, the controller listens to the quiet bus for 15 min, then sets the threshold just above what it heard. Runs once, then switches itself off. Needs the chassis CAN connected (OEM mode, Gen5).</p>
+                    <p class="hint" id="sleepCalStatus" hidden></p>
                     <div class="brightness-row">
                         <span class="toggle-label">Live Frame Rate</span>
                         <div class="brightness-controls">
@@ -1044,6 +1051,21 @@
                 <div class="wifi-controls">
                     <button class="btn-secondary" id="bleForget">Forget Paired Phones</button>
                 </div>
+            </section>
+
+            <section class="card">
+                <h2>Gauges over WiFi (ESP-NOW)</h2>
+                <p class="hint">Broadcasts the live Haldex status (mode, lock, speed, temperatures) over WiFi to a Forbes can2gauge CAN gauge, which needs power only. With control allowed, the gauge can also change mode and generation, run Learn (car stopped) and switch the controller on and off. Commands are signed with the WiFi password, so a gauge only works if it has the same password. It follows the WiFi and stops when the WiFi sleeps.</p>
+                <label class="toggle">
+                    <input type="checkbox" id="espNowEnabled">
+                    <span class="toggle-slider"></span>
+                    <span class="toggle-label">Send status to gauges</span>
+                </label>
+                <label class="toggle">
+                    <input type="checkbox" id="espNowControl">
+                    <span class="toggle-slider"></span>
+                    <span class="toggle-label">Allow gauges to change settings</span>
+                </label>
             </section>
 
             <section class="card">
