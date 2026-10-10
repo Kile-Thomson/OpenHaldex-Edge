@@ -50,7 +50,7 @@ Everything below runs on the Forbes hardware.
 - Live state and signed commands over ESP-NOW for a can2gauge gauge, and the sleep auto-setup.
 - OTA updates with rollback protection, plus the release channels from PR #43.
 - The PCB, enclosure and BOM files, now in this repo too.
-- The current build toolchain (Arduino 3.3.12 on IDF 5.5.5) and the smaller AsyncTCP task stack.
+- The current build toolchain (Arduino 3.3.12 on IDF 5.5.5) and Edge's smaller AsyncTCP task stack.
 
 **Added by Edge:**
 
