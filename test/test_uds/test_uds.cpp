@@ -7,8 +7,8 @@
 // against the author's V8.00.2 source; golden values below are hand-derived
 // from those formulas independently of the implementation.
 // The u16 byte order is mixed per DID, matching the upstream poller: the
-// temperatures (0x2BF1, 0x2BE4) are little-endian, clutch current/voltage
-// (0x2BE6, 0x2BE9) are big-endian.
+// temperatures (0x2BF1, 0x2BE4) and clutch voltage 0x2BE9 (x 0.1 V) are
+// little-endian; clutch current 0x2BE6 is big-endian.
 
 #include <unity.h>
 #include <cstdint>
@@ -168,11 +168,11 @@ void test_scale_clutch_pwm_raw_byte(void)
 
 void test_scale_clutch_voltage(void)
 {
-  // u16 big-endian: {0x30, 0xD4} -> 0x30D4 = 12500; 12500 * 0.001 = 12.5 V
-  const uint8_t payload[2] = {0x30, 0xD4};
+  // u16 little-endian x 0.1 V: {0x50, 0x00} -> 80 -> 8.0 V (bench: pump at 61 % PWM, 13.4 V supply)
+  const uint8_t payload[2] = {0x50, 0x00};
   float v = 0;
   TEST_ASSERT_TRUE(uds_scale_mqb_did(0x2BE9, payload, 2, v));
-  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(12.5f, v, "0x2BE9 clutchVoltage u16*0.001");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(8.0f, v, "0x2BE9 clutchVoltage LE u16*0.1");
 }
 
 void test_scale_rejects_unknown_did(void)
@@ -223,7 +223,7 @@ void test_frame_to_value_round_trip(void)
       {0x2BE4, {0x05, 0x62, 0x2B, 0xE4, 0x2F, 0x4E, 0xAA, 0xAA}, -27.52f, "coolingFinTemp"},
       {0x2BE6, {0x05, 0x62, 0x2B, 0xE6, 0x0D, 0xAC, 0xAA, 0xAA}, 3.5f, "clutchCurrent"},
       {0x2BE7, {0x04, 0x62, 0x2B, 0xE7, 47, 0xAA, 0xAA, 0xAA}, 47.0f, "clutchPWM"},
-      {0x2BE9, {0x05, 0x62, 0x2B, 0xE9, 0x30, 0xD4, 0xAA, 0xAA}, 12.5f, "clutchVoltage"},
+      {0x2BE9, {0x05, 0x62, 0x2B, 0xE9, 0x51, 0x00, 0xAA, 0xAA}, 8.1f, "clutchVoltage"},
   };
 
   for (const Case &c : cases)

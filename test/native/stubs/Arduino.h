@@ -52,3 +52,8 @@ struct SerialStub {
   void println() {}
 };
 static SerialStub Serial;
+
+// Stand-ins for the core's RGB LED writer used by OpenHaldexC6_led.h (OneLed).
+enum rgb_led_color_order_t { LED_COLOR_ORDER_RGB, LED_COLOR_ORDER_GRB, LED_COLOR_ORDER_BRG,
+                             LED_COLOR_ORDER_RBG, LED_COLOR_ORDER_GBR, LED_COLOR_ORDER_BGR };
+static inline void rgbLedWriteOrdered(uint8_t, rgb_led_color_order_t, uint8_t, uint8_t, uint8_t) {}

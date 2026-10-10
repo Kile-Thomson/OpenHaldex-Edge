@@ -94,6 +94,11 @@ void fill_esp19_wheel_speeds(uint8_t data[8]);
 // a CRC placeholder for the caller) from the runtime BPK tunables in defs.h.
 void fill_motor11_bpk(uint8_t data[8], uint8_t counter);
 
+// Danger Zone is live this cycle: toggle on, full lock requested (> 99 %), not
+// in a learn sweep. When true the Motor_11 packers use BPK packing with the
+// ceiling raised to dangerZoneNm, whatever the Fix Hunting toggle says.
+bool dangerZoneActive();
+
 // Stores what the Motor_11 BPK packer computed this cycle, for the serial lab
 // task to stream out. Called from both BPK code paths at the Motor_11 rate.
 void bpkLogSample(uint16_t torqueNm, uint16_t istNm, uint16_t solfNm);
@@ -120,42 +125,67 @@ struct LearnScore
 #define LL_REACH_MIN 90     // % engagement required at CF 100
 #define LL_STEP_MAX 8       // largest tolerated single-step rise after engage
 #define LL_ENGAGE_MAX_CF 60 // must have started engaging by this CF
-#define LL_TOLERANCE 4      // score band treated as "no change" (sweep-to-sweep noise)
-#define LL_MID_CF 40        // part-lock point blocks are also checked at, so a
-                            // block that only matters mid-range isn't dropped
-                            // on the strength of a clean 100% reading alone
+#define LL_TOLERANCE 4      // minimum deviation (%) treated as "no change";
+                            // raised to the measured reference-to-reference noise
+#define LL_NOISE_MAX 10     // two all-on point reference reads further apart than
+                            // this (worst point) are too noisy to judge blocks by
+// CF points each block is read at - spread over the ramp so a block that only
+// matters at part lock (a step at 20%, say) isn't missed on a clean 100%.
+#define LL_NPTS 4
+static const uint8_t LL_POINT_CF[LL_NPTS] = {20, 40, 70, 100};
 #define LL_BPK_ACCEPT 90    // return% Long Learn treats as good enough before it
                             // starts changing BPK settings. 100% is the aim, but
                             // 90+ is accepted rather than chasing the last few
                             // points into the pressure-relief regime.
 void scoreLearnTable(const uint8_t *table, LearnScore &out);
 
+// Long Learn comparison seams (pure; used by longLearnTask in tasks.cpp).
+// Worst |t - ref| over CF 0-100 and the mean signed difference.
+void ll_compare_curves(const uint8_t *t, const uint8_t *ref, uint8_t &maxDev, int8_t &meanDelta);
+// Same over the LL_NPTS point reads.
+void ll_compare_points(const uint8_t *a, const uint8_t *ref, uint8_t &maxDev, int8_t &meanDelta);
+// Verdict (LLB_*) for a read with block(s) off against the proven reference:
+// within tol and smooth -> LLB_REMOVED; lower or not smooth -> LLB_NEEDED;
+// higher -> LLB_HARMFUL (an effect, so still kept on).
+uint8_t ll_judge(bool smooth, uint8_t maxDev, int8_t meanDelta, uint8_t tol);
+// Effective Motor_11 BPK ceiling: the user's calibration, raised to the Danger
+// Zone value while it is live, never above the 509 Nm the 10-bit field holds.
+uint16_t bpk_effective_ceiling_nm(uint16_t ceilingNm, bool dangerActive, uint16_t dangerNm);
+
+// Phase numbers are also sent over ESP-NOW (ohx status longPhase) - append only.
 enum
 {
     LL_IDLE = 0,
-    LL_SWEEP,     // "Initial Sweep": baseline / (Gen5) PWM-floor tuning with every block on
-    LL_BPK,       // "BPK Adjust" (Gen5 only): raise the torque ceiling until 100% is reachable
-    LL_BLOCKS,    // "Sweeping Blocks": quick on/off check of each candidate block at 100%
+    LL_SWEEP,     // "Reference": all-on sweeps that must prove a smooth 100% first
+    LL_BPK,       // "BPK Adjust" (Gen5 only): hunting/short -> BPK packing + torque ceiling
+    LL_BLOCKS,    // "Testing Blocks": each candidate off on its own, full sweep, back on
     LL_FINAL,     // confirmation sweep on the final set
     LL_DONE,
     LL_CANCELLED,
-    LL_FAILED     // no Haldex data / sweep aborted - previous state restored
+    LL_FAILED     // see longLearnFailReason - previous state restored
+};
+enum
+{
+    LLF_NONE = 0,
+    LLF_NO_DATA,    // a reference sweep got no Haldex feedback at all
+    LLF_NOT_SMOOTH, // all blocks on did not give a smooth 100% - nothing to compare against
+    LLF_NOISY       // the two point reference reads disagree by more than LL_NOISE_MAX
 };
 enum
 {
     LLB_UNTESTED = 0, // candidate, not yet tested
-    LLB_CORE,         // default block - kept on, never tested (unless Test All)
-    LLB_NEEDED,       // removing it degraded the learn -> kept on
-    LLB_REMOVED,      // removing it made no difference -> left off
-    LLB_HARMFUL       // removing it improved the learn -> still kept on (any effect = keep), flagged
+    LLB_CORE,         // lock-driven block - always sent, never tested (unless Test All)
+    LLB_NEEDED,       // off on its own read lower at the test points -> kept on
+    LLB_REMOVED,      // off on its own made no difference -> left off
+    LLB_HARMFUL       // off on its own read higher -> still kept on, flagged
 };
 enum
 {
-    LLS_BASELINE = 0, // first all-on sweep
-    LLS_FLOOR,        // further all-on sweep at a different PWM floor
-    LLS_BLOCK,        // one candidate block removed (quick on/off check)
+    LLS_BASELINE = 0, // all-on full sweep (first sweep / reference curve)
+    LLS_POINTS,       // all-on LL_POINT_CF reference read (was LLS_FLOOR, unused)
+    LLS_BLOCK,        // one candidate block off, LL_POINT_CF read
     LLS_FINAL,        // confirmation sweep
-    LLS_BPK           // BPK torque-ceiling candidate (Gen5 only, quick check)
+    LLS_BPK           // BPK packing / torque-ceiling candidate (Gen5 only)
 };
 struct LongLearnSweep
 {
@@ -164,7 +194,10 @@ struct LongLearnSweep
     uint8_t floorPct; // esp14MinFloorPct during the sweep
     uint16_t bpkNm;   // bpkCeilingNm during the sweep (Gen5 only; 0 elsewhere)
     uint8_t verdict;  // LLB_* for block sweeps, 1/0 smooth/reached-100 for the rest
-    LearnScore s;
+    uint8_t maxDev;   // block: worst |read - ref| over the points; final: over CF 0-100
+    int8_t meanDelta; // block/final: mean (read - reference), sign = direction
+    uint8_t pts[LL_NPTS]; // point reads (LLS_POINTS / LLS_BLOCK), else 0
+    LearnScore s;     // point reads: reach = 100% point, engage = first non-zero point
 };
 #define LL_MAX_SWEEPS 80
 #define LL_NOTES_LEN 200
@@ -188,7 +221,11 @@ extern uint8_t longLearnFloorStart;  // esp14MinFloorPct before the run
 extern uint8_t longLearnFloorResult; // esp14MinFloorPct chosen by the run
 extern uint64_t longLearnMaskStart;  // active mask before the run (restored on cancel)
 extern uint16_t longLearnBpkStart;   // bpkCeilingNm before the run (Gen5; restored on cancel/failure)
-extern bool longLearnBpkAdjusted;    // true if the BPK-adjust phase actually ran this run
+extern bool longLearnBpkAdjusted;    // true if the BPK-adjust phase changed packing or ceiling
+extern uint8_t longLearnFailReason;  // LLF_* when longLearnPhase == LL_FAILED
+extern uint8_t longLearnNoise;       // worst |refA - refB| over CF 0-100
+extern uint8_t longLearnTol;         // deviation threshold actually used (max(LL_TOLERANCE, noise))
+extern bool longLearnInteraction;    // the "no effect" blocks off TOGETHER changed the curve -> all left on
 extern LongLearnSweep longLearnSweeps[LL_MAX_SWEEPS];
 extern uint8_t longLearnSweepCount;
 extern uint32_t longLearnStartMs;
@@ -453,8 +490,8 @@ int uds_parse_sf_rdbi(const uint8_t *data, uint8_t dlc, uint16_t did, uint8_t *o
 
 // uds_scale_mqb_did: apply the per-DID raw->engineering-value scaling. The u16
 // byte order is mixed per DID, matching the upstream poller: temperatures
-// (0x2BF1, 0x2BE4) are little-endian, clutch current/voltage (0x2BE6, 0x2BE9) are
-// big-endian. Returns false for a short payload or an unknown DID, leaving `out`
+// (0x2BF1, 0x2BE4) and clutch voltage (0x2BE9, x 0.1 V) are little-endian, clutch
+// current (0x2BE6, x 0.001 A) is big-endian. Returns false for a short payload or an unknown DID, leaving `out`
 // untouched.
 bool uds_scale_mqb_did(uint16_t did, const uint8_t *payload, uint8_t len, float &out);
 

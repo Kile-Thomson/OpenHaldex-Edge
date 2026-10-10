@@ -673,6 +673,13 @@ void parseCAN_chs(void *arg)
           break;
         }
 
+        case KLEMMEN_STATUS_01:
+          // MQB Klemmen_Status_01 (0x3C0), MQB_ACAN_KMatrix:
+          //   SG_ ZAS_Kl_15 : 17|1@1+ -> byte 2 bit 1, ignition (terminal 15) on
+          received_kl15 = (rx_message_chs.data[2] >> 1) & 0x01;
+          lastKl15Ms = millis();
+          break;
+
         case MOTOR_20:
           // MQB Motor_20 (0x121) - accelerator/raw pedal broadcast.
           //   SG_ MO_Fahrpedalrohwert_01 : 12|8@1+ (0.4,0) "%"

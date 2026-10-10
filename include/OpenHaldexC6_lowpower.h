@@ -47,3 +47,31 @@ static inline bool lpShouldWake(bool canActive, bool usbHostConnected)
 {
   return canActive || usbHostConnected;
 }
+
+// Sleep auto-setup seams (see sleepCalTick in src/OpenHaldexC6_IO.cpp).
+//
+// "Parked" for the 15 min measurement: not moving, engine off (or no chassis
+// bus to read it from) and the ignition (KL15) not on.
+static inline bool sleepCalParked(uint16_t speed, uint16_t rpm, bool hasChassis, bool ignitionIsOn)
+{
+  return speed == 0 && (rpm == 0 || !hasChassis) && !ignitionIsOn;
+}
+
+// A second only counts toward the window while nobody is connected, the car is
+// parked and real CAN has been seen this session (not a bench unit). Anything
+// else restarts the window.
+static inline bool sleepCalCounts(bool noClients, bool parked, bool everSawCAN)
+{
+  return noClients && parked && everSawCAN;
+}
+
+// Wake threshold from the parked-bus average: average + margin, rounded up to
+// the 10 fps slider step, kept inside the slider range 100..2000.
+static inline uint16_t sleepCalThreshold(uint16_t avgFps, uint16_t marginFps)
+{
+  uint32_t t = (uint32_t)avgFps + marginFps;
+  t = ((t + 9U) / 10U) * 10U;
+  if (t < 100U) t = 100U;
+  if (t > 2000U) t = 2000U;
+  return (uint16_t)t;
+}
