@@ -3,11 +3,32 @@
 All notable changes to OpenHaldex Edge are listed here.
 
 Edge is a fork of Forbes Automotive's OpenHaldex-C6. From v9.01.0 it is built on
-upstream V9.00.0 plus the pull requests merged after it. The v8.00.x entries
+upstream V9.00.6 plus the pull requests merged before it. The v8.00.x entries
 further down are the earlier Edge line, built on upstream V8.00.2; they stay as
 history. Upstream's own features are Forbes's work and the credited pull request
 authors', so they are listed once under v9.01.0 and not repeated version by
 version.
+
+---
+
+## v9.01.0-beta3 - 2026-10-11
+
+> Newer build toolchain, smaller AsyncTCP stack, a README brought up to date with upstream V9.00.6, and a fix to the Update tab hint on mobile data. OTA from beta2.
+
+### Updating
+
+beta2 to beta3 is an OTA update. The partition table is unchanged and settings are kept.
+
+### Changed
+
+- Build toolchain: pioarduino platform 54.03.20 to 55.03.312 (Arduino 3.3.12, IDF 5.5.5), as in Forbes's V9.00.6. Building needs PlatformIO Core 6.2.0 or newer. Same code, flash use of the app goes from 1,616,129 to 1,714,022 bytes (88.1% to 93.4% of the 0x1C0000 slot) and RAM from 59,736 to 60,560 bytes.
+- AsyncTCP task stack set to 8192 bytes (`CONFIG_ASYNC_TCP_STACK_SIZE`) instead of the 16 KB library default, which frees 8 KB of heap. The `Async TCP` library is ignored so the mathieucarbou one is used.
+- README rewritten to match upstream V9.00.6: overview and hardware, purchase link, status LED, the change-mode request and broadcast frame in their own section, low power mode in three layers with the sleep set-up steps, and more detail on live diagnostics and SavvyCAN over USB.
+
+### Fixed
+
+- The Update tab hint and the README disagreed about mobile data. On the module's own WiFi the phone normally keeps mobile data, so the GitHub check works as it is. Home WiFi is the fallback for phones that still drop it, and for updating from a laptop at home.
+- README: the low power section said the CPU light-sleeps. Edge turns automatic light sleep off on purpose; the text now says so.
 
 ---
 
