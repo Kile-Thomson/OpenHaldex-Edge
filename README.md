@@ -199,7 +199,7 @@ Set this up once per car, top to bottom. Until a learn table exists, the Dashboa
 
 If a normal learn is not clean (jumps, plateaus, never reaches 100%), Long Learn finds out which [frame blocks](#frame-blocks) the Haldex really needs. It is on the Calibrate tab. Run it with the car stationary, the engine running and Haldex CAN live. Allow 6 to 8 minutes on Gen5.
 
-The lock-driven blocks (the ones that carry the lock request, marked *core*) are always sent. Every other block is a candidate. The phases:
+The lock-driven blocks (the ones that carry the lock request, marked *core*) are always sent unless you switch on *Also test the lock-driven (core) blocks*, which tests them too. Every other block is a candidate. The phases:
 
 1. **Reference.** Every block is switched on, as Standalone sends them, and one full 0 to 100% learn runs on your current settings.
 2. **BPK Adjust** (Gen5 0CQ and VAQ only, and only if the reference hunts or does not reach about 90%). It tries Fix Hunting and keeps it only if the sweep improves. If lock is still short it raises the torque ceiling in 40 Nm steps, up to 500 Nm, until the target is reached. Whatever wins is kept when the run completes.

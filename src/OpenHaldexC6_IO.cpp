@@ -51,6 +51,9 @@ static uint16_t sleepCalSecs         = 0; // seconds in the current window
 // weaken the parked-car battery protection. The latch resets on boot; the
 // benchMode setting is also switched off (and persisted) at the same moment.
 static bool everSawCANThisSession = false;
+// Chassis bus specifically seen this power cycle. Sleep auto-setup measures the
+// chassis frame rate, so Haldex-only traffic must not let it run.
+static bool everSawChassisThisSession = false;
 
 // Aggressive-mode state.
 static bool     lpTransceiversStandby = false; // CAN_RS pins driven high (TCAN1044 standby)
@@ -164,7 +167,7 @@ static void lpResumeBackgroundTasks()
 static void sleepCalTick(bool noClients)
 {
   const bool parked = sleepCalParked(received_vehicle_speed, received_vehicle_rpm, hasCANChassis, ignitionOn());
-  if (!sleepCalCounts(noClients, parked, everSawCANThisSession))
+  if (!sleepCalCounts(noClients, parked, everSawChassisThisSession))
   {
     sleepCalSum = 0;
     sleepCalSecs = 0;
@@ -185,6 +188,10 @@ static void sleepCalTick(bool noClients)
   sleepCalAvgFps = (uint16_t)(sleepCalSum / sleepCalSecs);
   lpWakeThresholdFps = sleepCalThreshold(sleepCalAvgFps, SLEEP_CAL_MARGIN_FPS);
   sleepCalState = SLEEP_CAL_DONE;
+  // Clear the window so a later re-arm measures a fresh 15 minutes instead of
+  // completing on its first sample with the old 900 s count.
+  sleepCalSum = 0;
+  sleepCalSecs = 0;
   DEBUG("Sleep auto-setup: parked avg %u fps -> wake threshold %u fps",
         (unsigned)sleepCalAvgFps, (unsigned)lpWakeThresholdFps);
 }
@@ -421,6 +428,8 @@ void updateTriggers(void *arg)
       received_haldex_engagement = 0; // stale engagement would freeze telemetry and poison a running learn
     }
 
+    if (hasCANChassis)
+      everSawChassisThisSession = true;
     if (hasCANChassis || hasCANHaldex)
     {
       everSawCANThisSession = true; // real bus seen: bench mode (if on) stops holding WiFi up from here on
@@ -517,6 +526,11 @@ void updateTriggers(void *arg)
       const bool sleepCalHold = (sleepCalState == SLEEP_CAL_ARMED) && !isStandalone;
       if (sleepCalHold && fpsUpdated)
         sleepCalTick(noClients);
+      else if (!sleepCalHold)
+      {
+        sleepCalSum = 0; // not armed (declined, done, standalone): no partial window carries into a re-arm
+        sleepCalSecs = 0;
+      }
 
       switch (lpState)
       {

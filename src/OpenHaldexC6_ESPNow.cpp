@@ -176,10 +176,11 @@ static void sendStatus()
 // ---------------------------------------------------------------------------
 static bool hmacOk(const OhxCommand &c)
 {
-  uint8_t full[32];
+  uint8_t full[32] = {};
   const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-  mbedtls_md_hmac(md, (const uint8_t *)wifiPassword, strlen(wifiPassword), (const uint8_t *)&c,
-                  offsetof(OhxCommand, hmac), full);
+  if (!md || mbedtls_md_hmac(md, (const uint8_t *)wifiPassword, strlen(wifiPassword), (const uint8_t *)&c,
+                             offsetof(OhxCommand, hmac), full) != 0)
+    return false; // no MAC computed: reject rather than compare garbage
   uint8_t diff = 0;
   for (int i = 0; i < 8; i++)
     diff |= full[i] ^ c.hmac[i];
@@ -253,13 +254,15 @@ static uint8_t execute(const OhxCommand &c)
     haldexLearnCancel = true;
     return OHX_R_OK;
   case OHX_C_CONTROLLER: // as POST /api/settings {disableController}
+  {
+    StateLock lk; // the CAN task must never see the controller off with the old mode still set
     disableController = c.arg[0] == 0;
     if (disableController)
     {
-      StateLock lk;
       state.mode = MODE_STOCK;
       lastMode = 0;
     }
+  }
     return OHX_R_OK;
   default:
     return OHX_R_INVALID;

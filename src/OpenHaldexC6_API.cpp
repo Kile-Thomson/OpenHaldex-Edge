@@ -803,26 +803,6 @@ static void settingsIncoming(AsyncWebServerRequest *request, const String &body)
         broadcastOpenHaldexOverCAN = data["broadcastOpenHaldexOverCAN"];
     }
 
-    // Vehicle geometry for per-corner slip (compute_corner_slip): mm/ratio,
-    // 0 is rejected by the calc itself so a bad value just disables slip calc
-    // rather than producing nonsense - safe range is generous, not exact.
-    if (data["slipWheelbaseMm"].is<int>())
-    {
-        slipWheelbaseMm = (uint16_t)constrain((int)data["slipWheelbaseMm"], 0, 4000);
-    }
-    if (data["slipTrackFrontMm"].is<int>())
-    {
-        slipTrackFrontMm = (uint16_t)constrain((int)data["slipTrackFrontMm"], 0, 2200);
-    }
-    if (data["slipTrackRearMm"].is<int>())
-    {
-        slipTrackRearMm = (uint16_t)constrain((int)data["slipTrackRearMm"], 0, 2200);
-    }
-    if (data["slipSteeringRatio"].is<float>())
-    {
-        slipSteeringRatio = constrain((float)data["slipSteeringRatio"], 1.0f, 40.0f);
-    }
-
     // Long Learn chassis/car notes (free text, exported with the report)
     if (data["longLearnNotes"].is<const char *>())
     {
