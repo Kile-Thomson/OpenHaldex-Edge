@@ -1,22 +1,22 @@
 {
   "product": "OpenHaldex-Edge",
-  "latest": "9.01.0-beta1",
+  "latest": "9.01.0-beta3",
   "releases": [
     {
-      "version": "9.01.0-beta1",
+      "version": "9.01.0-beta3",
       "channel": "beta",
-      "date": "2026-10-05",
+      "date": "2026-10-10",
       "ota": true,
-      "notes": "Edge rebuilt on Forbes V9: Home WiFi, Bluetooth for DashCAN, Long Learn, Backup & Restore, OTA from GitHub, plus Edge's UI and safety work. First v9 flash is over USB.",
+      "notes": "Newer build toolchain, smaller AsyncTCP stack, a README brought up to date with upstream V9.00.6, and a fix to the Update tab hint on mobile data. OTA from beta2.",
       "firmware": {
-        "path": "V9.01.0-beta1/firmware.bin",
-        "size": 1670032,
-        "sha256": "eb20a0206455c699f2fb2ecae0897b10e4c0151557ec6a6a49f4a5715932ee50"
+        "path": "V9.01.0-beta3/firmware.bin",
+        "size": 1782848,
+        "sha256": "7b965b73e8f502ad30d4274ccb2a992f42268d0998ff8d52438e397a83e26808"
       },
       "filesystem": {
-        "path": "V9.01.0-beta1/littlefs.bin",
+        "path": "V9.01.0-beta3/littlefs.bin",
         "size": 458752,
-        "sha256": "c21e64fa0c02d8ed3f3795ea8514d4c4f2883e74e7f4b248f093bc5945c7a5e3"
+        "sha256": "3601b11315869f27599e995de89a60ffe6b69804ee0872d62be7587ba5b60c24"
       }
     },
     {
@@ -37,20 +37,20 @@
       }
     },
     {
-      "version": "9.01.0-beta3",
+      "version": "9.01.0-beta1",
       "channel": "beta",
-      "date": "2026-10-10",
+      "date": "2026-10-05",
       "ota": true,
-      "notes": "Newer build toolchain, smaller AsyncTCP stack, a README brought up to date with upstream V9.00.6, and a fix to the Update tab hint on mobile data. OTA from beta2.",
+      "notes": "Edge rebuilt on Forbes V9: Home WiFi, Bluetooth for DashCAN, Long Learn, Backup & Restore, OTA from GitHub, plus Edge's UI and safety work. First v9 flash is over USB.",
       "firmware": {
-        "path": "V9.01.0-beta3/firmware.bin",
-        "size": 1782848,
-        "sha256": "7b965b73e8f502ad30d4274ccb2a992f42268d0998ff8d52438e397a83e26808"
+        "path": "V9.01.0-beta1/firmware.bin",
+        "size": 1670032,
+        "sha256": "eb20a0206455c699f2fb2ecae0897b10e4c0151557ec6a6a49f4a5715932ee50"
       },
       "filesystem": {
-        "path": "V9.01.0-beta3/littlefs.bin",
+        "path": "V9.01.0-beta1/littlefs.bin",
         "size": 458752,
-        "sha256": "3601b11315869f27599e995de89a60ffe6b69804ee0872d62be7587ba5b60c24"
+        "sha256": "c21e64fa0c02d8ed3f3795ea8514d4c4f2883e74e7f4b248f093bc5945c7a5e3"
       }
     }
   ]
