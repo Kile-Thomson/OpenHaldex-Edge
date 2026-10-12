@@ -139,8 +139,14 @@ def main() -> None:
     releases.append(entry)
 
     def vkey(r):
-        core = r["version"].split("-")[0]
-        return tuple(int(x) for x in core.split(".") if x.isdigit())
+        # 9.01.0 > 9.01.0-beta3 > 9.01.0-beta2: a final release sorts above its
+        # betas, and betas of the same version sort by their trailing number.
+        core, _, pre = r["version"].partition("-")
+        nums = tuple(int(x) for x in core.split(".") if x.isdigit())
+        if not pre:
+            return nums + (1, 0)
+        digits = "".join(c for c in pre if c.isdigit())
+        return nums + (0, int(digits) if digits else 0)
 
     releases.sort(key=vkey, reverse=True)
     index["product"] = PRODUCT
